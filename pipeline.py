@@ -10,10 +10,11 @@ Supports:
 import os
 import re
 import sys
+import json
 import argparse
 import subprocess
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 import torch
 from PIL import Image
@@ -40,6 +41,26 @@ def clean_math_syntax(text: str) -> str:
 
     cleaned = re.sub(r"(?<!\$)\$(?!\$)([^\$\n]+?)(?<!\$)\$(?!\$)", fix_inline_math, text)
     return cleaned
+
+
+def resolve_page_filename(page_num: int, existing_filenames: Optional[List[str]] = None) -> str:
+    """
+    根據頁碼推算目標圖檔檔名 (例如 50 -> Page-050.jpg)
+    若提供既有圖檔清單，則優先比對現有檔案
+    """
+    if existing_filenames:
+        target_name_3d = f"Page-{page_num:03d}.jpg".lower()
+        for fn in existing_filenames:
+            if Path(fn).name.lower() == target_name_3d:
+                return Path(fn).name
+
+        for fn in existing_filenames:
+            name = Path(fn).name
+            nums = re.findall(r"\d+", name)
+            if nums and int(nums[-1]) == page_num:
+                return name
+
+    return f"Page-{page_num:03d}.jpg"
 
 
 class DocumentConverter:
@@ -212,7 +233,8 @@ class DocumentConverter:
         3. 聚合文字/公式/表格區塊進行 Batch OCR 推論
         """
         if page_id is None:
-            page_id = Path(image_path).stem
+            page_id = Path(image_path).name
+        page_stem = Path(image_path).stem
 
         images_out_dir = os.path.join(output_dir, "images")
         os.makedirs(images_out_dir, exist_ok=True)
@@ -257,7 +279,7 @@ class DocumentConverter:
             # 插圖 (Figure) 無需 OCR，直接儲存原圖
             if cls_name == "figure":
                 fig_count += 1
-                fig_filename = f"{page_id}_fig_{fig_count:02d}.png"
+                fig_filename = f"{page_stem}_fig_{fig_count:02d}.png"
                 fig_path = os.path.join(images_out_dir, fig_filename)
                 crop_im.save(fig_path, "PNG", quality=95)
                 print(f"  [+] [插圖] 成功裁切原始高解析圖檔: images/{fig_filename} (尺寸: {crop_im.size})")
@@ -334,15 +356,52 @@ class DocumentConverter:
 
         return {
             "page_id": page_id,
+            "page_stem": page_stem,
             "blocks": final_blocks
         }
 
-    def render_html(self, page_results: List[Dict[str, Any]], title: str = "Scanned Book") -> str:
+    def render_html(
+        self,
+        page_results: List[Dict[str, Any]],
+        title: str = "Scanned Book",
+        toc_data: Optional[Dict[str, Any]] = None
+    ) -> str:
         body_content = []
+
+        available_page_files = [p["page_id"] for p in page_results]
+
+        # 插入目錄索引導覽區塊 (TOC)
+        if toc_data and "toc" in toc_data and toc_data["toc"]:
+            toc_entries = toc_data["toc"]
+            toc_title = toc_data.get("book_title", title)
+
+            body_content.append('<nav id="toc" class="book-toc" role="doc-toc">')
+            body_content.append(f'  <h2 class="toc-title">目錄 ({toc_title})</h2>')
+            body_content.append('  <ul class="toc-list">')
+
+            for entry in toc_entries:
+                start_p = entry.get("start_page", 0)
+                full_t = entry.get("full_title", entry.get("title", ""))
+                # 自動對應至檔案名稱 (如 Page-050.jpg)
+                target_file = resolve_page_filename(start_p, available_page_files)
+
+                body_content.append('    <li class="toc-item">')
+                body_content.append(f'      <a href="#{target_file}" class="toc-link">')
+                body_content.append(f'        <span class="toc-chapter">{full_t}</span>')
+                body_content.append('        <span class="toc-dots"></span>')
+                body_content.append(f'        <span class="toc-page">第 {start_p} 頁 ({target_file})</span>')
+                body_content.append('      </a>')
+                body_content.append('    </li>')
+
+            body_content.append('  </ul>')
+            body_content.append('</nav>\n<hr class="page-divider">\n')
 
         for p_res in page_results:
             page_id = p_res["page_id"]
+            page_stem = p_res.get("page_stem", Path(page_id).stem)
+
             body_content.append(f'<section class="book-page" id="{page_id}">')
+            body_content.append(f'  <a id="{page_stem}" class="page-anchor-target"></a>')
             body_content.append(f'  <div class="page-anchor"><small>File: {page_id}</small></div>')
 
             for b in p_res["blocks"]:
@@ -428,6 +487,62 @@ class DocumentConverter:
       text-align: right;
       color: #999;
       margin-bottom: 8px;
+    }}
+    .page-anchor-target {{
+      display: block;
+      position: relative;
+      top: -20px;
+      visibility: hidden;
+    }}
+    .book-toc {{
+      margin: 2em 0 3em 0;
+      padding: 24px 28px;
+      background: #fafbfc;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+    }}
+    .toc-title {{
+      margin-top: 0;
+      margin-bottom: 20px;
+      text-align: center;
+      border-bottom: 2px solid var(--border-color);
+      padding-bottom: 12px;
+      color: var(--primary-color);
+    }}
+    .toc-list {{
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }}
+    .toc-item {{
+      margin: 12px 0;
+    }}
+    .toc-link {{
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      text-decoration: none;
+      color: var(--text-color);
+      font-size: 1.05em;
+      transition: color 0.15s ease;
+    }}
+    .toc-link:hover {{
+      color: #2980b9;
+    }}
+    .toc-chapter {{
+      font-weight: 500;
+    }}
+    .toc-dots {{
+      flex: 1;
+      border-bottom: 1px dotted #bbb;
+      margin: 0 12px;
+      min-width: 20px;
+    }}
+    .toc-page {{
+      font-variant-numeric: tabular-nums;
+      color: #666;
+      font-size: 0.95em;
+      white-space: nowrap;
     }}
     .book-figure {{
       margin: 2em auto;
@@ -528,6 +643,7 @@ def main():
     parser.add_argument("--samples", default="samples", help="樣張目錄或單張圖片路徑")
     parser.add_argument("--output", default="output", help="輸出目錄")
     parser.add_argument("--title", default="數位化掃描書本", help="書名 / 文檔標題")
+    parser.add_argument("--toc", default=None, help="目錄結構 JSON 檔案路徑 (例如 toc.json，將自動生成目錄索引並連結至各頁檔名)")
     parser.add_argument("--epub", action="store_true", help="是否自動生成 EPUB")
     parser.add_argument("--batch-size", type=int, default=2, help="單頁 OCR 區塊批次大小 (預設 2，16GB 顯卡可設 4~8)")
     parser.add_argument("--workers", type=int, default=1, help="多進程並行 Worker 數 (預設 1，16GB 顯卡可設 3~4)")
@@ -535,22 +651,44 @@ def main():
 
     os.makedirs(args.output, exist_ok=True)
 
+    # 載入目錄結構資料 (若有指定 --toc 或自動在當前目錄、samples、output 找到 toc.json)
+    toc_data = None
+    toc_file = args.toc
+    if not toc_file:
+        for candidate in [Path("toc.json"), Path(args.samples) / "toc.json", Path(args.output) / "toc.json"]:
+            if candidate.exists():
+                toc_file = str(candidate)
+                break
+
+    if toc_file and os.path.exists(toc_file):
+        try:
+            with open(toc_file, "r", encoding="utf-8") as f:
+                toc_data = json.load(f)
+            total_ch = len(toc_data.get("toc", []))
+            print(f"[*] 載入目錄索引檔案: {toc_file} (包含 {total_ch} 個章節索引)")
+            # 若使用者未特別自訂書名，自動套用 toc.json 中的書名
+            if args.title == "數位化掃描書本" and toc_data.get("book_title"):
+                args.title = toc_data["book_title"]
+        except Exception as e:
+            print(f"[-] 讀取目錄索引檔案失敗: {e}", file=sys.stderr)
+
     if os.path.isfile(args.samples):
         image_files = [args.samples]
     else:
         valid_exts = {".jpg", ".jpeg", ".png", ".webp"}
-        image_files = sorted([
-            os.path.join(args.samples, f)
-            for f in os.listdir(args.samples)
-            if Path(f).suffix.lower() in valid_exts
-        ])
+        image_files = []
+        for root, _, files in os.walk(args.samples):
+            for f in sorted(files):
+                if Path(f).suffix.lower() in valid_exts:
+                    image_files.append(os.path.join(root, f))
+        image_files.sort()
 
     if not image_files:
         print("[-] 未找到待處理之圖片檔案！", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[*] 找到 {len(image_files)} 個頁面準備處理: {[os.path.basename(f) for f in image_files]}")
-    print(f"[*] 運算設定: batch_size={args.batch_size}, workers={args.workers}")
+    print(f"[*] 找到 {len(image_files)} 個頁面準備處理: {[os.path.basename(f) for f in image_files[:10]]}{' ...' if len(image_files) > 10 else ''}")
+    print(f"[*] 運算設定: batch_size={args.batch_size}, workers={args.workers}, 書名='{args.title}'")
 
     all_page_results = []
 
@@ -577,10 +715,10 @@ def main():
     html_out_path = os.path.join(args.output, "book.html")
     # 初始化一個臨時實例來 render HTML
     temp_conv = DocumentConverter.__new__(DocumentConverter)
-    full_html = temp_conv.render_html(all_page_results, title=args.title)
+    full_html = temp_conv.render_html(all_page_results, title=args.title, toc_data=toc_data)
     with open(html_out_path, "w", encoding="utf-8") as f:
         f.write(full_html)
-    print(f"\n[+] 完整 HTML 檔案生成完畢: {html_out_path}")
+    print(f"\n[+] 完整 HTML 檔案生成完畢 (含 TOC 目錄導覽索引): {html_out_path}")
 
     if args.epub:
         epub_out_path = os.path.join(args.output, "book.epub")

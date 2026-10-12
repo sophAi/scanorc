@@ -182,7 +182,8 @@ python pipeline.py --samples preprocessed_samples --output output --batch-size 4
 | :--- | :---: | :--- |
 | `--samples` | `samples` | 待處理圖檔目錄或單一圖檔路徑 |
 | `--output` | `output` | 成果儲存目錄（產出 HTML、EPUB 與裁切圖片） |
-| `--title` | `數位化掃描書本` | 書名 / 文件標題（將寫入 EPUB Metadata） |
+| `--title` | `數位化掃描書本` | 書名 / 文件標題（若有 toc.json 且未指定書名，將自動套用其書名） |
+| `--toc` | `None` | 目錄結構 JSON 檔案路徑（預設自動偵測 `toc.json`，將自動生成目錄索引並連結至各頁檔名） |
 | `--epub` | `False` | 是否在生成 HTML 後自動調用 Pandoc 編譯 MathML EPUB |
 | `--batch-size` | `2` | 單頁內 OCR 區塊批次大小（建議：4GB 顯卡設 2；16GB 顯卡可設 4~8） |
 | `--workers` | `1` | 並行處理 Worker 進程數（建議：4GB 顯卡設 1；16GB 顯卡設 3~4） |
