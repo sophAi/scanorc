@@ -35,6 +35,10 @@
    - 支援單頁區塊批次推理 (`--batch-size`)。
    - 支援多進程獨立 Worker 並行 (`--workers`)，充分壓榨多核心 CPU 與大容量顯卡（如 16GB RTX 5060 Ti / 4080）算力。
 
+6. **微創頁面修復與秒級重新編譯 (`patch_pages.py`)**：
+   - 產出 HTML/EPUB 後，若人工檢查發現特定幾頁辨識不良或過於複雜，可直接指定檔名或頁碼將該頁替換為原始高解析圖檔。
+   - 完整保留原頁面 id 與目錄跳轉錨點，並自動調用 Pandoc 在 **1~2 秒內**重新編譯完成最新 EPUB，徹底免除重跑數十分鐘全書 OCR 的時間成本。
+
 ---
 
 ## 🏗️ 系統運作流程 (Workflow)
@@ -160,6 +164,28 @@ python pipeline.py --samples preprocessed_samples --output output --toc toc.json
 
 ---
 
+### 方式 C：人工校對與特定異常頁微創替換 (`patch_pages.py`)
+
+在轉換完成後，開啟 `output/book.html` 或 `output/book.epub` 進行人工快速翻閱。每個頁面頂部皆帶有 `File: Page-xxx.jpg` 標籤：
+若發現特定幾頁排版崩壞或公式辨識錯誤，**無需重跑整本書（節省數十分鐘）**，只需執行 `patch_pages.py`：
+
+```bash
+# 1. 檢視全書所有頁面之當前呈現狀態 (OCR 辨識 vs 全頁原圖)
+python patch_pages.py --list
+
+# 2. 指定檔名或頁碼微創替換 (自動複製原圖至 output/images/ 並在 1~2 秒內重編 EPUB)
+python patch_pages.py --pages Page-048.jpg Page-060.jpg
+# 或直接傳入頁碼數字：
+python patch_pages.py --pages 48 60
+# 或傳入待修復頁面清單檔：
+python patch_pages.py --pages bad_pages.txt
+
+# 3. 若替換後欲還原至修改前的狀態：
+python patch_pages.py --revert
+```
+
+---
+
 ## ⚙️ 詳細指令參數說明
 
 ### 1. `preprocess_scantailor.py`（前置處理引擎）
@@ -227,6 +253,20 @@ python pipeline.py --samples preprocessed_samples --output output --toc toc.json
 
 ---
 
+### 5. `patch_pages.py`（頁面微創替換與快速重編工具）
+
+| 參數 | 簡寫 | 預設值 | 說明 |
+| :--- | :---: | :---: | :--- |
+| `--pages` | `-p` | `[]` | 欲替換為原圖的檔案名稱、頁碼或清單文字檔 (如: `Page-048.jpg`、`48` 或 `bad.txt`) |
+| `--html` | - | `output/book.html` | 待修改的 HTML 檔案路徑 |
+| `--source` | `-s` | `output/preprocessed` 等 | 原始圖檔搜尋來源目錄 (可指定多個目錄，自動遞迴搜尋) |
+| `--epub` | `--no-epub` | `True` | 替換完成後是否自動呼叫 Pandoc 重新編譯 MathML EPUB |
+| `--backup` | `--no-backup` | `True` | 是否在修改前自動生成 `.bak` 備份檔案 |
+| `--revert` | - | `False` | 一鍵還原至先前的備份檔案 (`book.html.bak`) 並重編 EPUB |
+| `--list` | `-l` | `False` | 檢視 HTML 檔案中所有頁面目前之狀態清單與原圖/OCR 統計 |
+
+---
+
 ## 📊 硬體資源與顯存 (VRAM) 調優建議
 
 GLM-OCR 0.9B 模型在 FP16 精度下單個實例基準佔用約 **2.1 GB VRAM**。
@@ -252,6 +292,7 @@ scanorc/
 ├── requirements.txt         # Python 套件清單
 ├── download_models.py       # 自動下載 HuggingFace 模型權重
 ├── process_book.py          # [一鍵總控] 端到端全流程自動化腳本 (轉正->TOC->EPUB->分章)
+├── patch_pages.py           # [微創修復] 異常頁面原圖替換與秒級重編工具
 ├── preprocess_scantailor.py # 出版級轉正、留白裁切與版心標準化前處理引擎
 ├── extract_toc.py           # 目錄頁結構化抽取工具 (方案 A: GLM-OCR -> JSON)
 ├── pipeline.py              # DocLayout-YOLO + GLM-OCR 端到端轉換流水線
