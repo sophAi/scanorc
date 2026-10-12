@@ -1,0 +1,1114 @@
+#!/usr/bin/env python3
+"""
+ScanORC: 視覺化圖形控制台 (app_gui.py)
+基於 PySide6 實作，提供 5 大步驟 + 1 鍵總控流程：
+  - 步驟 1: 幾何轉正與裁切 (preprocess_scantailor.py)
+  - 步驟 2: 目錄結構抽取 (extract_toc.py)
+  - 步驟 3: AI 版面分析與 OCR + HTML/EPUB 生成 (pipeline.py)
+  - 步驟 4: 章節目錄歸檔 (extract_toc.py --organize-pages)
+  - 步驟 5: 頁面微創替換與快速重編 (patch_pages.py)
+  - 總控: 一鍵端到端自動化處理 (process_book.py)
+
+底層完全解耦，透過 QProcess 非同步呼叫獨立的 Python 腳本，
+所有終端機命令維持 100% 獨立可用。
+"""
+
+import os
+import sys
+import re
+import json
+import subprocess
+from pathlib import Path
+from typing import List, Dict, Optional
+
+from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6.QtCore import Qt, QProcess, Signal, Slot
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QSplitter, QTabWidget, QLabel, QLineEdit, QPushButton,
+    QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox,
+    QSpinBox, QComboBox, QTextEdit, QFileDialog, QMessageBox,
+    QGroupBox, QFormLayout, QProgressBar, QFrame
+)
+
+VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
+
+
+def natural_sort_key(s: str) -> List:
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", str(s))]
+
+
+def strip_ansi(text: str) -> str:
+    """去除終端機 ANSI 色彩跳脫碼"""
+    ansi_regex = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+    return ansi_regex.sub("", text)
+
+
+class FileManagerWidget(QWidget):
+    """左側：檔案清單與 Import 管理元件"""
+    files_updated = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.files_data: List[Dict] = []  # list of dict: path, name, size
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        # 頂部工具列
+        btn_layout = QHBoxLayout()
+        self.btn_import_dir = QPushButton("📁 匯入目錄")
+        self.btn_import_files = QPushButton("➕ 新增圖檔")
+        self.btn_clear = QPushButton("🗑️ 清空")
+        btn_layout.addWidget(self.btn_import_dir)
+        btn_layout.addWidget(self.btn_import_files)
+        btn_layout.addWidget(self.btn_clear)
+        layout.addLayout(btn_layout)
+
+        # 快速過濾與統計
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("🔍 過濾檔名 (如 Cover, Page)...")
+        self.filter_edit.textChanged.connect(self.filter_table)
+        layout.addWidget(self.filter_edit)
+
+        # 檔案表格
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["檔名", "大小", "📑 TOC", "🚫 略過OCR", "🩹 Patch"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.itemChanged.connect(self.on_item_changed)
+        layout.addWidget(self.table)
+
+        # 批次勾選工具
+        batch_layout = QHBoxLayout()
+        self.btn_auto_toc = QPushButton("標記 Cover 為 TOC")
+        self.btn_clear_tags = QPushButton("清除所有標記")
+        batch_layout.addWidget(self.btn_auto_toc)
+        batch_layout.addWidget(self.btn_clear_tags)
+        layout.addLayout(batch_layout)
+
+        # 統計標籤
+        self.lbl_stats = QLabel("圖檔數: 0 | TOC: 0 | 略過: 0 | Patch: 0")
+        self.lbl_stats.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(self.lbl_stats)
+
+        # 訊號綁定
+        self.btn_import_dir.clicked.connect(self.import_directory)
+        self.btn_import_files.clicked.connect(self.import_files)
+        self.btn_clear.clicked.connect(self.clear_files)
+        self.btn_auto_toc.clicked.connect(self.mark_covers_as_toc)
+        self.btn_clear_tags.clicked.connect(self.clear_all_tags)
+
+    def import_directory(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "選取圖檔目錄", str(Path.cwd()))
+        if not dir_path:
+            return
+        p = Path(dir_path)
+        found_files = []
+        for root, _, files in os.walk(p):
+            for f in files:
+                fp = Path(root) / f
+                if fp.suffix.lower() in VALID_EXTENSIONS:
+                    found_files.append(fp)
+        self.add_paths(found_files)
+
+    def import_files(self):
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self, "選取圖檔", str(Path.cwd()),
+            "Image Files (*.jpg *.jpeg *.png *.webp *.tif *.tiff *.bmp)"
+        )
+        if file_paths:
+            self.add_paths([Path(p) for p in file_paths])
+
+    def add_paths(self, paths: List[Path]):
+        existing_paths = {d["path"] for d in self.files_data}
+        new_paths = [p for p in paths if p not in existing_paths]
+        for p in new_paths:
+            try:
+                sz = p.stat().st_size
+                sz_str = f"{sz / 1024:.1f} KB" if sz < 1024 * 1024 else f"{sz / (1024 * 1024):.2f} MB"
+            except Exception:
+                sz_str = "0 B"
+            self.files_data.append({
+                "path": p,
+                "name": p.name,
+                "size": sz_str,
+                "toc": "cover" in p.name.lower(),
+                "skip": False,
+                "patch": False
+            })
+
+        self.files_data.sort(key=lambda x: natural_sort_key(x["name"]))
+        self.refresh_table()
+
+    def clear_files(self):
+        self.files_data.clear()
+        self.refresh_table()
+
+    def refresh_table(self):
+        self.table.blockSignals(True)
+        self.table.setRowCount(0)
+        filter_text = self.filter_edit.text().strip().lower()
+
+        for d in self.files_data:
+            if filter_text and filter_text not in d["name"].lower():
+                continue
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            # 檔名
+            name_item = QTableWidgetItem(d["name"])
+            name_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            name_item.setData(Qt.UserRole, str(d["path"]))
+            self.table.setItem(row, 0, name_item)
+
+            # 大小
+            size_item = QTableWidgetItem(d["size"])
+            size_item.setFlags(Qt.ItemIsEnabled)
+            size_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row, 1, size_item)
+
+            # Checkboxes: TOC, Skip, Patch
+            for col, key in [(2, "toc"), (3, "skip"), (4, "patch")]:
+                chk_item = QTableWidgetItem()
+                chk_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
+                chk_item.setCheckState(Qt.Checked if d[key] else Qt.Unchecked)
+                self.table.setItem(row, col, chk_item)
+
+        self.table.blockSignals(False)
+        self.update_stats()
+        self.files_updated.emit()
+
+    def filter_table(self):
+        self.refresh_table()
+
+    def on_item_changed(self, item: QTableWidgetItem):
+        col = item.column()
+        if col in (2, 3, 4):
+            row = item.row()
+            name_item = self.table.item(row, 0)
+            if not name_item:
+                return
+            path_str = name_item.data(Qt.UserRole)
+            key = {2: "toc", 3: "skip", 4: "patch"}[col]
+            is_checked = (item.checkState() == Qt.Checked)
+            for d in self.files_data:
+                if str(d["path"]) == path_str:
+                    d[key] = is_checked
+                    break
+            self.update_stats()
+            self.files_updated.emit()
+
+    def mark_covers_as_toc(self):
+        for d in self.files_data:
+            if "cover" in d["name"].lower():
+                d["toc"] = True
+        self.refresh_table()
+
+    def clear_all_tags(self):
+        for d in self.files_data:
+            d["toc"] = False
+            d["skip"] = False
+            d["patch"] = False
+        self.refresh_table()
+
+    def update_stats(self):
+        total = len(self.files_data)
+        t_cnt = sum(1 for d in self.files_data if d["toc"])
+        s_cnt = sum(1 for d in self.files_data if d["skip"])
+        p_cnt = sum(1 for d in self.files_data if d["patch"])
+        self.lbl_stats.setText(f"圖檔數: {total} | TOC: {t_cnt} | 略過: {s_cnt} | Patch: {p_cnt}")
+
+    def get_first_dir(self) -> str:
+        if self.files_data:
+            return str(self.files_data[0]["path"].parent)
+        return ""
+
+    def get_selected_toc_paths(self) -> List[str]:
+        return [str(d["path"]) for d in self.files_data if d["toc"]]
+
+    def get_selected_skip_names(self) -> List[str]:
+        return [d["name"] for d in self.files_data if d["skip"]]
+
+    def get_selected_patch_names(self) -> List[str]:
+        return [d["name"] for d in self.files_data if d["patch"]]
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("ScanORC - 掃描書本轉語意結構化 HTML/EPUB 控制台")
+        self.resize(1280, 850)
+
+        # QProcess 實例
+        self.process = QProcess(self)
+        self.process.setProcessChannelMode(QProcess.MergedChannels)
+        self.process.readyReadStandardOutput.connect(self.on_process_output)
+        self.process.finished.connect(self.on_process_finished)
+
+        self.setup_ui()
+        self.apply_styles()
+
+        # 預設自動偵測載入 samples 目錄
+        if Path("samples").exists():
+            self.file_manager.add_paths(list(Path("samples").glob("*.jpg")))
+
+    def setup_ui(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(6)
+
+        # 主垂直分割器：上方為 (檔案列表 + 步驟面板)，下方為 (指令預覽 + 終端日誌)
+        self.v_splitter = QSplitter(Qt.Vertical)
+
+        # 上方水平分割器：左側為檔案清單，右側為步驟頁籤
+        self.h_splitter = QSplitter(Qt.Horizontal)
+
+        # 1. 左側檔案管理
+        self.file_manager = FileManagerWidget()
+        self.file_manager.files_updated.connect(self.on_files_updated)
+        self.h_splitter.addWidget(self.file_manager)
+
+        # 2. 右側步驟頁籤
+        self.tabs = QTabWidget()
+        self.h_splitter.addWidget(self.tabs)
+        self.h_splitter.setStretchFactor(0, 1)
+        self.h_splitter.setStretchFactor(1, 2)
+
+        self.setup_tabs()
+        self.tabs.currentChanged.connect(self.update_command_preview)
+
+        self.v_splitter.addWidget(self.h_splitter)
+
+        # 3. 下方終端日誌與控制台
+        console_widget = QWidget()
+        c_layout = QVBoxLayout(console_widget)
+        c_layout.setContentsMargins(4, 4, 4, 4)
+        c_layout.setSpacing(4)
+
+        # CLI 指令預覽列
+        cmd_layout = QHBoxLayout()
+        cmd_layout.addWidget(QLabel("<b>即時 CLI 指令：</b>"))
+        self.cmd_preview_edit = QLineEdit()
+        self.cmd_preview_edit.setReadOnly(True)
+        self.cmd_preview_edit.setStyleSheet("font-family: monospace; background: #f0f0f0; color: #222;")
+        cmd_layout.addWidget(self.cmd_preview_edit)
+
+        self.btn_copy_cmd = QPushButton("📋 複製指令")
+        self.btn_copy_cmd.clicked.connect(self.copy_command_to_clipboard)
+        cmd_layout.addWidget(self.btn_copy_cmd)
+        c_layout.addLayout(cmd_layout)
+
+        # 終端輸出視窗
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setStyleSheet(
+            "background-color: #1e1e1e; color: #00ff66; "
+            "font-family: 'Consolas', 'Courier New', monospace; font-size: 12px;"
+        )
+        c_layout.addWidget(self.log_text)
+
+        # 底部狀態與操作列
+        bottom_bar = QHBoxLayout()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setVisible(False)
+        bottom_bar.addWidget(self.progress_bar)
+
+        self.lbl_status = QLabel("就緒")
+        self.lbl_status.setStyleSheet("font-weight: bold; color: #333;")
+        bottom_bar.addWidget(self.lbl_status)
+        bottom_bar.addStretch()
+
+        self.btn_run = QPushButton("▶ 執行當前步驟")
+        self.btn_run.setStyleSheet("background-color: #007acc; color: white; font-weight: bold; padding: 6px 16px;")
+        self.btn_run.clicked.connect(self.run_current_tab_step)
+        bottom_bar.addWidget(self.btn_run)
+
+        self.btn_stop = QPushButton("⏹ 中斷執行")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setStyleSheet("background-color: #cc3300; color: white; font-weight: bold; padding: 6px 14px;")
+        self.btn_stop.clicked.connect(self.stop_current_process)
+        bottom_bar.addWidget(self.btn_stop)
+
+        self.btn_clear_log = QPushButton("🧹 清除日誌")
+        self.btn_clear_log.clicked.connect(self.log_text.clear)
+        bottom_bar.addWidget(self.btn_clear_log)
+
+        c_layout.addLayout(bottom_bar)
+        self.v_splitter.addWidget(console_widget)
+        self.v_splitter.setStretchFactor(0, 3)
+        self.v_splitter.setStretchFactor(1, 2)
+
+        main_layout.addWidget(self.v_splitter)
+
+    def setup_tabs(self):
+        """設定各步驟之參數面板"""
+        self.tab_oneclick = QWidget()
+        self.tab_step1 = QWidget()
+        self.tab_step2 = QWidget()
+        self.tab_step3 = QWidget()
+        self.tab_step4 = QWidget()
+        self.tab_step5 = QWidget()
+
+        self.tabs.addTab(self.tab_oneclick, "🚀 一鍵端到端總控")
+        self.tabs.addTab(self.tab_step1, "📐 步驟 1: 幾何轉正裁切")
+        self.tabs.addTab(self.tab_step2, "📑 步驟 2: 目錄抽取 (TOC)")
+        self.tabs.addTab(self.tab_step3, "🤖 步驟 3: AI 版面與 EPUB")
+        self.tabs.addTab(self.tab_step4, "📁 步驟 4: 章節目錄歸檔")
+        self.tabs.addTab(self.tab_step5, "🩹 步驟 5: 異常頁微創修復")
+
+        self.init_tab_oneclick()
+        self.init_tab_step1()
+        self.init_tab_step2()
+        self.init_tab_step3()
+        self.init_tab_step4()
+        self.init_tab_step5()
+
+    # -------------------------------------------------------------
+    # Tab 0: 一鍵端到端總控 (process_book.py)
+    # -------------------------------------------------------------
+    def init_tab_oneclick(self):
+        layout = QVBoxLayout(self.tab_oneclick)
+        form = QFormLayout()
+
+        self.oc_input = QLineEdit("samples")
+        self.oc_input.textChanged.connect(self.update_command_preview)
+        btn_browse_in = QPushButton("瀏覽...")
+        btn_browse_in.clicked.connect(lambda: self.browse_dir(self.oc_input))
+        h_in = QHBoxLayout()
+        h_in.addWidget(self.oc_input)
+        h_in.addWidget(btn_browse_in)
+        form.addRow("原始圖檔目錄 (--input):", h_in)
+
+        self.oc_output = QLineEdit("output")
+        self.oc_output.textChanged.connect(self.update_command_preview)
+        btn_browse_out = QPushButton("瀏覽...")
+        btn_browse_out.clicked.connect(lambda: self.browse_dir(self.oc_output))
+        h_out = QHBoxLayout()
+        h_out.addWidget(self.oc_output)
+        h_out.addWidget(btn_browse_out)
+        form.addRow("成果輸出目錄 (--output):", h_out)
+
+        self.oc_title = QLineEdit("")
+        self.oc_title.setPlaceholderText("留空則自動讀取目錄或資料夾名稱")
+        self.oc_title.textChanged.connect(self.update_command_preview)
+        form.addRow("書籍標題 (--title):", self.oc_title)
+
+        h_opts = QHBoxLayout()
+        self.oc_workers = QSpinBox()
+        self.oc_workers.setRange(1, 16)
+        self.oc_workers.setValue(4)
+        self.oc_workers.valueChanged.connect(self.update_command_preview)
+        h_opts.addWidget(QLabel("並行 Workers:"))
+        h_opts.addWidget(self.oc_workers)
+
+        self.oc_batch = QSpinBox()
+        self.oc_batch.setRange(1, 8)
+        self.oc_batch.setValue(4)
+        self.oc_batch.valueChanged.connect(self.update_command_preview)
+        h_opts.addWidget(QLabel("單頁 Batch:"))
+        h_opts.addWidget(self.oc_batch)
+
+        self.oc_dpi = QLineEdit("")
+        self.oc_dpi.setPlaceholderText("留空表示 1:1 原生尺寸")
+        self.oc_dpi.textChanged.connect(self.update_command_preview)
+        h_opts.addWidget(QLabel("DPI:"))
+        h_opts.addWidget(self.oc_dpi)
+        form.addRow("效能與尺寸參數:", h_opts)
+
+        self.oc_skip = QLineEdit("")
+        self.oc_skip.setPlaceholderText("自動同步檔案清單之『略過OCR』勾選項，亦可在此手動輸入")
+        self.oc_skip.textChanged.connect(self.update_command_preview)
+        form.addRow("略過 OCR 頁面 (--skip-ocr):", self.oc_skip)
+
+        h_chk = QHBoxLayout()
+        self.oc_epub = QCheckBox("自動編譯 MathML EPUB3 (--epub)")
+        self.oc_epub.setChecked(True)
+        self.oc_epub.stateChanged.connect(self.update_command_preview)
+        h_chk.addWidget(self.oc_epub)
+
+        self.oc_copy = QCheckBox("章節歸檔使用複製而非移動 (--copy)")
+        self.oc_copy.stateChanged.connect(self.update_command_preview)
+        h_chk.addWidget(self.oc_copy)
+        form.addRow("功能開關:", h_chk)
+
+        layout.addLayout(form)
+        desc = QLabel(
+            "<b>說明：</b> 一鍵自動串聯【轉正裁切 $\\rightarrow$ 目錄抽取 $\\rightarrow$ AI OCR & EPUB $\\rightarrow$ 章節歸檔】全流程。"
+        )
+        desc.setStyleSheet("color: #444; margin-top: 10px;")
+        layout.addWidget(desc)
+        layout.addStretch()
+
+    # -------------------------------------------------------------
+    # Tab 1: 幾何預處理 (preprocess_scantailor.py)
+    # -------------------------------------------------------------
+    def init_tab_step1(self):
+        layout = QVBoxLayout(self.tab_step1)
+        form = QFormLayout()
+
+        self.s1_input = QLineEdit("samples")
+        self.s1_input.textChanged.connect(self.update_command_preview)
+        btn_in = QPushButton("瀏覽...")
+        btn_in.clicked.connect(lambda: self.browse_dir(self.s1_input))
+        h_in = QHBoxLayout()
+        h_in.addWidget(self.s1_input)
+        h_in.addWidget(btn_in)
+        form.addRow("輸入目錄 (--input):", h_in)
+
+        self.s1_output = QLineEdit("preprocessed_samples")
+        self.s1_output.textChanged.connect(self.update_command_preview)
+        btn_out = QPushButton("瀏覽...")
+        btn_out.clicked.connect(lambda: self.browse_dir(self.s1_output))
+        h_out = QHBoxLayout()
+        h_out.addWidget(self.s1_output)
+        h_out.addWidget(btn_out)
+        form.addRow("輸出目錄 (--output):", h_out)
+
+        h_params = QHBoxLayout()
+        self.s1_color = QComboBox()
+        self.s1_color.addItems(["color_grayscale", "mixed", "black_and_white"])
+        self.s1_color.currentTextChanged.connect(self.update_command_preview)
+        h_params.addWidget(QLabel("色彩模式:"))
+        h_params.addWidget(self.s1_color)
+
+        self.s1_despeckle = QComboBox()
+        self.s1_despeckle.addItems(["normal", "cautious", "aggressive", "off"])
+        self.s1_despeckle.currentTextChanged.connect(self.update_command_preview)
+        h_params.addWidget(QLabel("去雜點:"))
+        h_params.addWidget(self.s1_despeckle)
+
+        self.s1_margins = QSpinBox()
+        self.s1_margins.setRange(0, 100)
+        self.s1_margins.setValue(10)
+        self.s1_margins.valueChanged.connect(self.update_command_preview)
+        h_params.addWidget(QLabel("邊距 (mm):"))
+        h_params.addWidget(self.s1_margins)
+        form.addRow("版面設定:", h_params)
+
+        h_fmt = QHBoxLayout()
+        self.s1_format = QComboBox()
+        self.s1_format.addItems(["jpg", "png", "tif"])
+        self.s1_format.currentTextChanged.connect(self.update_command_preview)
+        h_fmt.addWidget(QLabel("格式:"))
+        h_fmt.addWidget(self.s1_format)
+
+        self.s1_quality = QSpinBox()
+        self.s1_quality.setRange(1, 100)
+        self.s1_quality.setValue(95)
+        self.s1_quality.valueChanged.connect(self.update_command_preview)
+        h_fmt.addWidget(QLabel("品質:"))
+        h_fmt.addWidget(self.s1_quality)
+
+        self.s1_dpi = QLineEdit("")
+        self.s1_dpi.setPlaceholderText("留空為 1:1 原生尺寸")
+        self.s1_dpi.textChanged.connect(self.update_command_preview)
+        h_fmt.addWidget(QLabel("DPI:"))
+        h_fmt.addWidget(self.s1_dpi)
+        form.addRow("輸出品質:", h_fmt)
+
+        layout.addLayout(form)
+
+        h_act = QHBoxLayout()
+        btn_open_out = QPushButton("📂 開啟預處理輸出目錄")
+        btn_open_out.clicked.connect(lambda: self.open_folder(self.s1_output.text()))
+        h_act.addWidget(btn_open_out)
+        h_act.addStretch()
+        layout.addLayout(h_act)
+
+        desc = QLabel("<b>特色：</b> 獨立書籍版心鎖定、自動旋轉校正、清除黑邊與中縫漸層陰影、1:1 原生尺寸無損輸出。")
+        desc.setStyleSheet("color: #444; margin-top: 10px;")
+        layout.addWidget(desc)
+        layout.addStretch()
+
+    # -------------------------------------------------------------
+    # Tab 2: 抽取目錄結構 (extract_toc.py)
+    # -------------------------------------------------------------
+    def init_tab_step2(self):
+        layout = QVBoxLayout(self.tab_step2)
+        form = QFormLayout()
+
+        self.s2_input = QLineEdit("preprocessed_samples/Cover-06.jpg")
+        self.s2_input.setPlaceholderText("輸入目錄圖檔，可指定多個檔案 (如 Cover-06.jpg Cover-07.jpg)")
+        self.s2_input.textChanged.connect(self.update_command_preview)
+        btn_in = QPushButton("選取圖檔...")
+        btn_in.clicked.connect(self.browse_toc_input_files)
+        h_in = QHBoxLayout()
+        h_in.addWidget(self.s2_input)
+        h_in.addWidget(btn_in)
+        form.addRow("目錄頁圖檔 (--input):", h_in)
+
+        self.s2_output = QLineEdit("toc.json")
+        self.s2_output.textChanged.connect(self.update_command_preview)
+        form.addRow("輸出 JSON 路徑 (--output):", self.s2_output)
+
+        self.s2_title = QLineEdit("")
+        self.s2_title.setPlaceholderText("選填，記錄於 JSON metadata")
+        self.s2_title.textChanged.connect(self.update_command_preview)
+        form.addRow("書籍標題 (--book-title):", self.s2_title)
+
+        layout.addLayout(form)
+
+        # 內嵌 JSON 檢視與編輯區
+        box_json = QGroupBox("抽取結果檢視與微調 (toc.json)")
+        box_layout = QVBoxLayout(box_json)
+        self.toc_json_edit = QTextEdit()
+        self.toc_json_edit.setPlaceholderText("抽取完成後此處將自動顯示結構化 JSON，亦可在此手動微調章節名稱或頁碼後儲存。")
+        box_layout.addWidget(self.toc_json_edit)
+
+        h_j_act = QHBoxLayout()
+        btn_load_json = QPushButton("🔄 讀取現有 toc.json")
+        btn_load_json.clicked.connect(self.load_toc_json)
+        btn_save_json = QPushButton("💾 儲存修改至 toc.json")
+        btn_save_json.clicked.connect(self.save_toc_json)
+        h_j_act.addWidget(btn_load_json)
+        h_j_act.addWidget(btn_save_json)
+        h_j_act.addStretch()
+        box_layout.addLayout(h_j_act)
+
+        layout.addWidget(box_json)
+
+    def browse_toc_input_files(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "選取目錄頁圖檔", str(Path.cwd()),
+            "Image Files (*.jpg *.jpeg *.png *.webp)"
+        )
+        if files:
+            self.s2_input.setText(" ".join(files))
+
+    def load_toc_json(self):
+        p = Path(self.s2_output.text().strip() or "toc.json")
+        if p.exists():
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    self.toc_json_edit.setText(f.read())
+            except Exception as e:
+                QMessageBox.warning(self, "錯誤", f"讀取 JSON 失敗: {e}")
+        else:
+            QMessageBox.information(self, "提示", f"找不到檔案: {p}")
+
+    def save_toc_json(self):
+        p = Path(self.s2_output.text().strip() or "toc.json")
+        content = self.toc_json_edit.toPlainText().strip()
+        if not content:
+            return
+        try:
+            # 驗證是否合規 JSON
+            json.loads(content)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(content)
+            QMessageBox.information(self, "成功", f"已成功儲存 {p}")
+        except Exception as e:
+            QMessageBox.critical(self, "JSON 格式錯誤", f"無法儲存，JSON 語法有誤:\n{e}")
+
+    # -------------------------------------------------------------
+    # Tab 3: AI 版面分析與 OCR + HTML/EPUB 生成 (pipeline.py)
+    # -------------------------------------------------------------
+    def init_tab_step3(self):
+        layout = QVBoxLayout(self.tab_step3)
+        form = QFormLayout()
+
+        self.s3_input = QLineEdit("preprocessed_samples")
+        self.s3_input.textChanged.connect(self.update_command_preview)
+        btn_in = QPushButton("瀏覽...")
+        btn_in.clicked.connect(lambda: self.browse_dir(self.s3_input))
+        h_in = QHBoxLayout()
+        h_in.addWidget(self.s3_input)
+        h_in.addWidget(btn_in)
+        form.addRow("圖檔來源目錄 (--samples):", h_in)
+
+        self.s3_output = QLineEdit("output")
+        self.s3_output.textChanged.connect(self.update_command_preview)
+        btn_out = QPushButton("瀏覽...")
+        btn_out.clicked.connect(lambda: self.browse_dir(self.s3_output))
+        h_out = QHBoxLayout()
+        h_out.addWidget(self.s3_output)
+        h_out.addWidget(btn_out)
+        form.addRow("成果儲存目錄 (--output):", h_out)
+
+        self.s3_title = QLineEdit("數位化掃描書本")
+        self.s3_title.textChanged.connect(self.update_command_preview)
+        form.addRow("書籍標題 (--title):", self.s3_title)
+
+        self.s3_toc = QLineEdit("toc.json")
+        self.s3_toc.textChanged.connect(self.update_command_preview)
+        form.addRow("目錄結構 JSON (--toc):", self.s3_toc)
+
+        h_perf = QHBoxLayout()
+        self.s3_workers = QSpinBox()
+        self.s3_workers.setRange(1, 16)
+        self.s3_workers.setValue(4)
+        self.s3_workers.valueChanged.connect(self.update_command_preview)
+        h_perf.addWidget(QLabel("Workers 並行數:"))
+        h_perf.addWidget(self.s3_workers)
+
+        self.s3_batch = QSpinBox()
+        self.s3_batch.setRange(1, 8)
+        self.s3_batch.setValue(4)
+        self.s3_batch.valueChanged.connect(self.update_command_preview)
+        h_perf.addWidget(QLabel("單頁 Batch:"))
+        h_perf.addWidget(self.s3_batch)
+        form.addRow("推理並行設定:", h_perf)
+
+        self.s3_skip = QLineEdit("")
+        self.s3_skip.setPlaceholderText("自動同步檔案清單之『略過OCR』勾選項，亦可在此手動輸入")
+        self.s3_skip.textChanged.connect(self.update_command_preview)
+        form.addRow("略過 OCR 頁面 (--skip-ocr):", self.s3_skip)
+
+        h_chk = QHBoxLayout()
+        self.s3_epub = QCheckBox("調用 Pandoc 編譯 MathML EPUB (--epub)")
+        self.s3_epub.setChecked(True)
+        self.s3_epub.stateChanged.connect(self.update_command_preview)
+        h_chk.addWidget(self.s3_epub)
+
+        self.s3_cover_first = QCheckBox("封面/目錄優先排序 (--cover-first)")
+        self.s3_cover_first.setChecked(True)
+        self.s3_cover_first.stateChanged.connect(self.update_command_preview)
+        h_chk.addWidget(self.s3_cover_first)
+        form.addRow("排版選項:", h_chk)
+
+        layout.addLayout(form)
+
+        # 快捷開啟成果按鈕
+        box_quick = QGroupBox("成果快速檢視")
+        h_q = QHBoxLayout(box_quick)
+        btn_open_html = QPushButton("🌐 在瀏覽器開啟 book.html")
+        btn_open_epub = QPushButton("📖 開啟 book.epub")
+        btn_open_out = QPushButton("📂 開啟 output 目錄")
+        btn_open_html.clicked.connect(self.open_generated_html)
+        btn_open_epub.clicked.connect(self.open_generated_epub)
+        btn_open_out.clicked.connect(lambda: self.open_folder(self.s3_output.text()))
+        h_q.addWidget(btn_open_html)
+        h_q.addWidget(btn_open_epub)
+        h_q.addWidget(btn_open_out)
+        layout.addWidget(box_quick)
+
+        layout.addStretch()
+
+    # -------------------------------------------------------------
+    # Tab 4: 章節目錄歸檔 (extract_toc.py --organize-pages)
+    # -------------------------------------------------------------
+    def init_tab_step4(self):
+        layout = QVBoxLayout(self.tab_step4)
+        form = QFormLayout()
+
+        self.s4_target = QLineEdit("preprocessed_samples")
+        self.s4_target.textChanged.connect(self.update_command_preview)
+        btn_t = QPushButton("瀏覽...")
+        btn_t.clicked.connect(lambda: self.browse_dir(self.s4_target))
+        h_t = QHBoxLayout()
+        h_t.addWidget(self.s4_target)
+        h_t.addWidget(btn_t)
+        form.addRow("待歸檔圖檔目錄 (--organize-pages):", h_t)
+
+        self.s4_input = QLineEdit("preprocessed_samples/Cover-06.jpg")
+        self.s4_input.setPlaceholderText("目錄圖檔或 toc.json")
+        self.s4_input.textChanged.connect(self.update_command_preview)
+        form.addRow("目錄來源 (--input):", self.s4_input)
+
+        self.s4_copy = QCheckBox("使用複製代替移動 (--copy)")
+        self.s4_copy.stateChanged.connect(self.update_command_preview)
+        form.addRow("搬移模式:", self.s4_copy)
+
+        layout.addLayout(form)
+        desc = QLabel(
+            "<b>說明：</b> 依據目錄結構抽取結果，自動建立章節專屬子資料夾（如 <code>01-第一章</code>），並將內文圖檔精準歸入對應目錄。"
+        )
+        desc.setStyleSheet("color: #444; margin-top: 10px;")
+        layout.addWidget(desc)
+        layout.addStretch()
+
+    # -------------------------------------------------------------
+    # Tab 5: 頁面微創替換與校對 (patch_pages.py)
+    # -------------------------------------------------------------
+    def init_tab_step5(self):
+        layout = QVBoxLayout(self.tab_step5)
+        form = QFormLayout()
+
+        self.s5_html = QLineEdit("output/book.html")
+        self.s5_html.textChanged.connect(self.update_command_preview)
+        btn_h = QPushButton("瀏覽...")
+        btn_h.clicked.connect(self.browse_patch_html)
+        h_h = QHBoxLayout()
+        h_h.addWidget(self.s5_html)
+        h_h.addWidget(btn_h)
+        form.addRow("待修復 HTML (--html):", h_h)
+
+        self.s5_pages = QLineEdit("")
+        self.s5_pages.setPlaceholderText("指定待替換頁碼或檔名，如: 48 60 或 Page-048.jpg (自動同步左側『Patch』勾選)")
+        self.s5_pages.textChanged.connect(self.update_command_preview)
+        form.addRow("欲替換為原圖的頁面 (--pages):", self.s5_pages)
+
+        self.s5_source = QLineEdit("output/preprocessed preprocessed_samples samples")
+        self.s5_source.textChanged.connect(self.update_command_preview)
+        form.addRow("原始圖檔搜尋目錄 (--source):", self.s5_source)
+
+        h_chk = QHBoxLayout()
+        self.s5_epub = QCheckBox("替換後自動重新編譯 EPUB (--epub)")
+        self.s5_epub.setChecked(True)
+        self.s5_epub.stateChanged.connect(self.update_command_preview)
+        h_chk.addWidget(self.s5_epub)
+
+        self.s5_backup = QCheckBox("自動建立備份檔案 (--backup)")
+        self.s5_backup.setChecked(True)
+        self.s5_backup.stateChanged.connect(self.update_command_preview)
+        h_chk.addWidget(self.s5_backup)
+        form.addRow("選項:", h_chk)
+
+        layout.addLayout(form)
+
+        # 專屬微創操作按鈕組
+        box_ops = QGroupBox("微創校對快捷動作")
+        h_ops = QHBoxLayout(box_ops)
+
+        btn_list_status = QPushButton("📋 檢視全書頁面狀態 (--list)")
+        btn_list_status.clicked.connect(self.run_patch_list)
+        btn_revert = QPushButton("⏮ 一鍵還原至備份版本 (--revert)")
+        btn_revert.clicked.connect(self.run_patch_revert)
+
+        h_ops.addWidget(btn_list_status)
+        h_ops.addWidget(btn_revert)
+        layout.addWidget(box_ops)
+
+        desc = QLabel(
+            "<b>說明：</b> 僅微創置換異常頁面的 <code>&lt;section&gt;</code> 為全頁原圖嵌入，"
+            "完整保留目錄錨點跳轉，並在 <b>1~2 秒內</b>重新生成最新 EPUB，徹底免除重跑全書 OCR！"
+        )
+        desc.setStyleSheet("color: #444; margin-top: 10px;")
+        layout.addWidget(desc)
+        layout.addStretch()
+
+    def browse_patch_html(self):
+        f, _ = QFileDialog.getOpenFileName(self, "選取 HTML 檔案", str(Path.cwd()), "HTML Files (*.html)")
+        if f:
+            self.s5_html.setText(f)
+
+    def run_patch_list(self):
+        html_file = self.s5_html.text().strip() or "output/book.html"
+        cmd = [sys.executable, "patch_pages.py", "--html", html_file, "--list"]
+        self.execute_cmd_list(cmd)
+
+    def run_patch_revert(self):
+        html_file = self.s5_html.text().strip() or "output/book.html"
+        ret = QMessageBox.question(self, "確認還原", f"確定要從備份檔還原 {html_file} 嗎？", QMessageBox.Yes | QMessageBox.No)
+        if ret == QMessageBox.Yes:
+            cmd = [sys.executable, "patch_pages.py", "--html", html_file, "--revert"]
+            if not self.s5_epub.isChecked():
+                cmd.append("--no-epub")
+            self.execute_cmd_list(cmd)
+
+    # -------------------------------------------------------------
+    # 輔助與事件處理
+    # -------------------------------------------------------------
+    def browse_dir(self, line_edit: QLineEdit):
+        p = QFileDialog.getExistingDirectory(self, "選取目錄", str(Path.cwd()))
+        if p:
+            line_edit.setText(p)
+
+    def on_files_updated(self):
+        """左側檔案清單更新時，自動同步參數預設值"""
+        first_dir = self.file_manager.get_first_dir()
+        if first_dir:
+            if not self.oc_input.text() or self.oc_input.text() == "samples":
+                self.oc_input.setText(first_dir)
+            if not self.s1_input.text() or self.s1_input.text() == "samples":
+                self.s1_input.setText(first_dir)
+
+        # 同步 TOC 勾選
+        toc_files = self.file_manager.get_selected_toc_paths()
+        if toc_files:
+            self.s2_input.setText(" ".join(toc_files))
+            self.s4_input.setText(toc_files[0])
+
+        # 同步 Skip-OCR 勾選
+        skip_files = self.file_manager.get_selected_skip_names()
+        skip_str = " ".join(skip_files)
+        self.oc_skip.setText(skip_str)
+        self.s3_skip.setText(skip_str)
+
+        # 同步 Patch 勾選
+        patch_files = self.file_manager.get_selected_patch_names()
+        patch_str = " ".join(patch_files)
+        self.s5_pages.setText(patch_str)
+
+        self.update_command_preview()
+
+    def get_current_cmd_list(self) -> List[str]:
+        """根據目前分頁與欄位產生完整命令清單"""
+        idx = self.tabs.currentIndex()
+        py_bin = sys.executable
+
+        if idx == 0:  # 一鍵端到端 (process_book.py)
+            cmd = [py_bin, "process_book.py"]
+            in_dir = self.oc_input.text().strip() or "samples"
+            out_dir = self.oc_output.text().strip() or "output"
+            cmd.extend(["--input", in_dir, "--output", out_dir])
+            if self.oc_title.text().strip():
+                cmd.extend(["--title", self.oc_title.text().strip()])
+            if self.oc_dpi.text().strip():
+                cmd.extend(["--dpi", self.oc_dpi.text().strip()])
+            cmd.extend(["--workers", str(self.oc_workers.value())])
+            cmd.extend(["--batch-size", str(self.oc_batch.value())])
+            skips = self.oc_skip.text().strip().split()
+            if skips:
+                cmd.extend(["--skip-ocr"] + skips)
+            if not self.oc_epub.isChecked():
+                cmd.append("--no-epub")
+            if self.oc_copy.isChecked():
+                cmd.append("--copy")
+            return cmd
+
+        elif idx == 1:  # 步驟 1: preprocess_scantailor.py
+            cmd = [py_bin, "preprocess_scantailor.py"]
+            cmd.extend(["--input", self.s1_input.text().strip() or "samples"])
+            cmd.extend(["--output", self.s1_output.text().strip() or "preprocessed_samples"])
+            cmd.extend(["--color-mode", self.s1_color.currentText()])
+            cmd.extend(["--despeckle", self.s1_despeckle.currentText()])
+            cmd.extend(["--margins", str(self.s1_margins.value())])
+            cmd.extend(["--format", self.s1_format.currentText()])
+            cmd.extend(["--quality", str(self.s1_quality.value())])
+            if self.s1_dpi.text().strip():
+                cmd.extend(["--dpi", self.s1_dpi.text().strip()])
+            return cmd
+
+        elif idx == 2:  # 步驟 2: extract_toc.py
+            cmd = [py_bin, "extract_toc.py"]
+            in_files = self.s2_input.text().strip().split()
+            if in_files:
+                cmd.extend(["--input"] + in_files)
+            cmd.extend(["--output", self.s2_output.text().strip() or "toc.json"])
+            if self.s2_title.text().strip():
+                cmd.extend(["--book-title", self.s2_title.text().strip()])
+            return cmd
+
+        elif idx == 3:  # 步驟 3: pipeline.py
+            cmd = [py_bin, "pipeline.py"]
+            cmd.extend(["--samples", self.s3_input.text().strip() or "preprocessed_samples"])
+            cmd.extend(["--output", self.s3_output.text().strip() or "output"])
+            if self.s3_title.text().strip():
+                cmd.extend(["--title", self.s3_title.text().strip()])
+            if self.s3_toc.text().strip():
+                cmd.extend(["--toc", self.s3_toc.text().strip()])
+            cmd.extend(["--workers", str(self.s3_workers.value())])
+            cmd.extend(["--batch-size", str(self.s3_batch.value())])
+            skips = self.s3_skip.text().strip().split()
+            if skips:
+                cmd.extend(["--skip-ocr"] + skips)
+            if self.s3_epub.isChecked():
+                cmd.append("--epub")
+            else:
+                cmd.append("--no-epub")
+            if not self.s3_cover_first.isChecked():
+                cmd.append("--no-cover-first")
+            return cmd
+
+        elif idx == 4:  # 步驟 4: extract_toc.py --organize-pages
+            cmd = [py_bin, "extract_toc.py"]
+            in_files = self.s4_input.text().strip().split()
+            if in_files:
+                cmd.extend(["--input"] + in_files)
+            cmd.extend(["--organize-pages", self.s4_target.text().strip() or "preprocessed_samples"])
+            if self.s4_copy.isChecked():
+                cmd.append("--copy")
+            return cmd
+
+        elif idx == 5:  # 步驟 5: patch_pages.py
+            cmd = [py_bin, "patch_pages.py"]
+            cmd.extend(["--html", self.s5_html.text().strip() or "output/book.html"])
+            pages = self.s5_pages.text().strip().split()
+            if pages:
+                cmd.extend(["--pages"] + pages)
+            sources = self.s5_source.text().strip().split()
+            if sources:
+                cmd.extend(["--source"] + sources)
+            if not self.s5_epub.isChecked():
+                cmd.append("--no-epub")
+            if not self.s5_backup.isChecked():
+                cmd.append("--no-backup")
+            return cmd
+
+        return [py_bin]
+
+    def update_command_preview(self):
+        cmd = self.get_current_cmd_list()
+        # 友善呈現指令（將絕對直譯器替換成 python）
+        display_cmd = ["python"] + cmd[1:]
+        self.cmd_preview_edit.setText(" ".join(display_cmd))
+
+    def copy_command_to_clipboard(self):
+        cmd_text = self.cmd_preview_edit.text()
+        QApplication.clipboard().setText(cmd_text)
+        self.lbl_status.setText("已複製 CLI 指令至剪貼簿！")
+
+    # -------------------------------------------------------------
+    # 進程執行與通訊
+    # -------------------------------------------------------------
+    def run_current_tab_step(self):
+        cmd = self.get_current_cmd_list()
+        self.execute_cmd_list(cmd)
+
+    def execute_cmd_list(self, cmd: List[str]):
+        if self.process.state() != QProcess.NotRunning:
+            QMessageBox.warning(self, "忙碌中", "目前已有處理任務正在執行，請等待其完成或點擊中斷！")
+            return
+
+        cmd_display = " ".join(["python"] + cmd[1:])
+        self.log_text.append(f"\n==================================================")
+        self.log_text.append(f"[*] 啟動任務: {cmd_display}")
+        self.log_text.append(f"==================================================")
+
+        self.btn_run.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.progress_bar.setVisible(True)
+        self.lbl_status.setText(f"執行中: {cmd[1]} ...")
+
+        self.process.setWorkingDirectory(str(Path.cwd()))
+        self.process.start(cmd[0], cmd[1:])
+
+    def on_process_output(self):
+        data = self.process.readAllStandardOutput()
+        text = bytes(data).decode("utf-8", errors="replace")
+        clean_text = strip_ansi(text)
+        self.log_text.insertPlainText(clean_text)
+        # 自動捲動到底部
+        cursor = self.log_text.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        self.log_text.setTextCursor(cursor)
+
+    def on_process_finished(self, exit_code, exit_status):
+        self.btn_run.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self.progress_bar.setVisible(False)
+
+        if exit_code == 0:
+            self.lbl_status.setText("✅ 執行成功完成！")
+            self.log_text.append(f"\n[+] 任務順利完成 (結束碼: 0)")
+            # 若為步驟 2 完成，自動載入 toc.json 內容
+            if self.tabs.currentIndex() == 2:
+                self.load_toc_json()
+        else:
+            self.lbl_status.setText(f"❌ 執行中斷或異常 (退出碼: {exit_code})")
+            self.log_text.append(f"\n[-] 任務異常結束 (退出碼: {exit_code})")
+
+    def stop_current_process(self):
+        if self.process.state() != QProcess.NotRunning:
+            self.lbl_status.setText("正在終止進程...")
+            self.process.terminate()
+            QtCore.QTimer.singleShot(2500, self.force_kill_process_if_alive)
+
+    def force_kill_process_if_alive(self):
+        if self.process.state() != QProcess.NotRunning:
+            self.process.kill()
+            self.lbl_status.setText("已強制終止進程！")
+
+    # -------------------------------------------------------------
+    # 捷徑開啟
+    # -------------------------------------------------------------
+    def open_generated_html(self):
+        html_p = Path(self.s3_output.text().strip() or "output") / "book.html"
+        if html_p.exists():
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(html_p.resolve())))
+        else:
+            QMessageBox.information(self, "提示", f"尚未生成 HTML: {html_p}")
+
+    def open_generated_epub(self):
+        epub_p = Path(self.s3_output.text().strip() or "output") / "book.epub"
+        if epub_p.exists():
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(epub_p.resolve())))
+        else:
+            QMessageBox.information(self, "提示", f"尚未生成 EPUB: {epub_p}")
+
+    def open_folder(self, folder_str: str):
+        p = Path(folder_str.strip() or ".")
+        if p.exists():
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(p.resolve())))
+        else:
+            QMessageBox.information(self, "提示", f"目錄不存在: {p}")
+
+    def apply_styles(self):
+        """套用現代乾淨桌面風格"""
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #f7f9fa;
+            }
+            QTabWidget::pane {
+                border: 1px solid #d0d7de;
+                background: white;
+                border-radius: 4px;
+            }
+            QTabBar::tab {
+                background: #eef2f5;
+                border: 1px solid #d0d7de;
+                padding: 8px 14px;
+                margin-right: 2px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                font-weight: 500;
+            }
+            QTabBar::tab:selected {
+                background: white;
+                border-bottom-color: white;
+                font-weight: bold;
+                color: #007acc;
+            }
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #d0d7de;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding-top: 10px;
+                background: #ffffff;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+            }
+            QPushButton {
+                border-radius: 4px;
+                padding: 4px 10px;
+                border: 1px solid #bbb;
+                background-color: #f6f8fa;
+            }
+            QPushButton:hover {
+                background-color: #e6ebf1;
+            }
+            QTableWidget {
+                border: 1px solid #d0d7de;
+                background-color: white;
+                gridline-color: #f0f0f0;
+            }
+            QHeaderView::section {
+                background-color: #f0f3f6;
+                padding: 4px;
+                border: 1px solid #e1e4e8;
+                font-weight: bold;
+            }
+            QLineEdit, QSpinBox, QComboBox {
+                padding: 4px;
+                border: 1px solid #ccc;
+                border-radius: 3px;
+                background: white;
+            }
+        """)
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setApplicationName("ScanORC GUI")
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
