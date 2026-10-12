@@ -11,6 +11,8 @@ import os
 import re
 import sys
 import json
+import glob
+import shutil
 import argparse
 import subprocess
 from pathlib import Path
@@ -177,6 +179,66 @@ def collect_book_images(
     return collected
 
 
+def parse_skip_ocr_targets(skip_args: List[str]) -> set:
+    """
+    解析不作 OCR 的頁面目標清單：
+    支援檔名 (Page-050.jpg, page-050)、純頁碼 (50)、純文字清單檔案 (skip.txt)
+    傳回標準化之小寫字串集合
+    """
+    targets = set()
+    for item in skip_args:
+        item_str = str(item).strip()
+        if not item_str:
+            continue
+
+        p = Path(item_str)
+        if p.is_file() and p.suffix.lower() in (".txt", ".list", ".csv"):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            targets.add(line.lower())
+                            targets.add(Path(line).stem.lower())
+                            nums = re.findall(r"\d+", line)
+                            if nums:
+                                targets.add(nums[-1])
+                                targets.add(str(int(nums[-1])))
+                                targets.add(f"page-{int(nums[-1]):03d}.jpg".lower())
+                                targets.add(f"page-{int(nums[-1]):03d}".lower())
+            except Exception as e:
+                print(f"[-] 讀取不作 OCR 清單檔案失敗 '{item_str}': {e}", file=sys.stderr)
+            continue
+
+        targets.add(item_str.lower())
+        targets.add(Path(item_str).stem.lower())
+        nums = re.findall(r"\d+", item_str)
+        if nums:
+            targets.add(nums[-1])
+            targets.add(str(int(nums[-1])))
+            targets.add(f"page-{int(nums[-1]):03d}.jpg".lower())
+            targets.add(f"page-{int(nums[-1]):03d}".lower())
+
+    return targets
+
+
+def should_skip_ocr(img_path: Path, skip_targets: set) -> bool:
+    """
+    判斷特定圖檔是否應跳過 OCR：
+    比對完整檔名、stem 或結尾數字頁碼
+    """
+    if not skip_targets:
+        return False
+    name_lower = img_path.name.lower()
+    stem_lower = img_path.stem.lower()
+    if name_lower in skip_targets or stem_lower in skip_targets:
+        return True
+    nums = re.findall(r"\d+", stem_lower)
+    if nums and (nums[-1] in skip_targets or str(int(nums[-1])) in skip_targets):
+        return True
+    return False
+
+
 class DocumentConverter:
     def __init__(
         self,
@@ -338,13 +400,16 @@ class DocumentConverter:
         self,
         image_path: str,
         output_dir: str,
-        page_id: str = None
+        page_id: str = None,
+        skip_ocr: bool = False
     ) -> Dict[str, Any]:
         """
         完整處理單一頁面：
-        1. 版面分析與元素分類
-        2. 插圖原圖最高解析度自動裁切
-        3. 聚合文字/公式/表格區塊進行 Batch OCR 推論
+        1. 若指定 skip_ocr=True，直接以最高畫質整頁原始圖檔嵌入，跳過版面分析與 OCR 推論
+        2. 版面分析與元素分類 (DocLayout-YOLO)
+        3. 插圖原圖最高解析度自動裁切
+        4. 聚合文字/公式/表格區塊進行 Batch OCR 推論 (GLM-OCR)
+        5. 若 OCR 過程發生非預期失敗，自動優雅降級為全頁原始圖檔嵌入
         """
         if page_id is None:
             page_id = Path(image_path).name
@@ -353,6 +418,26 @@ class DocumentConverter:
         images_out_dir = os.path.join(output_dir, "images")
         os.makedirs(images_out_dir, exist_ok=True)
 
+        # 1. 主動跳過 OCR 模式 (使用者指定全頁圖片頁或免 OCR 頁)
+        if skip_ocr:
+            print(f"\n==================================================")
+            print(f"[*] 處理頁面: {page_id} (指定不作 OCR / 整頁插圖模式)")
+            print(f"==================================================")
+            dest_img_filename = f"{page_stem}_raw{Path(image_path).suffix.lower()}"
+            dest_img_path = os.path.join(images_out_dir, dest_img_filename)
+            shutil.copy2(image_path, dest_img_path)
+            print(f"  [+] 成功將原始圖檔嵌入為整頁插圖: images/{dest_img_filename}")
+            return {
+                "page_id": page_id,
+                "page_stem": page_stem,
+                "blocks": [{
+                    "type": "figure",
+                    "img_src": f"images/{dest_img_filename}",
+                    "caption": "",
+                    "is_full_page": True
+                }]
+            }
+
         orig_im = Image.open(image_path).convert("RGB")
         img_w, img_h = orig_im.size
 
@@ -360,119 +445,150 @@ class DocumentConverter:
         print(f"[*] 處理頁面: {page_id} ({img_w}x{img_h})")
         print(f"==================================================")
 
-        boxes = self.run_layout_analysis(image_path)
+        try:
+            boxes = self.run_layout_analysis(image_path)
 
-        # 整理區塊資訊
-        items_to_ocr = []  # List of (crop_img, task_type, block_meta)
-        html_blocks_draft = []
-        fig_count = 0
+            # 整理區塊資訊
+            items_to_ocr = []  # List of (crop_img, task_type, block_meta)
+            html_blocks_draft = []
+            fig_count = 0
 
-        for idx, box_info in enumerate(boxes):
-            cls_name = box_info["cls_name"]
-            bbox = box_info["bbox"]
-            conf = box_info["conf"]
-            x1, y1, x2, y2 = bbox
+            for idx, box_info in enumerate(boxes):
+                cls_name = box_info["cls_name"]
+                bbox = box_info["bbox"]
+                conf = box_info["conf"]
+                x1, y1, x2, y2 = bbox
 
-            if (x2 - x1) < 15 or (y2 - y1) < 15:
-                continue
+                if (x2 - x1) < 15 or (y2 - y1) < 15:
+                    continue
 
-            # 捨棄頁眉、頁腳、頁碼
-            if cls_name == "abandon":
-                print(f"  [-] [拋棄] {cls_name:15s} (conf: {conf:.2f}) bbox: {bbox}")
-                continue
+                # 捨棄頁眉、頁腳、頁碼
+                if cls_name == "abandon":
+                    print(f"  [-] [拋棄] {cls_name:15s} (conf: {conf:.2f}) bbox: {bbox}")
+                    continue
 
-            pad = 2
-            crop_box = (
-                max(0, x1 - pad),
-                max(0, y1 - pad),
-                min(img_w, x2 + pad),
-                min(img_h, y2 + pad)
-            )
-            crop_im = orig_im.crop(crop_box)
+                pad = 2
+                crop_box = (
+                    max(0, x1 - pad),
+                    max(0, y1 - pad),
+                    min(img_w, x2 + pad),
+                    min(img_h, y2 + pad)
+                )
+                crop_im = orig_im.crop(crop_box)
 
-            # 插圖 (Figure) 無需 OCR，直接儲存原圖
-            if cls_name == "figure":
-                fig_count += 1
-                fig_filename = f"{page_stem}_fig_{fig_count:02d}.png"
-                fig_path = os.path.join(images_out_dir, fig_filename)
-                crop_im.save(fig_path, "PNG", quality=95)
-                print(f"  [+] [插圖] 成功裁切原始高解析圖檔: images/{fig_filename} (尺寸: {crop_im.size})")
-                html_blocks_draft.append({
-                    "type": "figure",
-                    "img_src": f"images/{fig_filename}",
-                    "caption": ""
-                })
+                # 插圖 (Figure) 無需 OCR，直接儲存原圖
+                if cls_name == "figure":
+                    fig_count += 1
+                    fig_filename = f"{page_stem}_fig_{fig_count:02d}.png"
+                    fig_path = os.path.join(images_out_dir, fig_filename)
+                    crop_im.save(fig_path, "PNG", quality=95)
+                    print(f"  [+] [插圖] 成功裁切原始高解析圖檔: images/{fig_filename} (尺寸: {crop_im.size})")
+                    html_blocks_draft.append({
+                        "type": "figure",
+                        "img_src": f"images/{fig_filename}",
+                        "caption": "",
+                        "is_full_page": False
+                    })
 
-            elif cls_name == "figure_caption":
-                items_to_ocr.append((crop_im, "text", {"type": "figure_caption", "draft_idx": len(html_blocks_draft)}))
-                html_blocks_draft.append({"type": "caption", "text": ""})
+                elif cls_name == "figure_caption":
+                    items_to_ocr.append((crop_im, "text", {"type": "figure_caption", "draft_idx": len(html_blocks_draft)}))
+                    html_blocks_draft.append({"type": "caption", "text": ""})
 
-            elif cls_name == "table":
-                items_to_ocr.append((crop_im, "table", {"type": "table", "draft_idx": len(html_blocks_draft)}))
-                html_blocks_draft.append({"type": "table", "content": ""})
+                elif cls_name == "table":
+                    items_to_ocr.append((crop_im, "table", {"type": "table", "draft_idx": len(html_blocks_draft)}))
+                    html_blocks_draft.append({"type": "table", "content": ""})
 
-            elif cls_name == "isolate_formula":
-                items_to_ocr.append((crop_im, "formula", {"type": "formula", "draft_idx": len(html_blocks_draft)}))
-                html_blocks_draft.append({"type": "formula", "content": ""})
+                elif cls_name == "isolate_formula":
+                    items_to_ocr.append((crop_im, "formula", {"type": "formula", "draft_idx": len(html_blocks_draft)}))
+                    html_blocks_draft.append({"type": "formula", "content": ""})
 
-            elif cls_name == "title":
-                items_to_ocr.append((crop_im, "text", {"type": "title", "draft_idx": len(html_blocks_draft)}))
-                html_blocks_draft.append({"type": "title", "content": ""})
+                elif cls_name == "title":
+                    items_to_ocr.append((crop_im, "text", {"type": "title", "draft_idx": len(html_blocks_draft)}))
+                    html_blocks_draft.append({"type": "title", "content": ""})
 
-            elif cls_name == "plain text":
-                items_to_ocr.append((crop_im, "text", {"type": "text", "draft_idx": len(html_blocks_draft)}))
-                html_blocks_draft.append({"type": "text", "content": ""})
-
-            else:
-                items_to_ocr.append((crop_im, "text", {"type": "text", "draft_idx": len(html_blocks_draft)}))
-                html_blocks_draft.append({"type": "text", "content": ""})
-
-        # 批次 OCR 推論
-        if items_to_ocr:
-            print(f"  [*] 進行 Batch OCR 辨識 (共 {len(items_to_ocr)} 個區塊, batch_size={self.batch_size})...")
-            crops_and_types = [(item[0], item[1]) for item in items_to_ocr]
-            ocr_results = self.recognize_crops_batch(crops_and_types)
-
-            # 將結果填回各區塊草稿
-            for (_, _, meta), res_text in zip(items_to_ocr, ocr_results):
-                draft_idx = meta["draft_idx"]
-                b_type = meta["type"]
-
-                if b_type == "figure_caption":
-                    print(f"  [+] [圖說] {res_text}")
-                    # 若前一個是 figure 則綁定
-                    if draft_idx > 0 and html_blocks_draft[draft_idx - 1]["type"] == "figure":
-                        html_blocks_draft[draft_idx - 1]["caption"] = res_text
-                        html_blocks_draft[draft_idx] = None  # 標記移除
-                    else:
-                        html_blocks_draft[draft_idx]["text"] = res_text
-
-                elif b_type == "table":
-                    print(f"  [+] [表格完成] 長度 {len(res_text)} 字元")
-                    html_blocks_draft[draft_idx]["content"] = res_text
-
-                elif b_type == "formula":
-                    print(f"  [+] [公式完成] {res_text[:50]}...")
-                    if not res_text.startswith("$$"):
-                        res_text = f"$$\n{res_text}\n$$"
-                    html_blocks_draft[draft_idx]["content"] = res_text
-
-                elif b_type == "title":
-                    print(f"  [+] [標題] {res_text}")
-                    html_blocks_draft[draft_idx]["content"] = res_text
+                elif cls_name == "plain text":
+                    items_to_ocr.append((crop_im, "text", {"type": "text", "draft_idx": len(html_blocks_draft)}))
+                    html_blocks_draft.append({"type": "text", "content": ""})
 
                 else:
-                    print(f"  [+] [內文] {res_text[:35]}...")
-                    html_blocks_draft[draft_idx]["content"] = res_text
+                    items_to_ocr.append((crop_im, "text", {"type": "text", "draft_idx": len(html_blocks_draft)}))
+                    html_blocks_draft.append({"type": "text", "content": ""})
 
-        # 過濾已合併的區塊
-        final_blocks = [b for b in html_blocks_draft if b is not None]
+            # 批次 OCR 推論
+            if items_to_ocr:
+                print(f"  [*] 進行 Batch OCR 辨識 (共 {len(items_to_ocr)} 個區塊, batch_size={self.batch_size})...")
+                crops_and_types = [(item[0], item[1]) for item in items_to_ocr]
+                ocr_results = self.recognize_crops_batch(crops_and_types)
 
-        return {
-            "page_id": page_id,
-            "page_stem": page_stem,
-            "blocks": final_blocks
-        }
+                # 將結果填回各區塊草稿
+                for (_, _, meta), res_text in zip(items_to_ocr, ocr_results):
+                    draft_idx = meta["draft_idx"]
+                    b_type = meta["type"]
+
+                    if b_type == "figure_caption":
+                        print(f"  [+] [圖說] {res_text}")
+                        # 若前一個是 figure 則綁定
+                        if draft_idx > 0 and html_blocks_draft[draft_idx - 1]["type"] == "figure":
+                            html_blocks_draft[draft_idx - 1]["caption"] = res_text
+                            html_blocks_draft[draft_idx] = None  # 標記移除
+                        else:
+                            html_blocks_draft[draft_idx]["text"] = res_text
+
+                    elif b_type == "table":
+                        print(f"  [+] [表格完成] 長度 {len(res_text)} 字元")
+                        html_blocks_draft[draft_idx]["content"] = res_text
+
+                    elif b_type == "formula":
+                        print(f"  [+] [公式完成] {res_text[:50]}...")
+                        if not res_text.startswith("$$"):
+                            res_text = f"$$\n{res_text}\n$$"
+                        html_blocks_draft[draft_idx]["content"] = res_text
+
+                    elif b_type == "title":
+                        print(f"  [+] [標題] {res_text}")
+                        html_blocks_draft[draft_idx]["content"] = res_text
+
+                    else:
+                        print(f"  [+] [內文] {res_text[:35]}...")
+                        html_blocks_draft[draft_idx]["content"] = res_text
+
+            # 過濾已合併的區塊
+            final_blocks = [b for b in html_blocks_draft if b is not None]
+
+            # 若此頁完全未識別出任何有效內容（例如空頁或純雜訊），自動轉為原圖嵌入
+            if not final_blocks:
+                print(f"  [-] 該頁未偵測到任何內文區塊，自動將原圖嵌入為整頁插圖")
+                dest_img_filename = f"{page_stem}_raw{Path(image_path).suffix.lower()}"
+                dest_img_path = os.path.join(images_out_dir, dest_img_filename)
+                shutil.copy2(image_path, dest_img_path)
+                final_blocks = [{
+                    "type": "figure",
+                    "img_src": f"images/{dest_img_filename}",
+                    "caption": "",
+                    "is_full_page": True
+                }]
+
+            return {
+                "page_id": page_id,
+                "page_stem": page_stem,
+                "blocks": final_blocks
+            }
+
+        except Exception as e:
+            print(f"  [-] 警告：頁面 '{page_id}' OCR 辨識失敗或難度過高 ({e})，自動降級為整頁原始圖檔嵌入！", file=sys.stderr)
+            dest_img_filename = f"{page_stem}_raw{Path(image_path).suffix.lower()}"
+            dest_img_path = os.path.join(images_out_dir, dest_img_filename)
+            shutil.copy2(image_path, dest_img_path)
+            return {
+                "page_id": page_id,
+                "page_stem": page_stem,
+                "blocks": [{
+                    "type": "figure",
+                    "img_src": f"images/{dest_img_filename}",
+                    "caption": "",
+                    "is_full_page": True
+                }]
+            }
 
     def render_html(
         self,
@@ -530,8 +646,10 @@ class DocumentConverter:
                             body_content.append(f'  <p>{p}</p>')
                 elif b_type == "figure":
                     cap = b.get("caption", "")
-                    fig_html = f'  <figure class="book-figure">\n    <img src="{b["img_src"]}" alt="{cap}">\n'
-                    if cap:
+                    is_full = b.get("is_full_page", False)
+                    css_class = "book-figure fullpage-figure" if is_full else "book-figure"
+                    fig_html = f'  <figure class="{css_class}">\n    <img src="{b["img_src"]}" alt="{cap}">\n'
+                    if cap and not is_full:
                         fig_html += f'    <figcaption>{cap}</figcaption>\n'
                     fig_html += '  </figure>'
                     body_content.append(fig_html)
@@ -671,6 +789,21 @@ class DocumentConverter:
       padding: 4px;
       background: #fff;
     }}
+    .fullpage-figure {{
+      margin: 1.5em auto;
+      text-align: center;
+    }}
+    .fullpage-figure img {{
+      max-width: 100%;
+      height: auto;
+      border: 1px solid var(--border-color);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+      border-radius: 6px;
+      display: block;
+      margin: 0 auto;
+      padding: 0;
+      background: #fff;
+    }}
     .book-figure figcaption, .book-caption {{
       margin-top: 10px;
       font-size: 0.95em;
@@ -746,10 +879,10 @@ def build_epub_with_pandoc(html_path: str, epub_path: str, title: str = "Scanned
 
 def _worker_process_page(args_tuple):
     """多進程 Worker 任務函數"""
-    task_idx, img_path, output_dir, batch_size = args_tuple
+    task_idx, img_path, output_dir, batch_size, skip_ocr = args_tuple
     # 每個子進程獨立初始化 Converter
     converter = DocumentConverter(batch_size=batch_size)
-    res = converter.process_page(img_path, output_dir)
+    res = converter.process_page(img_path, output_dir, skip_ocr=skip_ocr)
     res["_task_idx"] = task_idx
     return res
 
@@ -782,6 +915,13 @@ def main():
         action=argparse.BooleanOptionalAction,
         default=True,
         help="是否將封面/目錄頁 (Cover-*.jpg) 編排於內文頁 (Page-*.jpg) 之前 (預設: True，使用 --no-cover-first 則內文頁優先)"
+    )
+    parser.add_argument(
+        "--skip-ocr", "--no-ocr",
+        nargs="*",
+        default=[],
+        dest="skip_ocr",
+        help="不作 OCR 的檔案清單 (可指定檔名、頁碼或包含清單的純文字檔路徑，直接以原始圖檔嵌入 HTML/EPUB)"
     )
     args = parser.parse_args()
 
@@ -827,6 +967,10 @@ def main():
         print(f"[-] 未找到待處理之圖片檔案！(搜尋路徑: {sample_inputs})", file=sys.stderr)
         sys.exit(1)
 
+    skip_targets = parse_skip_ocr_targets(args.skip_ocr)
+    if skip_targets:
+        print(f"[*] 設定不作 OCR 頁面清單 (共 {len(skip_targets)} 個目標比對標記)")
+
     cover_imgs = [p for p in image_files if classify_book_image(p) == 0]
     page_imgs = [p for p in image_files if classify_book_image(p) == 1]
     other_imgs = [p for p in image_files if classify_book_image(p) not in (0, 1)]
@@ -852,7 +996,10 @@ def main():
         except RuntimeError:
             pass
 
-        tasks = [(idx, str(img_path), args.output, args.batch_size) for idx, img_path in enumerate(image_files)]
+        tasks = [
+            (idx, str(img_path), args.output, args.batch_size, should_skip_ocr(img_path, skip_targets))
+            for idx, img_path in enumerate(image_files)
+        ]
         with mp.Pool(processes=args.workers) as pool:
             all_page_results = pool.map(_worker_process_page, tasks)
         # 確保結果嚴格依照任務與編排順序排序
@@ -860,7 +1007,11 @@ def main():
     else:
         converter = DocumentConverter(batch_size=args.batch_size)
         for idx, img_path in enumerate(image_files):
-            p_res = converter.process_page(str(img_path), args.output)
+            p_res = converter.process_page(
+                str(img_path),
+                args.output,
+                skip_ocr=should_skip_ocr(img_path, skip_targets)
+            )
             p_res["_task_idx"] = idx
             all_page_results.append(p_res)
 

@@ -119,29 +119,44 @@ python download_models.py
 
 ## 🚀 快速上手 (Quick Start)
 
-### 步驟 1：執行前置轉正與留白裁切
+### 方式 A：一鍵端到端自動化處理（推薦）
 
-將掃描圖檔放置於 `samples/`（支援任意層級之子目錄結構，例如 `samples/書名/章節/`）：
+從只有原始圖檔（`Cover-xx.jpg` 與 `Page-xxx.jpg`）的目錄開始，一鍵完成：**轉正去邊裁切 $\rightarrow$ 目錄抽取 $\rightarrow$ HTML/EPUB 生成 $\rightarrow$ 章節目錄歸檔**：
 
+```bash
+# 一鍵全流程執行 (自動完成全套處理，生成 HTML 與 EPUB，並將圖檔分章歸檔)
+python process_book.py --input samples --output output --workers 4
+
+# 若有部分純圖片頁或難以辨識的頁面，可指定跳過 OCR 直接嵌入原圖：
+python process_book.py --input samples --output output --skip-ocr Page-050.jpg Page-060.jpg
+```
+
+---
+
+### 方式 B：分步獨立執行（進階客製）
+
+#### 步驟 1：執行前置轉正與留白裁切
 ```bash
 # 預設執行：各目錄獨立判定，1:1 原生尺寸輸出
 python preprocess_scantailor.py --input samples --output preprocessed_samples
 ```
 
-### 步驟 2：執行 AI 版面分析、OCR 與 EPUB 生成
-
+#### 步驟 2：抽取目錄索引
 ```bash
-# 單 Worker 基礎執行 (適合 4GB~8GB VRAM)
-python pipeline.py --samples preprocessed_samples --output output --batch-size 2 --workers 1 --epub
+# 識別目錄頁並輸出標準 JSON 索引
+python extract_toc.py -i preprocessed_samples/Cover-06.jpg -o toc.json
+```
 
-# 4 Worker 多進程極速並行 (適合 16GB VRAM，如 RTX 5060 Ti)
-python pipeline.py --samples preprocessed_samples --output output --batch-size 4 --workers 4 --epub
+#### 步驟 3：執行 AI 版面分析、OCR 與 EPUB 生成
+```bash
+# 多進程並行極速轉換 (支援 --skip-ocr 指定免 OCR 頁面)
+python pipeline.py --samples preprocessed_samples --output output --toc toc.json --batch-size 4 --workers 4 --epub
 ```
 
 產出結果位於 `output/`：
-* `output/book.html`：結構化 HTML5（內嵌 KaTeX 數學渲染與響應式排版）。
+* `output/book.html`：結構化 HTML5（內嵌 KaTeX 數學渲染、完整目錄導覽索引與響應式排版）。
 * `output/book.epub`：標準電子書（含章節目錄、內嵌圖片與原生向量 MathML 公式）。
-* `output/images/`：從版面中自動裁切出的高解析插圖。
+* `output/images/`：從版面中自動裁切出的高解析插圖與全頁原圖。
 
 ---
 
@@ -189,6 +204,26 @@ python pipeline.py --samples preprocessed_samples --output output --batch-size 4
 | `--epub` | - | `False` | 是否在生成 HTML 後自動調用 Pandoc 編譯 MathML EPUB |
 | `--batch-size` | - | `2` | 單頁內 OCR 區塊批次大小（建議：4GB 顯卡設 2；16GB 顯卡可設 4~8） |
 | `--workers` | - | `1` | 並行處理 Worker 進程數（建議：4GB 顯卡設 1；16GB 顯卡設 3~4） |
+| `--skip-ocr` | `--no-ocr` | `[]` | 不作 OCR 的檔案清單（支援檔名、頁碼或 txt 清單，直接以原始圖檔嵌入 HTML/EPUB） |
+
+---
+
+### 4. `process_book.py`（端到端一鍵書籍數位化總控腳本）
+
+| 參數 | 簡寫 | 預設值 | 說明 |
+| :--- | :---: | :---: | :--- |
+| `--input` | `-i` | `samples` | 輸入書籍原始圖檔目錄（包含 `Cover-xx.jpg` 與 `Page-xxx.jpg`） |
+| `--output` | `-o` | `output` | 輸出成果目錄（產出 HTML、EPUB、images/ 與 preprocessed/） |
+| `--title` | `-t` | `""` | 書名 / 文件標題（若未指定則自動從目錄名或 toc.json 讀取） |
+| `--dpi` | - | `None` | 輸出解析度 DPI（預設保持 1:1 原生尺寸無損輸出） |
+| `--margins` | - | `10` | 版心四周均勻留白邊距 (mm) |
+| `--color-mode` | - | `color_grayscale` | 轉正色彩模式：`color_grayscale`、`mixed`、`black_and_white` |
+| `--workers` | - | `1` | 多進程並行 Worker 數（建議：16GB 顯卡設 3~4） |
+| `--batch-size` | - | `2` | 單頁內 OCR 區塊批次大小（建議：16GB 顯卡設 4） |
+| `--skip-ocr` | `--no-ocr` | `[]` | 不作 OCR 的檔案清單（直接以全頁原圖嵌入） |
+| `--epub` | - | `True` | 是否自動編譯 MathML EPUB3 |
+| `--copy` | - | `False` | 章節歸檔時改為複製而非移動圖檔 |
+| `--organize-target` | - | `preprocessed` | 建立章節目錄並歸檔之目標：`preprocessed` 或 `input` |
 
 ---
 
@@ -216,6 +251,7 @@ scanorc/
 ├── README.md                # 專案詳細說明文件
 ├── requirements.txt         # Python 套件清單
 ├── download_models.py       # 自動下載 HuggingFace 模型權重
+├── process_book.py          # [一鍵總控] 端到端全流程自動化腳本 (轉正->TOC->EPUB->分章)
 ├── preprocess_scantailor.py # 出版級轉正、留白裁切與版心標準化前處理引擎
 ├── extract_toc.py           # 目錄頁結構化抽取工具 (方案 A: GLM-OCR -> JSON)
 ├── pipeline.py              # DocLayout-YOLO + GLM-OCR 端到端轉換流水線
