@@ -17,9 +17,38 @@ import os
 import sys
 import re
 import json
+import ctypes
 import subprocess
 from pathlib import Path
 from typing import List, Dict, Optional
+
+# -------------------------------------------------------------
+# Qt 6 / PySide6 環境自適應配置 (解決 Conda Qt5 衝突與 libxcb-cursor 缺失)
+# -------------------------------------------------------------
+try:
+    import shutil
+    import PySide6
+    # 1. 強制設定 QT_PLUGIN_PATH 指向 PySide6 自帶的 Qt6 外掛目錄，避免 Conda 載入舊版 Qt5 插件
+    pyside_dir = Path(PySide6.__file__).resolve().parent
+    qt_plugins_dir = pyside_dir / "Qt" / "plugins"
+    if qt_plugins_dir.exists():
+        os.environ["QT_PLUGIN_PATH"] = str(qt_plugins_dir)
+
+    # 2. 自動補充 PySide6 Qt/lib 缺失之 libxcb-cursor.so.0 (解決 Ubuntu 24.04+ / Linux Mint 22 缺庫問題)
+    qt_lib_dir = pyside_dir / "Qt" / "lib"
+    bundled_lib_dir = Path(__file__).resolve().parent / "bin" / "lib"
+    cursor_lib = bundled_lib_dir / "libxcb-cursor.so.0"
+    target_cursor = qt_lib_dir / "libxcb-cursor.so.0"
+    if qt_lib_dir.exists() and cursor_lib.exists() and not target_cursor.exists() and os.access(qt_lib_dir, os.W_OK):
+        try:
+            shutil.copy2(cursor_lib, target_cursor)
+            cursor_real = bundled_lib_dir / "libxcb-cursor.so.0.0.0"
+            if cursor_real.exists():
+                shutil.copy2(cursor_real, qt_lib_dir / "libxcb-cursor.so.0.0.0")
+        except Exception:
+            pass
+except ImportError:
+    pass
 
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt, QProcess, Signal, Slot
