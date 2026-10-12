@@ -63,6 +63,120 @@ def resolve_page_filename(page_num: int, existing_filenames: Optional[List[str]]
     return f"Page-{page_num:03d}.jpg"
 
 
+VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
+
+
+def classify_book_image(p: Path) -> int:
+    """
+    分類書本圖片類型：
+    0: 封面/目錄 (Cover, 封面, front_cover 等)
+    1: 正文頁面 (Page-xxx, p-xxx, p0xx, 純數字檔名, 頁等)
+    2: 其他/未知頁面 (其他插頁等)
+    3: 封底/後記 (BackCover, 封底等)
+    """
+    stem = p.stem.lower()
+
+    # 封底判斷
+    if re.search(r"(back[-_]?cover|封底)", stem):
+        return 3
+
+    # 封面/目錄判斷
+    if re.search(r"(^cover|^封面|^front[-_]?cover)", stem):
+        return 0
+
+    # 正文頁碼判斷 (Page-xxx, p-xxx, p0xx, 純數字檔名等)
+    if re.search(r"(^page|^p[-_]?\d+|^\d+$|頁|页)", stem):
+        return 1
+
+    return 2
+
+
+def natural_sort_key(p: Path) -> List[Any]:
+    """
+    檔名自然數字排序鍵 (例如 Cover-05 排在 Cover-06 前面，Page-2 排在 Page-10 前面)
+    """
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", p.name)]
+
+
+def book_image_sort_key(p: Path, cover_first: bool = True) -> Tuple[int, List[Any], str]:
+    """
+    書本全域排序鍵：
+    預設編排順序：Cover-*.jpg (優先) -> Page-*.jpg -> 其他 -> BackCover
+    若 cover_first 為 False：Page-*.jpg (優先) -> Cover-*.jpg -> 其他 -> BackCover
+    各類別內部依檔名自然數字順序 (natural_sort_key) 排序
+    """
+    c_type = classify_book_image(p)
+    if cover_first:
+        priority_map = {0: 0, 1: 1, 2: 2, 3: 3}
+    else:
+        priority_map = {1: 0, 0: 1, 2: 2, 3: 3}
+    priority = priority_map.get(c_type, 2)
+    return (priority, natural_sort_key(p), str(p))
+
+
+def collect_book_images(
+    inputs: List[str],
+    recursive: bool = True,
+    cover_first: bool = True
+) -> List[Path]:
+    """
+    收集並編排所有輸入圖檔：
+    1. 支援單一檔案、多個檔案、目錄路徑或萬用字元
+    2. 支援遞迴 (recursive) 讀取所有子目錄
+    3. 依據 Cover-xx.jpg 與 Page-xxx.jpg 規則排序 (預設 Cover 在前)
+    """
+    import glob
+
+    collected: List[Path] = []
+    seen = set()
+
+    for arg in inputs:
+        # 萬用字元支援
+        if any(char in arg for char in ["*", "?", "["]):
+            matched = glob.glob(arg, recursive=recursive)
+            for m in matched:
+                mp = Path(m).resolve()
+                if mp.is_file() and mp.suffix.lower() in VALID_IMAGE_EXTS and str(mp) not in seen:
+                    seen.add(str(mp))
+                    collected.append(mp)
+            continue
+
+        p = Path(arg).resolve()
+        if p.is_file():
+            if p.suffix.lower() in VALID_IMAGE_EXTS and str(p) not in seen:
+                seen.add(str(p))
+                collected.append(p)
+            elif p.suffix.lower() not in VALID_IMAGE_EXTS:
+                print(f"[-] 略過非支援之圖片檔案: {p.name}", file=sys.stderr)
+        elif p.is_dir():
+            if recursive:
+                for root, _, files in os.walk(p):
+                    for f in files:
+                        fp = Path(root) / f
+                        if fp.suffix.lower() in VALID_IMAGE_EXTS and str(fp) not in seen:
+                            seen.add(str(fp))
+                            collected.append(fp)
+            else:
+                for fp in p.iterdir():
+                    if fp.is_file() and fp.suffix.lower() in VALID_IMAGE_EXTS and str(fp) not in seen:
+                        seen.add(str(fp))
+                        collected.append(fp)
+        else:
+            # 嘗試檢查父目錄的 glob 匹配
+            parent = p.parent
+            pattern = p.name
+            if parent.exists():
+                matches = list(parent.glob(pattern))
+                for m in matches:
+                    if m.is_file() and m.suffix.lower() in VALID_IMAGE_EXTS and str(m) not in seen:
+                        seen.add(str(m))
+                        collected.append(m)
+
+    # 依照規則排序 (Cover 優先於 Page，各類別內部自然數字排序)
+    collected.sort(key=lambda x: book_image_sort_key(x, cover_first=cover_first))
+    return collected
+
+
 class DocumentConverter:
     def __init__(
         self,
@@ -632,30 +746,61 @@ def build_epub_with_pandoc(html_path: str, epub_path: str, title: str = "Scanned
 
 def _worker_process_page(args_tuple):
     """多進程 Worker 任務函數"""
-    img_path, output_dir, batch_size = args_tuple
+    task_idx, img_path, output_dir, batch_size = args_tuple
     # 每個子進程獨立初始化 Converter
     converter = DocumentConverter(batch_size=batch_size)
-    return converter.process_page(img_path, output_dir)
+    res = converter.process_page(img_path, output_dir)
+    res["_task_idx"] = task_idx
+    return res
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ScanORC: Scanned Document to HTML / EPUB Pipeline")
-    parser.add_argument("--samples", default="samples", help="樣張目錄或單張圖片路徑")
-    parser.add_argument("--output", default="output", help="輸出目錄")
+    parser = argparse.ArgumentParser(
+        description="ScanORC: Scanned Document to HTML / EPUB Pipeline (支援遞迴子目錄與 Cover-Page 智能排序)"
+    )
+    parser.add_argument(
+        "--samples", "-i", "--input",
+        nargs="+",
+        default=["samples"],
+        dest="samples",
+        help="待處理圖檔目錄或圖片路徑 (支援單檔、多檔、目錄或萬用字元，預設: samples)"
+    )
+    parser.add_argument("--output", default="output", help="輸出目錄 (預設: output)")
     parser.add_argument("--title", default="數位化掃描書本", help="書名 / 文檔標題")
     parser.add_argument("--toc", default=None, help="目錄結構 JSON 檔案路徑 (例如 toc.json，將自動生成目錄索引並連結至各頁檔名)")
     parser.add_argument("--epub", action="store_true", help="是否自動生成 EPUB")
     parser.add_argument("--batch-size", type=int, default=2, help="單頁 OCR 區塊批次大小 (預設 2，16GB 顯卡可設 4~8)")
     parser.add_argument("--workers", type=int, default=1, help="多進程並行 Worker 數 (預設 1，16GB 顯卡可設 3~4)")
+    parser.add_argument(
+        "--recursive", "-r",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否遞迴讀取子目錄所有圖檔 (預設: True，使用 --no-recursive 僅讀取頂層目錄)"
+    )
+    parser.add_argument(
+        "--cover-first",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否將封面/目錄頁 (Cover-*.jpg) 編排於內文頁 (Page-*.jpg) 之前 (預設: True，使用 --no-cover-first 則內文頁優先)"
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
+
+    sample_inputs = [args.samples] if isinstance(args.samples, str) else list(args.samples)
 
     # 載入目錄結構資料 (若有指定 --toc 或自動在當前目錄、samples、output 找到 toc.json)
     toc_data = None
     toc_file = args.toc
     if not toc_file:
-        for candidate in [Path("toc.json"), Path(args.samples) / "toc.json", Path(args.output) / "toc.json"]:
+        candidates = [Path("toc.json"), Path(args.output) / "toc.json"]
+        for s_arg in sample_inputs:
+            sp = Path(s_arg)
+            if sp.is_dir():
+                candidates.append(sp / "toc.json")
+            elif sp.is_file():
+                candidates.append(sp.parent / "toc.json")
+        for candidate in candidates:
             if candidate.exists():
                 toc_file = str(candidate)
                 break
@@ -672,22 +817,28 @@ def main():
         except Exception as e:
             print(f"[-] 讀取目錄索引檔案失敗: {e}", file=sys.stderr)
 
-    if os.path.isfile(args.samples):
-        image_files = [args.samples]
-    else:
-        valid_exts = {".jpg", ".jpeg", ".png", ".webp"}
-        image_files = []
-        for root, _, files in os.walk(args.samples):
-            for f in sorted(files):
-                if Path(f).suffix.lower() in valid_exts:
-                    image_files.append(os.path.join(root, f))
-        image_files.sort()
+    image_files = collect_book_images(
+        inputs=sample_inputs,
+        recursive=args.recursive,
+        cover_first=args.cover_first
+    )
 
     if not image_files:
-        print("[-] 未找到待處理之圖片檔案！", file=sys.stderr)
+        print(f"[-] 未找到待處理之圖片檔案！(搜尋路徑: {sample_inputs})", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[*] 找到 {len(image_files)} 個頁面準備處理: {[os.path.basename(f) for f in image_files[:10]]}{' ...' if len(image_files) > 10 else ''}")
+    cover_imgs = [p for p in image_files if classify_book_image(p) == 0]
+    page_imgs = [p for p in image_files if classify_book_image(p) == 1]
+    other_imgs = [p for p in image_files if classify_book_image(p) not in (0, 1)]
+
+    print(f"[*] 找到 {len(image_files)} 個頁面準備處理 (遞迴={args.recursive}, 封面優先={args.cover_first})：")
+    if cover_imgs:
+        print(f"    - 封面/目錄頁: {len(cover_imgs)} 頁 {[p.name for p in cover_imgs[:6]]}{' ...' if len(cover_imgs) > 6 else ''}")
+    if page_imgs:
+        print(f"    - 正文頁面:   {len(page_imgs)} 頁 (起始: {page_imgs[0].name}, 結束: {page_imgs[-1].name})")
+    if other_imgs:
+        print(f"    - 其他/插頁:   {len(other_imgs)} 頁 {[p.name for p in other_imgs[:6]]}{' ...' if len(other_imgs) > 6 else ''}")
+    print(f"[*] 頁面編排順序前 10 頁: {[p.name for p in image_files[:10]]}")
     print(f"[*] 運算設定: batch_size={args.batch_size}, workers={args.workers}, 書名='{args.title}'")
 
     all_page_results = []
@@ -701,15 +852,16 @@ def main():
         except RuntimeError:
             pass
 
-        tasks = [(img_path, args.output, args.batch_size) for img_path in image_files]
+        tasks = [(idx, str(img_path), args.output, args.batch_size) for idx, img_path in enumerate(image_files)]
         with mp.Pool(processes=args.workers) as pool:
             all_page_results = pool.map(_worker_process_page, tasks)
-        # 確保結果按照原頁面順序排序
-        all_page_results.sort(key=lambda x: x["page_id"])
+        # 確保結果嚴格依照任務與編排順序排序
+        all_page_results.sort(key=lambda x: x["_task_idx"])
     else:
         converter = DocumentConverter(batch_size=args.batch_size)
-        for img_path in image_files:
-            p_res = converter.process_page(img_path, args.output)
+        for idx, img_path in enumerate(image_files):
+            p_res = converter.process_page(str(img_path), args.output)
+            p_res["_task_idx"] = idx
             all_page_results.append(p_res)
 
     html_out_path = os.path.join(args.output, "book.html")

@@ -180,15 +180,17 @@ python pipeline.py --samples preprocessed_samples --output output --batch-size 4
 
 ### 3. `pipeline.py`（AI 核心辨識流水線）
 
-| 參數 | 預設值 | 說明 |
-| :--- | :---: | :--- |
-| `--samples` | `samples` | 待處理圖檔目錄或單一圖檔路徑 |
-| `--output` | `output` | 成果儲存目錄（產出 HTML、EPUB 與裁切圖片） |
-| `--title` | `數位化掃描書本` | 書名 / 文件標題（若有 toc.json 且未指定書名，將自動套用其書名） |
-| `--toc` | `None` | 目錄結構 JSON 檔案路徑（預設自動偵測 `toc.json`，將自動生成目錄索引並連結至各頁檔名） |
-| `--epub` | `False` | 是否在生成 HTML 後自動調用 Pandoc 編譯 MathML EPUB |
-| `--batch-size` | `2` | 單頁內 OCR 區塊批次大小（建議：4GB 顯卡設 2；16GB 顯卡可設 4~8） |
-| `--workers` | `1` | 並行處理 Worker 進程數（建議：4GB 顯卡設 1；16GB 顯卡設 3~4） |
+| 參數 | 簡寫 | 預設值 | 說明 |
+| :--- | :---: | :---: | :--- |
+| `--samples` | `-i`, `--input` | `samples` | 待處理圖檔來源（支援單圖檔、多圖檔、目錄或萬用字元，可傳入多個路徑） |
+| `--output` | `-o` | `output` | 成果儲存目錄（產出 HTML、EPUB 與裁切圖片） |
+| `--title` | - | `數位化掃描書本` | 書名 / 文件標題（若有 toc.json 且未指定書名，將自動套用其書名） |
+| `--toc` | - | `None` | 目錄結構 JSON 檔案路徑（預設自動偵測 `toc.json`，將自動生成目錄索引並連結至各頁檔名） |
+| `--recursive` | `-r` | `True` | 是否遞迴讀取子目錄所有圖檔（**預設啟用**，若使用 `--no-recursive` 則僅讀取頂層目錄） |
+| `--cover-first` | - | `True` | 頁面編排順序：是否將封面/目錄頁（`Cover-*.jpg`）編排於內文頁（`Page-*.jpg`）之前（**預設啟用**；若使用 `--no-cover-first` 則內文頁優先；各群組內部均依自然數字順序排序） |
+| `--epub` | - | `False` | 是否在生成 HTML 後自動調用 Pandoc 編譯 MathML EPUB |
+| `--batch-size` | - | `2` | 單頁內 OCR 區塊批次大小（建議：4GB 顯卡設 2；16GB 顯卡可設 4~8） |
+| `--workers` | - | `1` | 並行處理 Worker 進程數（建議：4GB 顯卡設 1；16GB 顯卡設 3~4） |
 
 ---
 
