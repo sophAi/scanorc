@@ -165,14 +165,16 @@ python pipeline.py --samples preprocessed_samples --output output --batch-size 4
 
 ---
 
-### 2. `extract_toc.py`（目錄頁結構化抽取工具）
+### 2. `extract_toc.py`（目錄頁結構化抽取與自動分章工具）
 
 | 參數 | 簡寫 | 預設值 | 說明 |
 | :--- | :---: | :---: | :--- |
-| `--input` | `-i` | `samples/Cover-06.jpg` | 輸入目錄頁圖檔路徑 |
+| `--input` | `-i` | `samples/Cover-06.jpg` | 輸入目錄頁圖檔路徑（支援傳入多個圖檔、萬用字元或目錄，自動按自然檔名順序讀取） |
 | `--output` | `-o` | `toc.json` | 輸出結構化 JSON 檔案路徑 |
 | `--model-dir` | - | `models/glm-ocr` | GLM-OCR 模型權重目錄 |
 | `--book-title` | - | `""` | 書名（選填，將記錄於 JSON metadata） |
+| `--organize-pages` | - | `None` | 自動建立對應目錄（如 `01-一切從此開始`），並將 `Page-xxx.jpg` 檔案移入對應章節目錄（可指定目錄；未指定則預設整理輸入圖檔所在目錄） |
+| `--copy` | - | `False` | 配合 `--organize-pages` 使用：改為複製圖檔而非移動圖檔 |
 
 ---
 
