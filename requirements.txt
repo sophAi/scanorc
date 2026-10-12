@@ -1,0 +1,13 @@
+# ScanORC Python Dependencies
+torch>=2.2.0
+torchvision>=0.17.0
+transformers>=4.45.0
+accelerate>=0.30.0
+doclayout_yolo>=0.0.4
+timm>=1.0.0
+sentencepiece>=0.2.0
+pillow>=10.0.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+huggingface_hub>=0.23.0
+tqdm>=4.66.0

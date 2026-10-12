@@ -1,0 +1,41 @@
+# Python & Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# AI Model Weights & Cache (Use download_models.py to fetch)
+models/
+*.pt
+*.bin
+*.safetensors
+*.onnx
+
+# ScanORC Intermediate & Output Artifacts
+output/
+preprocessed_samples/
+.scantailor_temp/
+*.tif
+*.tiff
+test_*/
+
+# Large Scanned Books / Proprietary Data
+# (Keep basic demo samples in samples/Page-*.jpg)
+samples/*/
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Pandoc / LaTeX Logs
+*.log
+*.aux
