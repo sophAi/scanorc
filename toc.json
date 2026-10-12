@@ -1,0 +1,108 @@
+{
+  "book_title": "多空操作秘笈",
+  "source_image": "/opt/geminicli/scanorc/samples/Cover-06.jpg",
+  "extracted_at": "2026-10-12T20:47:32.034320",
+  "total_chapters": 11,
+  "toc": [
+    {
+      "chapter": "謝辭",
+      "title": "謝辭",
+      "full_title": "謝辭",
+      "start_page": 4,
+      "index": 1,
+      "end_page": 6,
+      "page_count": 3
+    },
+    {
+      "chapter": "第1章",
+      "title": "一切從此開始",
+      "full_title": "第1章 一切從此開始",
+      "start_page": 7,
+      "index": 2,
+      "end_page": 44,
+      "page_count": 38
+    },
+    {
+      "chapter": "第2章",
+      "title": "一眼勝過千萬盈餘預測",
+      "full_title": "第2章 一眼勝過千萬盈餘預測",
+      "start_page": 45,
+      "index": 3,
+      "end_page": 80,
+      "page_count": 36
+    },
+    {
+      "chapter": "第3章",
+      "title": "買進的理想時機",
+      "full_title": "第3章 買進的理想時機",
+      "start_page": 81,
+      "index": 4,
+      "end_page": 128,
+      "page_count": 48
+    },
+    {
+      "chapter": "第4章",
+      "title": "精鍊買進程序",
+      "full_title": "第4章 精鍊買進程序",
+      "start_page": 129,
+      "index": 5,
+      "end_page": 182,
+      "page_count": 54
+    },
+    {
+      "chapter": "第5章",
+      "title": "挖掘潛力股",
+      "full_title": "第5章 挖掘潛力股",
+      "start_page": 183,
+      "index": 6,
+      "end_page": 214,
+      "page_count": 32
+    },
+    {
+      "chapter": "第6章",
+      "title": "何時賣出",
+      "full_title": "第6章 何時賣出",
+      "start_page": 215,
+      "index": 7,
+      "end_page": 282,
+      "page_count": 68
+    },
+    {
+      "chapter": "第7章",
+      "title": "放空：獲利捷徑",
+      "full_title": "第7章 放空：獲利捷徑",
+      "start_page": 283,
+      "index": 8,
+      "end_page": 348,
+      "page_count": 66
+    },
+    {
+      "chapter": "第8章",
+      "title": "運用最佳長期指標辨識多頭與空頭市場",
+      "full_title": "第8章 運用最佳長期指標辨識多頭與空頭市場",
+      "start_page": 349,
+      "index": 9,
+      "end_page": 398,
+      "page_count": 50
+    },
+    {
+      "chapter": "第9章",
+      "title": "勝算、結局與獲利",
+      "full_title": "第9章 勝算、結局與獲利",
+      "start_page": 399,
+      "index": 10,
+      "end_page": 432,
+      "page_count": 34
+    },
+    {
+      "chapter": "第10章",
+      "title": "總結",
+      "full_title": "第10章 總結",
+      "start_page": 433,
+      "index": 11,
+      "end_page": null,
+      "page_count": null
+    }
+  ],
+  "raw_text": "目錄\nContents\n\n謝 辭 ····· 4\n\n第1章 一切從此開始 ····· 7\n\n第2章 一眼勝過千萬盈餘預測 ····· 45\n\n第3章 買進的理想時機 ····· 81\n\n第4章 精鍊買進程序 ····· 129\n\n第5章 挖掘潛力股 ····· 183\n\n第6章 何時賣出 ····· 215\n\n第7章 放空：獲利捷徑 ····· 283\n\n第8章 運用最佳長期指標辨識多頭與空頭市場 ····· 349\n\n第9章 勝算、結局與獲利 ····· 399\n\n第10章 總結 ····· 433"
+}

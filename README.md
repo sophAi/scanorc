@@ -165,7 +165,18 @@ python pipeline.py --samples preprocessed_samples --output output --batch-size 4
 
 ---
 
-### 2. `pipeline.py`（AI 核心辨識流水線）
+### 2. `extract_toc.py`（目錄頁結構化抽取工具）
+
+| 參數 | 簡寫 | 預設值 | 說明 |
+| :--- | :---: | :---: | :--- |
+| `--input` | `-i` | `samples/Cover-06.jpg` | 輸入目錄頁圖檔路徑 |
+| `--output` | `-o` | `toc.json` | 輸出結構化 JSON 檔案路徑 |
+| `--model-dir` | - | `models/glm-ocr` | GLM-OCR 模型權重目錄 |
+| `--book-title` | - | `""` | 書名（選填，將記錄於 JSON metadata） |
+
+---
+
+### 3. `pipeline.py`（AI 核心辨識流水線）
 
 | 參數 | 預設值 | 說明 |
 | :--- | :---: | :--- |
@@ -203,6 +214,7 @@ scanorc/
 ├── requirements.txt         # Python 套件清單
 ├── download_models.py       # 自動下載 HuggingFace 模型權重
 ├── preprocess_scantailor.py # 出版級轉正、留白裁切與版心標準化前處理引擎
+├── extract_toc.py           # 目錄頁結構化抽取工具 (方案 A: GLM-OCR -> JSON)
 ├── pipeline.py              # DocLayout-YOLO + GLM-OCR 端到端轉換流水線
 ├── samples/                 # 預設範例掃描圖片目錄 (含測試樣張)
 ├── models/                  # [Ignored] AI 模型權重目錄 (執行 download_models.py 後生成)
