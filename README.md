@@ -76,11 +76,9 @@ flowchart TD
     ```bash
     sudo apt update && sudo apt install -y pandoc
     ```
-  * **ScanTailor-CLI**：用於出版級幾何轉正。建議透過 Flatpak 安裝：
-    ```bash
-    flatpak install flathub org.scantailor.ScanTailor
-    ```
-    *(本系統會自動偵測系統 PATH 內的原生 `scantailor-cli` 或 Flatpak 版 `org.scantailor.ScanTailor`)*
+  * **ScanTailor-CLI（免安裝，專案已內建）**：
+    本專案已自帶免安裝的 Portable 版 `bin/scantailor-cli` 與專屬執行環境（x86_64 Linux），**無需額外安裝任何系統套件或 Flatpak**，Clone 後立即可直接執行！
+    *(系統若已安裝原生 `scantailor-cli` 或 Flatpak 版亦可自動備援偵測)*
 
 ---
 
@@ -221,6 +219,11 @@ scanorc/
 ├── preprocess_scantailor.py # 出版級轉正、留白裁切與版心標準化前處理引擎
 ├── extract_toc.py           # 目錄頁結構化抽取工具 (方案 A: GLM-OCR -> JSON)
 ├── pipeline.py              # DocLayout-YOLO + GLM-OCR 端到端轉換流水線
+├── bin/                     # [自帶] 免安裝 ScanTailor-CLI 可攜版與執行庫 (方案 A - 作法 1)
+│   ├── scantailor-cli       # 可攜式啟動腳本 (自動配置庫路徑)
+│   ├── scantailor-cli-bin   # 原始 C++ 二進位檔
+│   ├── lib/                 # 獨立 Qt4/JPEG 動態庫
+│   └── plugins/             # Qt 圖像解碼外掛 (imageformats)
 ├── samples/                 # 預設範例掃描圖片目錄 (含測試樣張)
 ├── models/                  # [Ignored] AI 模型權重目錄 (執行 download_models.py 後生成)
 │   ├── doclayout_yolo/      # DocLayout-YOLO 權重 (YOLOv10)

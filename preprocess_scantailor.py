@@ -25,14 +25,23 @@ VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 
 def check_scantailor_cmd() -> List[str]:
     """
-    檢測系統上的 ScanTailor-CLI 可用指令（支援原生系統安裝或 Flatpak 沙盒安裝）
+    檢測 ScanTailor-CLI 可用指令：
+    1. 最優先：專案內置免安裝 Portable 版 (bin/scantailor-cli，方案 A - 作法 1)
+    2. 次優先：系統 PATH 中的原生 scantailor-cli
+    3. 備援：Flatpak 沙盒安裝的 ScanTailor
     """
-    # 1. 優先檢查系統 PATH 中的原生 scantailor-cli
+    # 1. 最優先檢查專案內置的獨立可攜式 scantailor-cli (方案 A - 作法 1)
+    base_dir = Path(__file__).parent.resolve()
+    bundled_cli = base_dir / "bin" / "scantailor-cli"
+    if bundled_cli.is_file() and os.access(bundled_cli, os.X_OK):
+        return [str(bundled_cli)]
+
+    # 2. 檢查系統 PATH 中的原生 scantailor-cli
     native_cli = shutil.which("scantailor-cli")
     if native_cli:
         return [native_cli]
 
-    # 2. 檢查 Flatpak 安裝的 ScanTailor
+    # 3. 檢查 Flatpak 安裝的 ScanTailor
     flatpak_bin = shutil.which("flatpak")
     if flatpak_bin:
         res = subprocess.run(
@@ -283,9 +292,11 @@ def main():
 
     scantailor_cmd = check_scantailor_cmd()
     if not scantailor_cmd:
-        print("[-] 錯誤：系統未偵測到 scantailor-cli！", file=sys.stderr)
-        print("    請確認是否已安裝 ScanTailor (例如透過 flatpak install org.scantailor.ScanTailor)", file=sys.stderr)
+        print("[-] 錯誤：未偵測到 scantailor-cli！", file=sys.stderr)
+        print("    請確認專案 bin/scantailor-cli 是否存在，或安裝系統版 ScanTailor", file=sys.stderr)
         sys.exit(1)
+
+    cmd_type = "專案內置免安裝 Portable 版" if "bin/scantailor-cli" in scantailor_cmd[0] else ("Flatpak 沙盒版" if "flatpak" in scantailor_cmd[0] else "系統原生版")
 
     input_path = Path(args.input).resolve()
     output_base_dir = Path(args.output).resolve()
@@ -304,6 +315,7 @@ def main():
     print(" ScanORC 掃描影像前置轉正與去邊處理系統")
     print(" 核心引擎: ScanTailor-CLI (獨立子目錄判斷 / 預設不縮放)")
     print("==================================================")
+    print(f"[*] 執行引擎: {scantailor_cmd[0]} ({cmd_type})")
     print(f"[*] 輸入來源: {input_path}")
     print(f"[*] 輸出目錄: {output_base_dir}")
     print(f"[*] 參數設定: {args.format.upper()} (解析度: {dpi_summary}, 邊距: {args.margins}mm, 色彩: {args.color_mode})")
