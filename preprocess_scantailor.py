@@ -96,38 +96,43 @@ def convert_tif_to_target_format(
         shutil.copy2(tif_path, target_path)
 
 
-def collect_image_groups(input_path: Path, output_base_dir: Optional[Path] = None) -> List[Tuple[Path, List[Path]]]:
+def collect_image_groups(input_paths: List[Path], output_base_dir: Optional[Path] = None) -> List[Tuple[Path, List[Path]]]:
     """
-    掃描輸入路徑，按子目錄分組收集所有支援的圖檔：
+    掃描輸入路徑清單 (支援傳入目錄與單個/多個檔案)，按子目錄分組收集所有支援的圖檔：
     傳回值為清單：[(相對目錄路徑 rel_dir, [該目錄下的圖檔路徑清單]), ...]
     """
     groups = []
-    if input_path.is_file():
-        if input_path.suffix.lower() in VALID_IMAGE_EXTS:
-            groups.append((Path("."), [input_path]))
-        else:
-            print(f"[-] 錯誤：輸入檔案 '{input_path.name}' 不是支援的圖片格式！", file=sys.stderr)
-            sys.exit(1)
-    elif input_path.is_dir():
-        for root, dirs, files in os.walk(input_path):
-            # 防止輸出目錄位於輸入目錄內部時發生遞迴自包含掃描
-            if output_base_dir:
-                dirs[:] = [
-                    d for d in dirs
-                    if not (Path(root) / d).resolve() == output_base_dir
-                    and not (Path(root) / d).resolve().is_relative_to(output_base_dir)
+    standalone_files = []
+
+    for p in input_paths:
+        p = p.resolve()
+        if p.is_file():
+            if p.suffix.lower() in VALID_IMAGE_EXTS:
+                standalone_files.append(p)
+            else:
+                print(f"[-] 警告：跳過不支援的格式 '{p.name}'", file=sys.stderr)
+        elif p.is_dir():
+            for root, dirs, files in os.walk(p):
+                # 防止輸出目錄位於輸入目錄內部時發生遞迴自包含掃描
+                if output_base_dir:
+                    dirs[:] = [
+                        d for d in dirs
+                        if not (Path(root) / d).resolve() == output_base_dir
+                        and not (Path(root) / d).resolve().is_relative_to(output_base_dir)
+                    ]
+                dirs.sort()
+                img_files = [
+                    Path(root) / f for f in sorted(files)
+                    if Path(f).suffix.lower() in VALID_IMAGE_EXTS
                 ]
-            dirs.sort()
-            img_files = [
-                Path(root) / f for f in sorted(files)
-                if Path(f).suffix.lower() in VALID_IMAGE_EXTS
-            ]
-            if img_files:
-                rel_dir = Path(root).relative_to(input_path)
-                groups.append((rel_dir, img_files))
-    else:
-        print(f"[-] 錯誤：輸入路徑 '{input_path}' 不存在！", file=sys.stderr)
-        sys.exit(1)
+                if img_files:
+                    rel_dir = Path(root).relative_to(p)
+                    groups.append((rel_dir, img_files))
+        else:
+            print(f"[-] 警告：輸入路徑 '{p}' 不存在，略過！", file=sys.stderr)
+
+    if standalone_files:
+        groups.insert(0, (Path("."), sorted(standalone_files)))
 
     return groups
 
@@ -238,8 +243,9 @@ def main():
     )
     parser.add_argument(
         "--input", "-i",
-        default="samples",
-        help="輸入來源：待處理的圖片檔案路徑或目錄 (自動遞迴掃描所有子目錄，預設: samples)"
+        nargs="+",
+        default=["samples"],
+        help="輸入來源：待處理的圖片檔案路徑或目錄 (支援多個檔案、萬用字元或目錄，預設: samples)"
     )
     parser.add_argument(
         "--output", "-o",
@@ -298,15 +304,15 @@ def main():
 
     cmd_type = "專案內置免安裝 Portable 版" if "bin/scantailor-cli" in scantailor_cmd[0] else ("Flatpak 沙盒版" if "flatpak" in scantailor_cmd[0] else "系統原生版")
 
-    input_path = Path(args.input).resolve()
+    input_paths = [Path(p).resolve() for p in args.input]
     output_base_dir = Path(args.output).resolve()
     output_base_dir.mkdir(parents=True, exist_ok=True)
 
-    image_groups = collect_image_groups(input_path, output_base_dir)
+    image_groups = collect_image_groups(input_paths, output_base_dir)
     total_images = sum(len(imgs) for _, imgs in image_groups)
 
     if not image_groups or total_images == 0:
-        print(f"[-] 在 '{input_path}' 中未找到任何支援的圖片檔案！", file=sys.stderr)
+        print(f"[-] 在輸入清單 {args.input} 中未找到任何支援的圖片檔案！", file=sys.stderr)
         sys.exit(1)
 
     dpi_summary = f"{args.dpi} DPI (變更解析度)" if args.dpi else "原生 1:1 不縮放"
@@ -316,7 +322,7 @@ def main():
     print(" 核心引擎: ScanTailor-CLI (獨立子目錄判斷 / 預設不縮放)")
     print("==================================================")
     print(f"[*] 執行引擎: {scantailor_cmd[0]} ({cmd_type})")
-    print(f"[*] 輸入來源: {input_path}")
+    print(f"[*] 輸入來源: {args.input}")
     print(f"[*] 輸出目錄: {output_base_dir}")
     print(f"[*] 參數設定: {args.format.upper()} (解析度: {dpi_summary}, 邊距: {args.margins}mm, 色彩: {args.color_mode})")
     print(f"[*] 掃描統計: 發現 {len(image_groups)} 個書籍/章節目錄群組，共計 {total_images} 張圖片待處理")

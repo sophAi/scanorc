@@ -19,8 +19,9 @@ import re
 import json
 import shutil
 import subprocess
+import shlex
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union
 
 # -------------------------------------------------------------
 # Linux / Conda 環境相容性自動引導 (解決 Conda Qt5 插件衝突、舊版 libxkbcommon 段錯誤與 libxcb-cursor 缺失)
@@ -105,9 +106,42 @@ def strip_ansi(text: str) -> str:
     return ansi_regex.sub("", text)
 
 
+def format_rel_path(p: Union[str, Path]) -> str:
+    """將路徑格式化為相對於目前目錄的簡潔路徑 (若在外則保留絕對路徑)"""
+    path = Path(p).resolve()
+    try:
+        rel = path.relative_to(Path.cwd().resolve())
+        return str(rel)
+    except ValueError:
+        return str(path)
+
+
+def format_paths_arg(paths: List[Union[str, Path]]) -> str:
+    """將多個檔案路徑格式化為 CLI 參數字串 (含空白自動加引號)"""
+    res = []
+    for p in paths:
+        s = format_rel_path(p)
+        if " " in s:
+            res.append(f'"{s}"')
+        else:
+            res.append(s)
+    return " ".join(res)
+
+
+def safe_split_args(cmd_str: str) -> List[str]:
+    """安全解析可能包含引號的命令參數字串"""
+    if not cmd_str.strip():
+        return []
+    try:
+        return shlex.split(cmd_str)
+    except ValueError:
+        return cmd_str.strip().split()
+
+
 class FileManagerWidget(QWidget):
     """左側：檔案清單與 Import 管理元件"""
     files_updated = Signal()
+    selection_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -143,7 +177,12 @@ class FileManagerWidget(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.show_context_menu)
+        self.table.itemSelectionChanged.connect(self.on_selection_changed)
         self.table.itemChanged.connect(self.on_item_changed)
+        self.table.installEventFilter(self)
         layout.addWidget(self.table)
 
         # 批次勾選工具
@@ -231,7 +270,7 @@ class FileManagerWidget(QWidget):
 
             # 大小
             size_item = QTableWidgetItem(d["size"])
-            size_item.setFlags(Qt.ItemIsEnabled)
+            size_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             size_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 1, size_item)
 
@@ -248,6 +287,127 @@ class FileManagerWidget(QWidget):
 
     def filter_table(self):
         self.refresh_table()
+
+    def on_selection_changed(self):
+        self.selection_changed.emit()
+
+    def get_selected_row_indices(self) -> List[int]:
+        selected_model_rows = self.table.selectionModel().selectedRows()
+        return sorted([r.row() for r in selected_model_rows])
+
+    def get_selected_row_paths(self) -> List[str]:
+        paths = []
+        for row in self.get_selected_row_indices():
+            item = self.table.item(row, 0)
+            if item:
+                p = item.data(Qt.UserRole)
+                if p:
+                    paths.append(str(p))
+        return paths
+
+    def get_selected_row_names(self) -> List[str]:
+        names = []
+        for row in self.get_selected_row_indices():
+            item = self.table.item(row, 0)
+            if item:
+                names.append(item.text())
+        return names
+
+    def delete_selected_files(self):
+        selected_paths = set(self.get_selected_row_paths())
+        if not selected_paths:
+            return
+        self.files_data = [d for d in self.files_data if str(d["path"]) not in selected_paths]
+        self.refresh_table()
+        self.files_updated.emit()
+        self.selection_changed.emit()
+
+    def eventFilter(self, obj, event):
+        if obj == self.table and event.type() == QtCore.QEvent.KeyPress:
+            if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+                self.delete_selected_files()
+                return True
+        return super().eventFilter(obj, event)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent):
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            self.delete_selected_files()
+        else:
+            super().keyPressEvent(event)
+
+    def is_path_toc(self, path: Union[str, Path]) -> bool:
+        path_str = str(path)
+        for d in self.files_data:
+            if str(d["path"]) == path_str:
+                return bool(d.get("toc"))
+        return False
+
+    def set_tags_for_selected(self, toc: Optional[bool] = None, skip: Optional[bool] = None, patch: Optional[bool] = None):
+        selected_paths = set(self.get_selected_row_paths())
+        if not selected_paths:
+            return
+        for d in self.files_data:
+            if str(d["path"]) in selected_paths:
+                if toc is not None:
+                    d["toc"] = toc
+                if skip is not None:
+                    d["skip"] = skip
+                if patch is not None:
+                    d["patch"] = patch
+        self.refresh_table()
+        self.files_updated.emit()
+
+    def open_selected_dir(self):
+        paths = self.get_selected_row_paths()
+        if paths:
+            folder = Path(paths[0]).parent
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(folder.resolve())))
+
+    def show_context_menu(self, pos: QtCore.QPoint):
+        item_at_pos = self.table.itemAt(pos)
+        if item_at_pos and not item_at_pos.isSelected():
+            self.table.clearSelection()
+            self.table.selectRow(item_at_pos.row())
+
+        selected_paths = self.get_selected_row_paths()
+        menu = QtWidgets.QMenu(self)
+
+        if selected_paths:
+            count = len(selected_paths)
+            act_delete = menu.addAction(f"🗑️ 從清單移除選取的 {count} 個檔案 (Delete)")
+            menu.addSeparator()
+            act_mark_toc = menu.addAction("📑 標記選取為目錄頁 (TOC)")
+            act_mark_skip = menu.addAction("🚫 標記選取為略過 OCR")
+            act_mark_patch = menu.addAction("🩹 標記選取為 Patch 修復頁")
+            menu.addSeparator()
+            act_clear_tags = menu.addAction("🔄 清除選取的標記")
+            menu.addSeparator()
+            act_open_dir = menu.addAction("📂 開啟所在資料夾")
+
+            action = menu.exec(self.table.viewport().mapToGlobal(pos))
+            if not action:
+                return
+
+            if action == act_delete:
+                self.delete_selected_files()
+            elif action == act_mark_toc:
+                self.set_tags_for_selected(toc=True)
+            elif action == act_mark_skip:
+                self.set_tags_for_selected(skip=True)
+            elif action == act_mark_patch:
+                self.set_tags_for_selected(patch=True)
+            elif action == act_clear_tags:
+                self.set_tags_for_selected(toc=False, skip=False, patch=False)
+            elif action == act_open_dir:
+                self.open_selected_dir()
+        else:
+            act_import_dir = menu.addAction("📁 匯入目錄...")
+            act_import_files = menu.addAction("➕ 新增圖檔...")
+            action = menu.exec(self.table.viewport().mapToGlobal(pos))
+            if action == act_import_dir:
+                self.import_directory()
+            elif action == act_import_files:
+                self.import_files()
 
     def on_item_changed(self, item: QTableWidgetItem):
         col = item.column()
@@ -336,6 +496,7 @@ class MainWindow(QMainWindow):
         # 1. 左側檔案管理
         self.file_manager = FileManagerWidget()
         self.file_manager.files_updated.connect(self.on_files_updated)
+        self.file_manager.selection_changed.connect(self.on_file_selection_changed)
         self.h_splitter.addWidget(self.file_manager)
 
         # 2. 右側步驟頁籤
@@ -518,13 +679,18 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
 
         self.s1_input = QLineEdit("samples")
+        self.s1_input.setPlaceholderText("可為圖檔目錄，或檔案清單中選取的單張/多張圖檔路徑")
         self.s1_input.textChanged.connect(self.update_command_preview)
-        btn_in = QPushButton("瀏覽...")
+        btn_in = QPushButton("瀏覽目錄...")
         btn_in.clicked.connect(lambda: self.browse_dir(self.s1_input))
+        btn_sync_s1 = QPushButton("🔄 同步清單所選")
+        btn_sync_s1.setToolTip("自動填入左側檔案清單目前選取的圖檔路徑 (若未選取則填入整個目錄)")
+        btn_sync_s1.clicked.connect(self.sync_step1_input)
         h_in = QHBoxLayout()
         h_in.addWidget(self.s1_input)
         h_in.addWidget(btn_in)
-        form.addRow("輸入目錄 (--input):", h_in)
+        h_in.addWidget(btn_sync_s1)
+        form.addRow("輸入來源 (--input):", h_in)
 
         self.s1_output = QLineEdit("preprocessed_samples")
         self.s1_output.textChanged.connect(self.update_command_preview)
@@ -766,15 +932,25 @@ class MainWindow(QMainWindow):
         self.s4_target.textChanged.connect(self.update_command_preview)
         btn_t = QPushButton("瀏覽...")
         btn_t.clicked.connect(lambda: self.browse_dir(self.s4_target))
+        btn_sync_t = QPushButton("🔄 同步清單目錄")
+        btn_sync_t.setToolTip("將待歸檔目錄同步為左側檔案清單中圖檔所在目錄")
+        btn_sync_t.clicked.connect(self.sync_step4_target_dir)
         h_t = QHBoxLayout()
         h_t.addWidget(self.s4_target)
         h_t.addWidget(btn_t)
+        h_t.addWidget(btn_sync_t)
         form.addRow("待歸檔圖檔目錄 (--organize-pages):", h_t)
 
         self.s4_input = QLineEdit("preprocessed_samples/Cover-06.jpg")
-        self.s4_input.setPlaceholderText("目錄圖檔或 toc.json")
+        self.s4_input.setPlaceholderText("目錄圖檔 (Cover-xx.jpg) 或 toc.json")
         self.s4_input.textChanged.connect(self.update_command_preview)
-        form.addRow("目錄來源 (--input):", self.s4_input)
+        btn_sync_toc = QPushButton("🔄 同步清單 TOC")
+        btn_sync_toc.setToolTip("自動同步左側檔案清單中已勾選為『TOC』的目錄圖檔")
+        btn_sync_toc.clicked.connect(self.sync_step4_toc_input)
+        h_in4 = QHBoxLayout()
+        h_in4.addWidget(self.s4_input)
+        h_in4.addWidget(btn_sync_toc)
+        form.addRow("目錄來源 (--input):", h_in4)
 
         self.s4_copy = QCheckBox("使用複製代替移動 (--copy)")
         self.s4_copy.stateChanged.connect(self.update_command_preview)
@@ -855,14 +1031,14 @@ class MainWindow(QMainWindow):
 
     def run_patch_list(self):
         html_file = self.s5_html.text().strip() or "output/book.html"
-        cmd = [sys.executable, "patch_pages.py", "--html", html_file, "--list"]
+        cmd = [self.get_python_bin(), "patch_pages.py", "--html", html_file, "--list"]
         self.execute_cmd_list(cmd)
 
     def run_patch_revert(self):
         html_file = self.s5_html.text().strip() or "output/book.html"
         ret = QMessageBox.question(self, "確認還原", f"確定要從備份檔還原 {html_file} 嗎？", QMessageBox.Yes | QMessageBox.No)
         if ret == QMessageBox.Yes:
-            cmd = [sys.executable, "patch_pages.py", "--html", html_file, "--revert"]
+            cmd = [self.get_python_bin(), "patch_pages.py", "--html", html_file, "--revert"]
             if not self.s5_epub.isChecked():
                 cmd.append("--no-epub")
             self.execute_cmd_list(cmd)
@@ -870,25 +1046,120 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------
     # 輔助與事件處理
     # -------------------------------------------------------------
+    def get_python_bin(self) -> str:
+        """取得適當的 Python 直譯器 (優先使用包含依賴的專案內置 .venv)"""
+        venv_py = Path.cwd() / ".venv" / "bin" / "python"
+        if venv_py.exists():
+            return str(venv_py)
+        return sys.executable
+
     def browse_dir(self, line_edit: QLineEdit):
         p = QFileDialog.getExistingDirectory(self, "選取目錄", str(Path.cwd()))
         if p:
             line_edit.setText(p)
 
+    def on_file_selection_changed(self):
+        """左側表格列選取變更時，依參數需求傳遞至步驟 1 與步驟 4"""
+        selected_paths = self.file_manager.get_selected_row_paths()
+        if not selected_paths:
+            return
+
+        # 1. 傳遞至步驟 1: --input 填入所選取的圖檔路徑清單
+        self.s1_input.setText(format_paths_arg(selected_paths))
+
+        # 2. 傳遞至步驟 4:
+        # a. 待歸檔圖檔目錄 (--organize-pages): 填入所選檔案所在目錄
+        first_parent = Path(selected_paths[0]).parent
+        self.s4_target.setText(format_rel_path(first_parent))
+
+        # b. 目錄來源 (--input): 若選取項目包含 TOC 標記或 Cover/目錄關鍵字，自動帶入
+        selected_toc = [
+            p for p in selected_paths
+            if any(k in Path(p).name.lower() for k in ("cover", "toc", "mulu", "catalogue"))
+            or self.file_manager.is_path_toc(p)
+        ]
+        if selected_toc:
+            self.s4_input.setText(format_paths_arg(selected_toc))
+
+        self.update_command_preview()
+
+    def sync_step1_input(self):
+        """主動將左側檔案清單選取的檔案或目錄同步至步驟 1 (--input)"""
+        selected_paths = self.file_manager.get_selected_row_paths()
+        if selected_paths:
+            self.s1_input.setText(format_paths_arg(selected_paths))
+            self.lbl_status.setText(f"已同步 {len(selected_paths)} 個選取圖檔至步驟 1 輸入")
+        else:
+            first_dir = self.file_manager.get_first_dir()
+            if first_dir:
+                self.s1_input.setText(format_rel_path(first_dir))
+                self.lbl_status.setText(f"已同步圖檔目錄至步驟 1 輸入: {format_rel_path(first_dir)}")
+            else:
+                self.s1_input.setText("samples")
+                self.lbl_status.setText("步驟 1 輸入重設為預設目錄 (samples)")
+        self.update_command_preview()
+
+    def sync_step4_target_dir(self):
+        """主動將左側檔案清單中圖檔所在目錄同步至步驟 4 待歸檔目錄 (--organize-pages)"""
+        selected_paths = self.file_manager.get_selected_row_paths()
+        if selected_paths:
+            target_dir = format_rel_path(Path(selected_paths[0]).parent)
+        else:
+            first_dir = self.file_manager.get_first_dir()
+            target_dir = format_rel_path(first_dir) if first_dir else "preprocessed_samples"
+        self.s4_target.setText(target_dir)
+        self.lbl_status.setText(f"已同步步驟 4 待歸檔目錄: {target_dir}")
+        self.update_command_preview()
+
+    def sync_step4_toc_input(self):
+        """主動將左側清單中 TOC 標記或 Cover 圖檔同步至步驟 4 目錄來源 (--input)"""
+        # 1. 優先取勾選 TOC 的圖檔
+        toc_files = self.file_manager.get_selected_toc_paths()
+        # 2. 若無勾選，尋找被選取列中含 cover/toc 的圖檔
+        if not toc_files:
+            selected_paths = self.file_manager.get_selected_row_paths()
+            toc_files = [p for p in selected_paths if any(k in Path(p).name.lower() for k in ("cover", "toc", "mulu", "catalogue"))]
+        # 3. 若仍無，搜尋全清單中含 cover 的圖檔
+        if not toc_files:
+            toc_files = [str(d["path"]) for d in self.file_manager.files_data if "cover" in d["name"].lower()]
+
+        if toc_files:
+            self.s4_input.setText(format_paths_arg(toc_files))
+            self.lbl_status.setText(f"已同步 {len(toc_files)} 個 TOC 檔案至步驟 4 目錄來源")
+        else:
+            QMessageBox.information(self, "提示", "未找到標記為 TOC 的圖檔，請先在左側勾選『TOC』或選取目錄圖檔！")
+        self.update_command_preview()
+
     def on_files_updated(self):
         """左側檔案清單更新時，自動同步參數預設值"""
+        if not self.file_manager.files_data:
+            self.s1_input.setText("samples")
+            self.oc_input.setText("samples")
+            self.s4_target.setText("preprocessed_samples")
+            self.s4_input.setText("preprocessed_samples/Cover-06.jpg")
+            self.s2_input.setText("")
+            self.oc_skip.setText("")
+            self.s3_skip.setText("")
+            self.s5_pages.setText("")
+            self.update_command_preview()
+            return
+
         first_dir = self.file_manager.get_first_dir()
         if first_dir:
+            formatted_first_dir = format_rel_path(first_dir)
             if not self.oc_input.text() or self.oc_input.text() == "samples":
-                self.oc_input.setText(first_dir)
+                self.oc_input.setText(formatted_first_dir)
             if not self.s1_input.text() or self.s1_input.text() == "samples":
-                self.s1_input.setText(first_dir)
+                self.s1_input.setText(formatted_first_dir)
+            if not self.s4_target.text() or self.s4_target.text() == "preprocessed_samples":
+                self.s4_target.setText(formatted_first_dir)
 
         # 同步 TOC 勾選
         toc_files = self.file_manager.get_selected_toc_paths()
         if toc_files:
-            self.s2_input.setText(" ".join(toc_files))
-            self.s4_input.setText(toc_files[0])
+            formatted_toc = format_paths_arg(toc_files)
+            self.s2_input.setText(formatted_toc)
+            self.s4_input.setText(formatted_toc)
 
         # 同步 Skip-OCR 勾選
         skip_files = self.file_manager.get_selected_skip_names()
@@ -906,7 +1177,7 @@ class MainWindow(QMainWindow):
     def get_current_cmd_list(self) -> List[str]:
         """根據目前分頁與欄位產生完整命令清單"""
         idx = self.tabs.currentIndex()
-        py_bin = sys.executable
+        py_bin = self.get_python_bin()
 
         if idx == 0:  # 一鍵端到端 (process_book.py)
             cmd = [py_bin, "process_book.py"]
@@ -919,7 +1190,7 @@ class MainWindow(QMainWindow):
                 cmd.extend(["--dpi", self.oc_dpi.text().strip()])
             cmd.extend(["--workers", str(self.oc_workers.value())])
             cmd.extend(["--batch-size", str(self.oc_batch.value())])
-            skips = self.oc_skip.text().strip().split()
+            skips = safe_split_args(self.oc_skip.text())
             if skips:
                 cmd.extend(["--skip-ocr"] + skips)
             if not self.oc_epub.isChecked():
@@ -930,7 +1201,8 @@ class MainWindow(QMainWindow):
 
         elif idx == 1:  # 步驟 1: preprocess_scantailor.py
             cmd = [py_bin, "preprocess_scantailor.py"]
-            cmd.extend(["--input", self.s1_input.text().strip() or "samples"])
+            in_args = safe_split_args(self.s1_input.text())
+            cmd.extend(["--input"] + (in_args if in_args else ["samples"]))
             cmd.extend(["--output", self.s1_output.text().strip() or "preprocessed_samples"])
             cmd.extend(["--color-mode", self.s1_color.currentText()])
             cmd.extend(["--despeckle", self.s1_despeckle.currentText()])
@@ -943,7 +1215,7 @@ class MainWindow(QMainWindow):
 
         elif idx == 2:  # 步驟 2: extract_toc.py
             cmd = [py_bin, "extract_toc.py"]
-            in_files = self.s2_input.text().strip().split()
+            in_files = safe_split_args(self.s2_input.text())
             if in_files:
                 cmd.extend(["--input"] + in_files)
             cmd.extend(["--output", self.s2_output.text().strip() or "toc.json"])
@@ -961,7 +1233,7 @@ class MainWindow(QMainWindow):
                 cmd.extend(["--toc", self.s3_toc.text().strip()])
             cmd.extend(["--workers", str(self.s3_workers.value())])
             cmd.extend(["--batch-size", str(self.s3_batch.value())])
-            skips = self.s3_skip.text().strip().split()
+            skips = safe_split_args(self.s3_skip.text())
             if skips:
                 cmd.extend(["--skip-ocr"] + skips)
             if self.s3_epub.isChecked():
@@ -974,10 +1246,14 @@ class MainWindow(QMainWindow):
 
         elif idx == 4:  # 步驟 4: extract_toc.py --organize-pages
             cmd = [py_bin, "extract_toc.py"]
-            in_files = self.s4_input.text().strip().split()
+            in_files = safe_split_args(self.s4_input.text())
             if in_files:
                 cmd.extend(["--input"] + in_files)
-            cmd.extend(["--organize-pages", self.s4_target.text().strip() or "preprocessed_samples"])
+            target_dir = self.s4_target.text().strip()
+            if target_dir:
+                cmd.extend(["--organize-pages", target_dir])
+            else:
+                cmd.append("--organize-pages")
             if self.s4_copy.isChecked():
                 cmd.append("--copy")
             return cmd
@@ -985,10 +1261,10 @@ class MainWindow(QMainWindow):
         elif idx == 5:  # 步驟 5: patch_pages.py
             cmd = [py_bin, "patch_pages.py"]
             cmd.extend(["--html", self.s5_html.text().strip() or "output/book.html"])
-            pages = self.s5_pages.text().strip().split()
+            pages = safe_split_args(self.s5_pages.text())
             if pages:
                 cmd.extend(["--pages"] + pages)
-            sources = self.s5_source.text().strip().split()
+            sources = safe_split_args(self.s5_source.text())
             if sources:
                 cmd.extend(["--source"] + sources)
             if not self.s5_epub.isChecked():
@@ -1001,9 +1277,15 @@ class MainWindow(QMainWindow):
 
     def update_command_preview(self):
         cmd = self.get_current_cmd_list()
-        # 友善呈現指令（將絕對直譯器替換成 python）
+        # 友善呈現指令（將直譯器替換成 python）
         display_cmd = ["python"] + cmd[1:]
-        self.cmd_preview_edit.setText(" ".join(display_cmd))
+        formatted_args = []
+        for arg in display_cmd:
+            if " " in arg and not ((arg.startswith('"') and arg.endswith('"')) or (arg.startswith("'") and arg.endswith("'"))):
+                formatted_args.append(f'"{arg}"')
+            else:
+                formatted_args.append(arg)
+        self.cmd_preview_edit.setText(" ".join(formatted_args))
 
     def copy_command_to_clipboard(self):
         cmd_text = self.cmd_preview_edit.text()
