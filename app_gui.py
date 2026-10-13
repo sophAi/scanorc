@@ -23,6 +23,8 @@ import shlex
 from pathlib import Path
 from typing import List, Dict, Optional, Union
 
+from config_utils import load_json_with_comments
+
 # -------------------------------------------------------------
 # Linux / Conda 環境相容性自動引導 (途徑 C: PyQt6 原生輸入法優先適配 + PySide6 雙引擎)
 # -------------------------------------------------------------
@@ -753,6 +755,7 @@ class MainWindow(QMainWindow):
             self.file_manager.add_paths(list(Path("samples").glob("*.jpg")))
 
     def setup_ui(self):
+        self.setup_menu_bar()
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -912,6 +915,7 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------
     def init_tab_oneclick(self):
         layout = QVBoxLayout(self.tab_oneclick)
+        layout.addWidget(self.create_pref_toolbar(0))
         form = QFormLayout()
 
         self.oc_input = QLineEdit("samples")
@@ -1042,6 +1046,7 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------
     def init_tab_step1(self):
         layout = QVBoxLayout(self.tab_step1)
+        layout.addWidget(self.create_pref_toolbar(1))
         form = QFormLayout()
 
         self.s1_input = QLineEdit("samples")
@@ -1140,6 +1145,7 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------
     def init_tab_step2(self):
         layout = QVBoxLayout(self.tab_step2)
+        layout.addWidget(self.create_pref_toolbar(2))
         form = QFormLayout()
 
         self.s2_input = QLineEdit("preprocessed_samples/Cover-06.jpg")
@@ -1220,6 +1226,7 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------
     def init_tab_step3(self):
         layout = QVBoxLayout(self.tab_step3)
+        layout.addWidget(self.create_pref_toolbar(3))
         form = QFormLayout()
 
         self.s3_input = QLineEdit("preprocessed_samples")
@@ -1356,6 +1363,7 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------
     def init_tab_step4(self):
         layout = QVBoxLayout(self.tab_step4)
+        layout.addWidget(self.create_pref_toolbar(4))
         form = QFormLayout()
 
         self.s4_target = QLineEdit("preprocessed_samples")
@@ -1400,6 +1408,7 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------
     def init_tab_step5(self):
         layout = QVBoxLayout(self.tab_step5)
+        layout.addWidget(self.create_pref_toolbar(5))
         form = QFormLayout()
 
         self.s5_html = QLineEdit("output/book.html")
@@ -1832,6 +1841,382 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText("已複製 CLI 指令至剪貼簿！")
 
     # -------------------------------------------------------------
+    # JSON 偏好設定與參數範本匯入 / 匯出 (Phase 1)
+    # -------------------------------------------------------------
+    TAB_CONFIG_META = {
+        0: {"name": "一鍵端到端總控", "default_file": "book_config.json", "tool": "process_book.py"},
+        1: {"name": "步驟 1: 幾何轉正裁切", "default_file": "step1_config.json", "tool": "preprocess_scantailor.py"},
+        2: {"name": "步驟 2: 目錄抽取 (TOC)", "default_file": "toc_config.json", "tool": "extract_toc.py"},
+        3: {"name": "步驟 3: AI 版面與 EPUB", "default_file": "step3_config.json", "tool": "pipeline.py"},
+        4: {"name": "步驟 4: 章節目錄歸檔", "default_file": "organize_config.json", "tool": "extract_toc.py"},
+        5: {"name": "步驟 5: 異常頁微創修復", "default_file": "patch_config.json", "tool": "patch_pages.py"},
+    }
+
+    def setup_menu_bar(self):
+        """建立主視窗選單列 (檔案 -> 載入/匯出偏好設定)"""
+        menu_bar = self.menuBar()
+        file_menu = menu_bar.addMenu("檔案(&F)")
+
+        act_load = file_menu.addAction("📂 載入當前分頁偏好設定 (-p)...")
+        act_load.setShortcut(QtGui.QKeySequence("Ctrl+O"))
+        act_load.setStatusTip("選取並載入 JSON 偏好設定檔至目前選取的分頁")
+        act_load.triggered.connect(lambda: self.action_load_preference())
+
+        act_save = file_menu.addAction("💾 匯出當前分頁設定範本 (-t)...")
+        act_save.setShortcut(QtGui.QKeySequence("Ctrl+S"))
+        act_save.setStatusTip("將目前分頁的控制項參數匯出為 JSON 設定檔")
+        act_save.triggered.connect(lambda: self.action_save_template())
+
+        file_menu.addSeparator()
+
+        act_exit = file_menu.addAction("離開(&X)")
+        act_exit.setShortcut(QtGui.QKeySequence("Ctrl+Q"))
+        act_exit.triggered.connect(self.close)
+
+    def get_tab_config_meta(self, tab_idx: int) -> dict:
+        return self.TAB_CONFIG_META.get(tab_idx, {
+            "name": f"分頁 {tab_idx}",
+            "default_file": f"config_tab{tab_idx}.json",
+            "tool": "process_book.py"
+        })
+
+    def create_pref_toolbar(self, tab_idx: int) -> QWidget:
+        """建立各步驟面板頂部之精簡偏好設定操作條"""
+        meta = self.get_tab_config_meta(tab_idx)
+        def_file = meta["default_file"]
+
+        bar = QFrame()
+        bar.setObjectName("prefToolbar")
+        bar_layout = QHBoxLayout(bar)
+        bar_layout.setContentsMargins(4, 2, 4, 2)
+        bar_layout.setSpacing(6)
+
+        btn_load = QPushButton("📂 載入設定 (-p)")
+        btn_load.setToolTip(f"載入 JSON 偏好設定檔至此分頁 ({def_file})")
+        btn_load.setStyleSheet("padding: 2px 8px; font-size: 12px;")
+        btn_load.clicked.connect(lambda: self.action_load_preference(tab_idx))
+
+        btn_save = QPushButton("💾 匯出設定 (-t)")
+        btn_save.setToolTip(f"將此分頁目前的設定匯出為 JSON 設定檔 ({def_file})")
+        btn_save.setStyleSheet("padding: 2px 8px; font-size: 12px;")
+        btn_save.clicked.connect(lambda: self.action_save_template(tab_idx))
+
+        lbl_info = QLabel(f"<span style='color: #666; font-size: 11px;'>偏好設定檔: <code>{def_file}</code></span>")
+
+        bar_layout.addWidget(btn_load)
+        bar_layout.addWidget(btn_save)
+        bar_layout.addWidget(lbl_info)
+        bar_layout.addStretch()
+        return bar
+
+    def export_tab_config(self, tab_idx: int) -> dict:
+        """依據當前分頁 UI 元件數值，匯出為格式化 JSON 字典"""
+        if tab_idx == 0:
+            dpi_val = None
+            dpi_text = self.oc_dpi.text().strip()
+            if dpi_text.isdigit():
+                dpi_val = int(dpi_text)
+
+            max_dim_val = self.oc_img_max_dim.value()
+            if max_dim_val <= 0:
+                max_dim_val = None
+
+            return {
+                "input": self.oc_input.text().strip() or "samples",
+                "output": self.oc_output.text().strip() or "output",
+                "title": self.oc_title.text().strip(),
+                "toc": None,
+                "force_toc": False,
+                "dpi": dpi_val,
+                "margins": 1,
+                "quality": 85,
+                "color_mode": "color_grayscale",
+                "batch_size": self.oc_batch.value(),
+                "workers": self.oc_workers.value(),
+                "skip_ocr": safe_split_args(self.oc_skip.text()),
+                "epub": self.oc_epub.isChecked(),
+                "cover": self.oc_cover.text().strip() or None,
+                "compress_images": self.oc_compress_images.isChecked(),
+                "image_quality": self.oc_img_quality.value(),
+                "image_scale": round(float(self.oc_img_scale.value()), 2),
+                "image_max_dim": max_dim_val,
+                "organize_pages": self.oc_organize.isChecked(),
+                "copy": self.oc_copy.isChecked(),
+                "organize_target": "preprocessed"
+            }
+
+        elif tab_idx == 1:
+            dpi_val = None
+            dpi_text = self.s1_dpi.text().strip()
+            if dpi_text.isdigit():
+                dpi_val = int(dpi_text)
+
+            in_args = safe_split_args(self.s1_input.text())
+            return {
+                "input": in_args if in_args else ["samples"],
+                "output": self.s1_output.text().strip() or "preprocessed_samples",
+                "format": self.s1_format.currentText(),
+                "dpi": dpi_val,
+                "margins": self.s1_margins.value(),
+                "color_mode": self.s1_color.currentText(),
+                "despeckle": self.s1_despeckle.currentText(),
+                "quality": self.s1_quality.value(),
+                "batch_size": 0,
+                "skip_ocr": safe_split_args(self.s1_skip.text())
+            }
+
+        elif tab_idx == 2:
+            in_args = safe_split_args(self.s2_input.text())
+            return {
+                "input": in_args if in_args else ["preprocessed_samples/Cover-06.jpg"],
+                "output": self.s2_output.text().strip() or "toc.json",
+                "model_dir": "models/glm-ocr",
+                "book_title": self.s2_title.text().strip(),
+                "organize_pages": None,
+                "copy": False
+            }
+
+        elif tab_idx == 3:
+            samples = safe_split_args(self.s3_input.text())
+            max_dim_val = self.s3_img_max_dim.value()
+            if max_dim_val <= 0:
+                max_dim_val = None
+
+            return {
+                "samples": samples if samples else ["preprocessed_samples"],
+                "output": self.s3_output.text().strip() or "output",
+                "title": self.s3_title.text().strip() or "數位化掃描書本",
+                "toc": self.s3_toc.text().strip() or None,
+                "epub": self.s3_epub.isChecked(),
+                "cover": self.s3_cover.text().strip() or None,
+                "compress_images": self.s3_compress_images.isChecked(),
+                "image_quality": self.s3_img_quality.value(),
+                "image_scale": round(float(self.s3_img_scale.value()), 2),
+                "image_max_dim": max_dim_val,
+                "batch_size": self.s3_batch.value(),
+                "workers": self.s3_workers.value(),
+                "recursive": True,
+                "cover_first": self.s3_cover_first.isChecked(),
+                "skip_ocr": safe_split_args(self.s3_skip.text())
+            }
+
+        elif tab_idx == 4:
+            in_args = safe_split_args(self.s4_input.text())
+            return {
+                "input": in_args if in_args else ["preprocessed_samples/Cover-06.jpg"],
+                "output": "toc.json",
+                "model_dir": "models/glm-ocr",
+                "book_title": "",
+                "organize_pages": self.s4_target.text().strip() or "preprocessed_samples",
+                "copy": self.s4_copy.isChecked()
+            }
+
+        elif tab_idx == 5:
+            sources = safe_split_args(self.s5_source.text())
+            return {
+                "pages": safe_split_args(self.s5_pages.text()),
+                "html": self.s5_html.text().strip() or "output/book.html",
+                "source": sources if sources else ["output/preprocessed", "preprocessed_samples", "samples"],
+                "epub": self.s5_epub.isChecked(),
+                "backup": self.s5_backup.isChecked(),
+                "revert": False,
+                "list": False
+            }
+
+        return {}
+
+    def import_tab_config(self, tab_idx: int, data: dict):
+        """將 JSON 設定字典回填至指定分頁之 UI 元件中"""
+        if not isinstance(data, dict):
+            return
+
+        if tab_idx == 0:
+            if "input" in data and data["input"] is not None:
+                val = data["input"]
+                self.oc_input.setText(" ".join(val) if isinstance(val, list) else str(val))
+            if "output" in data and data["output"] is not None:
+                self.oc_output.setText(str(data["output"]))
+            if "title" in data:
+                self.oc_title.setText(str(data["title"]) if data["title"] is not None else "")
+            if "cover" in data:
+                self.oc_cover.setText(str(data["cover"]) if data["cover"] is not None else "")
+            if "dpi" in data:
+                self.oc_dpi.setText(str(data["dpi"]) if data["dpi"] is not None else "")
+            if "workers" in data and data["workers"] is not None:
+                self.oc_workers.setValue(int(data["workers"]))
+            if "batch_size" in data and data["batch_size"] is not None:
+                self.oc_batch.setValue(int(data["batch_size"]))
+            if "compress_images" in data and data["compress_images"] is not None:
+                self.oc_compress_images.setChecked(bool(data["compress_images"]))
+            if "image_quality" in data and data["image_quality"] is not None:
+                self.oc_img_quality.setValue(int(data["image_quality"]))
+            if "image_scale" in data and data["image_scale"] is not None:
+                self.oc_img_scale.setValue(float(data["image_scale"]))
+            if "image_max_dim" in data:
+                self.oc_img_max_dim.setValue(int(data["image_max_dim"]) if data["image_max_dim"] else 0)
+            if "skip_ocr" in data:
+                val = data["skip_ocr"]
+                if isinstance(val, list):
+                    self.oc_skip.setText(" ".join(str(x) for x in val))
+                elif val is not None:
+                    self.oc_skip.setText(str(val))
+            if "epub" in data and data["epub"] is not None:
+                self.oc_epub.setChecked(bool(data["epub"]))
+            if "organize_pages" in data and data["organize_pages"] is not None:
+                self.oc_organize.setChecked(bool(data["organize_pages"]))
+            if "copy" in data and data["copy"] is not None:
+                self.oc_copy.setChecked(bool(data["copy"]))
+
+        elif tab_idx == 1:
+            if "input" in data and data["input"] is not None:
+                val = data["input"]
+                self.s1_input.setText(" ".join(val) if isinstance(val, list) else str(val))
+            if "output" in data and data["output"] is not None:
+                self.s1_output.setText(str(data["output"]))
+            if "format" in data and data["format"] is not None:
+                self.s1_format.setCurrentText(str(data["format"]))
+            if "dpi" in data:
+                self.s1_dpi.setText(str(data["dpi"]) if data["dpi"] is not None else "")
+            if "margins" in data and data["margins"] is not None:
+                self.s1_margins.setValue(int(data["margins"]))
+            if "color_mode" in data and data["color_mode"] is not None:
+                self.s1_color.setCurrentText(str(data["color_mode"]))
+            if "despeckle" in data and data["despeckle"] is not None:
+                self.s1_despeckle.setCurrentText(str(data["despeckle"]))
+            if "quality" in data and data["quality"] is not None:
+                self.s1_quality.setValue(int(data["quality"]))
+            skip_val = data.get("skip_ocr", data.get("skip_orc"))
+            if skip_val is not None:
+                if isinstance(skip_val, list):
+                    self.s1_skip.setText(" ".join(str(x) for x in skip_val))
+                else:
+                    self.s1_skip.setText(str(skip_val))
+
+        elif tab_idx == 2:
+            if "input" in data and data["input"] is not None:
+                val = data["input"]
+                self.s2_input.setText(" ".join(val) if isinstance(val, list) else str(val))
+            if "output" in data and data["output"] is not None:
+                self.s2_output.setText(str(data["output"]))
+            if "book_title" in data:
+                self.s2_title.setText(str(data["book_title"]) if data["book_title"] is not None else "")
+
+        elif tab_idx == 3:
+            samples_val = data.get("samples", data.get("input"))
+            if samples_val is not None:
+                if isinstance(samples_val, list):
+                    self.s3_input.setText(" ".join(str(x) for x in samples_val))
+                else:
+                    self.s3_input.setText(str(samples_val))
+            if "output" in data and data["output"] is not None:
+                self.s3_output.setText(str(data["output"]))
+            if "title" in data and data["title"] is not None:
+                self.s3_title.setText(str(data["title"]))
+            if "toc" in data:
+                self.s3_toc.setText(str(data["toc"]) if data["toc"] is not None else "")
+            if "cover" in data:
+                self.s3_cover.setText(str(data["cover"]) if data["cover"] is not None else "")
+            if "workers" in data and data["workers"] is not None:
+                self.s3_workers.setValue(int(data["workers"]))
+            if "batch_size" in data and data["batch_size"] is not None:
+                self.s3_batch.setValue(int(data["batch_size"]))
+            if "compress_images" in data and data["compress_images"] is not None:
+                self.s3_compress_images.setChecked(bool(data["compress_images"]))
+            if "image_quality" in data and data["image_quality"] is not None:
+                self.s3_img_quality.setValue(int(data["image_quality"]))
+            if "image_scale" in data and data["image_scale"] is not None:
+                self.s3_img_scale.setValue(float(data["image_scale"]))
+            if "image_max_dim" in data:
+                self.s3_img_max_dim.setValue(int(data["image_max_dim"]) if data["image_max_dim"] else 0)
+            if "skip_ocr" in data:
+                val = data["skip_ocr"]
+                if isinstance(val, list):
+                    self.s3_skip.setText(" ".join(str(x) for x in val))
+                elif val is not None:
+                    self.s3_skip.setText(str(val))
+            if "epub" in data and data["epub"] is not None:
+                self.s3_epub.setChecked(bool(data["epub"]))
+            if "cover_first" in data and data["cover_first"] is not None:
+                self.s3_cover_first.setChecked(bool(data["cover_first"]))
+
+        elif tab_idx == 4:
+            if "input" in data and data["input"] is not None:
+                val = data["input"]
+                self.s4_input.setText(" ".join(val) if isinstance(val, list) else str(val))
+            if "organize_pages" in data and data["organize_pages"] is not None:
+                self.s4_target.setText(str(data["organize_pages"]))
+            if "copy" in data and data["copy"] is not None:
+                self.s4_copy.setChecked(bool(data["copy"]))
+
+        elif tab_idx == 5:
+            if "html" in data and data["html"] is not None:
+                self.s5_html.setText(str(data["html"]))
+            if "pages" in data and data["pages"] is not None:
+                val = data["pages"]
+                self.s5_pages.setText(" ".join(str(x) for x in val) if isinstance(val, list) else str(val))
+            if "source" in data and data["source"] is not None:
+                val = data["source"]
+                self.s5_source.setText(" ".join(str(x) for x in val) if isinstance(val, list) else str(val))
+            if "epub" in data and data["epub"] is not None:
+                self.s5_epub.setChecked(bool(data["epub"]))
+            if "backup" in data and data["backup"] is not None:
+                self.s5_backup.setChecked(bool(data["backup"]))
+
+        self.update_command_preview()
+
+    def action_load_preference(self, tab_idx: Optional[int] = None):
+        """開啟檔案選擇對話框，讀取 JSON 偏好設定檔並套用至指定分頁"""
+        if tab_idx is None:
+            tab_idx = self.tabs.currentIndex()
+        meta = self.get_tab_config_meta(tab_idx)
+        default_path = Path.cwd() / meta["default_file"]
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            f"載入偏好設定 (-p) - {meta['name']}",
+            str(default_path if default_path.exists() else Path.cwd()),
+            "JSON 設定檔 (*.json);;所有檔案 (*.*)"
+        )
+        if not file_path:
+            return
+
+        try:
+            data = load_json_with_comments(file_path)
+            if not isinstance(data, dict):
+                QMessageBox.warning(self, "格式不符", f"JSON 檔案頂層必須是鍵值物件 (dict)，目前為: {type(data).__name__}")
+                return
+            self.import_tab_config(tab_idx, data)
+            rel_name = format_rel_path(file_path)
+            self.lbl_status.setText(f"已成功載入分頁偏好設定: {rel_name}")
+        except Exception as e:
+            QMessageBox.critical(self, "讀取設定失敗", f"無法解析 JSON 設定檔:\n{e}")
+
+    def action_save_template(self, tab_idx: Optional[int] = None):
+        """開啟存檔對話框，將指定分頁目前的 UI 控制項數值匯出為 JSON 設定檔"""
+        if tab_idx is None:
+            tab_idx = self.tabs.currentIndex()
+        meta = self.get_tab_config_meta(tab_idx)
+        default_path = Path.cwd() / meta["default_file"]
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            f"匯出偏好設定 (-t) - {meta['name']}",
+            str(default_path),
+            "JSON 設定檔 (*.json);;所有檔案 (*.*)"
+        )
+        if not file_path:
+            return
+
+        try:
+            config_data = self.export_tab_config(tab_idx)
+            json_text = json.dumps(config_data, indent=2, ensure_ascii=False)
+            Path(file_path).write_text(json_text + "\n", encoding="utf-8")
+            rel_name = format_rel_path(file_path)
+            self.lbl_status.setText(f"已成功匯出分頁設定檔: {rel_name}")
+        except Exception as e:
+            QMessageBox.critical(self, "匯出設定失敗", f"無法儲存 JSON 設定檔:\n{e}")
+
+    # -------------------------------------------------------------
     # 進程執行與通訊
     # -------------------------------------------------------------
     def run_current_tab_step(self):
@@ -2009,6 +2394,12 @@ class MainWindow(QMainWindow):
                 border: 1px solid #ccc;
                 border-radius: 3px;
                 background: white;
+            }}
+            QFrame#prefToolbar {{
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 4px;
+                padding: 1px 4px;
             }}
         """)
 
