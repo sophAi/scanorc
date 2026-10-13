@@ -242,22 +242,25 @@ python html_to_epub.py output/book.html -o output/final_book.epub --title "幾�
 
 ---
 
-### 方式 E：批次圖片重新壓縮與縮放 (`recompress_images.py` / `recompress_jpg.py`)
+### 方式 E：批次圖片重新壓縮與縮放 (`images_compressed.py` / `recompress_images.py`)
 
-將來源目錄下的所有 JPG 檔（**遞迴包含所有層級之子目錄**）以指定的壓縮率與縮放比例重新壓縮，**完整鏡像保持原目錄結構與檔案相對分布**，輸出至新目錄：
+將來源目錄下的所有圖檔（**預設同時掃描 JPG 與 PNG，遞迴包含所有層級之子目錄**）以指定的壓縮率與縮放比例重新壓縮，**完整鏡像保持原目錄結構與檔案相對分布**，輸出至新目錄：
 
 ```bash
-# 1. 基本壓縮：品質設為 75，維持所有子目錄結構鏡像輸出至 output_q75：
-python recompress_images.py samples -o output_q75 -q 75
+# 1. 基本壓縮：品質設為 75，維持所有子目錄結構鏡像輸出至 output_q75 (JPG 與 PNG 同步處理)：
+python images_compressed.py samples -o output_q75 -q 75
 
-# 2. 縮小圖片尺寸 (例如尺寸縮小至 75% 且品質設為 70)：
-python recompress_images.py samples -o output_compressed -q 70 -s 0.75
+# 2. 同時縮小尺寸 (例如尺寸縮小至 75% 且品質設為 70，自動套用至所有 JPG 與 PNG)：
+python images_compressed.py samples -o output_compressed -q 70 -s 0.75
 
 # 3. 多組品質與縮放比例批次生成 (自動在輸出目錄建立 q50_s100, q75_s75 等子目錄供對比評估)：
-python recompress_images.py samples -o output_compare -q 50 75 85 -s 1.0 0.75
+python images_compressed.py samples -o output_compare -q 50 75 85 -s 1.0 0.75
 
 # 4. 指定最大長寬限制 (例如長邊不超過 1920 像素，等比縮小)：
-python recompress_images.py samples -o output_hd -q 80 --max-dim 1920
+python images_compressed.py samples -o output_hd -q 80 --max-dim 1920
+
+# 5. 強制 PNG 保持無損全彩 (僅縮放尺寸與 zlib 最佳化壓縮，不執行量化降階)：
+python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossless
 ```
 
 ---
@@ -363,19 +366,20 @@ python recompress_images.py samples -o output_hd -q 80 --max-dim 1920
 
 ---
 
-### 7. `recompress_images.py` / `recompress_jpg.py`（批次圖片重新壓縮與縮放工具）
+### 7. `images_compressed.py` / `recompress_images.py`（JPG 與 PNG 批次重新壓縮與縮放工具）
 
 | 參數 | 簡寫 | 預設值 | 說明 |
 | :--- | :---: | :---: | :--- |
-| `input` | `--input`, `-i` | 必填 | 輸入來源目錄路徑（包含 JPG 圖檔與各層子目錄） |
+| `input` | `--input`, `-i` | 必填 | 輸入來源目錄路徑（**預設同時掃描 JPG 與 PNG，涵蓋所有層級之子目錄**） |
 | `--output` | `-o` | 必填 | 輸出目標新目錄路徑（將完整鏡像重建子目錄結構） |
-| `--quality` | `-q` | `[75]` | JPEG 壓縮品質（1~100；支援傳入多個值如 `-q 50 75 85` 批次對比） |
-| `--scale` | `-s` | `['1.0']` | 尺寸縮放比例（如 `0.75` 或 `75%`；支援傳入多個值如 `-s 1.0 0.8 0.5`） |
+| `--quality` | `-q` | `[75]` | 壓縮品質（1~100；對 JPG 為編碼品質，對 PNG 為調色盤自適應量化品質；支援多個值如 `-q 50 75 85` 批次對比） |
+| `--scale` | `-s` | `['1.0']` | 尺寸縮放比例（如 `0.75` 或 `75%`；支援多個值如 `-s 1.0 0.8 0.5`，同時套用於 JPG 與 PNG） |
 | `--max-dim` | `-m` | `None` | 限制圖片最大長寬（像素，如 1920，若超過則等比縮小） |
 | `--workers` | `-w` | `CPU核心數` | 並行 Worker 數 |
-| `--subsampling` | - | `keep` | 色度抽樣模式：`keep` (保留)、`444` (最高清)、`420` (最高壓縮) |
-| `--no-optimize` | - | `False` | 停用 Huffman 編碼最佳化 |
-| `--progressive` | - | `False` | 啟用漸進式 JPEG 編碼 |
+| `--png-lossless` | - | `False` | 強制 PNG 保持無損全彩（不執行量化降階，僅套用 -s 縮放與 zlib 最佳化壓縮） |
+| `--subsampling` | - | `keep` | [JPG專用] 色度抽樣模式：`keep` (保留)、`444` (最高清)、`420` (最高壓縮) |
+| `--no-optimize` | - | `False` | 停用 Huffman / zlib 編碼最佳化 |
+| `--progressive` | - | `False` | [JPG專用] 啟用漸進式 JPEG 編碼 |
 | `--strip-metadata` | - | `False` | 移除 EXIF、DPI 與色彩設定檔（預設完整保留） |
 | `--dry-run` | - | `False` | 模擬執行模式（僅預覽檔案與目錄路徑，不實際寫入） |
 | `--quiet` | - | `False` | 精簡輸出 |
@@ -410,8 +414,9 @@ scanorc/
 ├── process_book.py          # [一鍵總控] 端到端全流程自動化腳本 (轉正->TOC->EPUB->分章)
 ├── patch_pages.py           # [微創修復] 異常頁面原圖替換與秒級重編工具
 ├── html_to_epub.py          # [獨立打包] 由 book.html 與 images 直接秒級生成 EPUB 工具
-├── recompress_images.py     # [批次壓縮] 遞迴鏡像子目錄之 JPG 重新壓縮與縮放工具
-├── recompress_jpg.py        # recompress_images.py 之捷徑符號連結
+├── images_compressed.py     # [批次壓縮] 遞迴鏡像子目錄之 JPG 與 PNG 重新壓縮與縮放工具
+├── recompress_images.py     # images_compressed.py 之主程式實作
+├── recompress_jpg.py        # images_compressed.py 之捷徑符號連結
 ├── preprocess_scantailor.py # 出版級轉正、留白裁切與版心標準化前處理引擎
 ├── extract_toc.py           # 目錄頁結構化抽取工具 (方案 A: GLM-OCR -> JSON)
 ├── pipeline.py              # DocLayout-YOLO + GLM-OCR 端到端轉換流水線

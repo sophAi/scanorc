@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-ScanORC: 批次圖片重新壓縮與縮放工具 (recompress_images.py)
-將指定目錄下的所有 JPG 檔（包含所有層級的子目錄）以指定的壓縮率與縮放比例重新壓縮，
-完整維持子目錄結構與檔案相對分布，並輸出至指定的新目錄。
+ScanORC: 批次圖片重新壓縮與縮放工具 (recompress_images.py / images_compressed.py)
+將指定目錄下的所有圖檔（預設同時掃描 JPG 與 PNG，包含所有層級的子目錄）
+以指定的壓縮率與縮放比例重新壓縮，完整維持子目錄結構與檔案相對分布，並輸出至指定的新目錄。
 
 特色：
   1. 完整鏡像：遞迴遍歷所有子目錄，以 1:1 相同階層鏡像重建目錄結構與檔案相對分布。
-  2. 彈性品質與縮放：支援自訂 JPEG 壓縮品質 (--quality) 與尺寸縮放比例 (--scale, 如 0.5 或 50%)。
-  3. 多組合批次測試：若指定多組品質或縮放值，自動為各組合生成對應子目錄，方便畫質與體積橫向評估。
-  4. 出版級重採樣：縮放採用高品質 Lanczos 重採樣演算法，保持細文字與線條邊緣清晰度。
-  5. 多核並行加速：內建 ProcessPoolExecutor 多進程並行處理，數百頁圖檔數秒內高速完成。
-  6. 安全與元資料：保留 DPI、ICC 色彩設定檔與 EXIF；採用原子性寫入避免中斷產生損壞檔案。
+  2. 同時支援 JPG 與 PNG：預設同時掃描 .jpg, .jpeg, .png 圖檔，依據個別格式自適應最佳壓縮策略。
+  3. 彈性品質與縮放：支援自訂品質 (-q / --quality) 與尺寸縮放比例 (-s / --scale, 如 0.5 或 50%)。
+     - JPG：套用 lossy DCT 壓縮率、可選色彩抽樣 (4:4:4 / 4:2:0) 與 Huffman 表最佳化。
+     - PNG：套用高品質 Lanczos 縮放；品質 < 100 時自動套用調色盤量化降階以劇烈縮減檔案體積 (可選 --png-lossless 保持無損全彩)。
+  4. 多組合批次測試：若指定多組品質或縮放值，自動為各組合生成對應子目錄，方便畫質與體積橫向評估。
+  5. 出版級重採樣：縮放採用高品質 Lanczos 重採樣演算法，保持細文字與線條邊緣清晰度。
+  6. 多核並行加速：內建 ProcessPoolExecutor 多進程並行處理，數百頁圖檔數秒內高速完成。
+  7. 安全與元資料：保留 DPI、ICC 色彩設定檔與 EXIF；採用原子性寫入避免中斷產生損壞檔案。
 """
 
 import os
@@ -23,7 +26,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from PIL import Image
 
-VALID_EXTS = {".jpg", ".jpeg"}
+VALID_EXTS = {".jpg", ".jpeg", ".png"}
 
 
 def parse_scale_value(val_str: Union[str, float]) -> float:
@@ -62,20 +65,18 @@ def _worker_task(args_tuple) -> Dict:
         progressive,
         subsampling,
         preserve_metadata,
+        png_lossless,
     ) = args_tuple
 
     src_p = Path(src_path_str)
     dst_p = Path(dst_path_str)
+    is_png = src_p.suffix.lower() == ".png"
 
     try:
         orig_size = src_p.stat().st_size
 
         with Image.open(src_p) as im:
             orig_w, orig_h = im.size
-
-            # 色彩模式防呆處理 (若為 CMYK 或 RGBA 轉為 RGB，若是單色灰階保留 L)
-            if im.mode not in ("RGB", "L"):
-                im = im.convert("RGB")
 
             # 計算目標尺寸
             new_w, new_h = orig_w, orig_h
@@ -88,47 +89,93 @@ def _worker_task(args_tuple) -> Dict:
                 new_w = max(1, int(round(new_w * ratio)))
                 new_h = max(1, int(round(new_h * ratio)))
 
-            # 若尺寸改變，執行高品質 Lanczos 重採樣
-            if (new_w, new_h) != (orig_w, orig_h):
-                im = im.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
-
-            # 建立輸出目錄
             dst_p.parent.mkdir(parents=True, exist_ok=True)
 
-            save_kwargs = {
-                "format": "JPEG",
-                "quality": quality,
-                "optimize": optimize,
-                "progressive": progressive,
-            }
-
-            # 採樣率設定
-            if subsampling == "444":
-                save_kwargs["subsampling"] = 0
-            elif subsampling == "422":
-                save_kwargs["subsampling"] = 1
-            elif subsampling == "420":
-                save_kwargs["subsampling"] = 2
-            elif subsampling == "keep":
-                orig_sub = im.info.get("subsampling")
-                if orig_sub is not None:
-                    save_kwargs["subsampling"] = orig_sub
-
-            # 元資料保留
-            if preserve_metadata:
-                if "dpi" in im.info:
-                    orig_dpi = im.info["dpi"]
-                    if scale != 1.0:
-                        save_kwargs["dpi"] = (
-                            max(72, int(round(orig_dpi[0] * scale))),
-                            max(72, int(round(orig_dpi[1] * scale))),
-                        )
+            if is_png:
+                # ---------------- PNG 處理流程 ----------------
+                # 色彩模式處理 (保留透明通道 RGBA，調色盤 P 轉為 RGBA 或 RGB)
+                if im.mode == "P":
+                    if "transparency" in im.info:
+                        im = im.convert("RGBA")
                     else:
-                        save_kwargs["dpi"] = orig_dpi
-                if "icc_profile" in im.info:
-                    save_kwargs["icc_profile"] = im.info["icc_profile"]
-                if "exif" in im.info:
-                    save_kwargs["exif"] = im.info["exif"]
+                        im = im.convert("RGB")
+                elif im.mode not in ("RGBA", "RGB", "L", "LA"):
+                    im = im.convert("RGBA" if "A" in im.mode else "RGB")
+
+                # 若尺寸改變，執行高品質 Lanczos 重採樣
+                if (new_w, new_h) != (orig_w, orig_h):
+                    im = im.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+
+                # 品質 -q 作用於 PNG：若非 lossless 且品質小於 100，套用調色盤量化降階 (大幅縮減檔案體積)
+                if not png_lossless and quality < 100:
+                    if im.mode in ("RGB", "RGBA"):
+                        colors = max(16, min(256, int(round(16 + (256 - 16) * (quality / 100.0)))))
+                        quant_method = Image.Quantize.FASTOCTREE if im.mode == "RGBA" else Image.Quantize.MEDIANCUT
+                        im = im.quantize(colors=colors, method=quant_method)
+
+                save_kwargs = {
+                    "format": "PNG",
+                    "optimize": optimize,
+                    "compress_level": 9,
+                }
+
+                if preserve_metadata:
+                    if "dpi" in im.info:
+                        orig_dpi = im.info["dpi"]
+                        if scale != 1.0:
+                            save_kwargs["dpi"] = (
+                                max(72, int(round(orig_dpi[0] * scale))),
+                                max(72, int(round(orig_dpi[1] * scale))),
+                            )
+                        else:
+                            save_kwargs["dpi"] = orig_dpi
+                    if "icc_profile" in im.info:
+                        save_kwargs["icc_profile"] = im.info["icc_profile"]
+
+            else:
+                # ---------------- JPG / JPEG 處理流程 ----------------
+                # 色彩模式防呆處理 (若為 CMYK 或 RGBA 轉為 RGB，若是單色灰階保留 L)
+                if im.mode not in ("RGB", "L"):
+                    im = im.convert("RGB")
+
+                # 若尺寸改變，執行高品質 Lanczos 重採樣
+                if (new_w, new_h) != (orig_w, orig_h):
+                    im = im.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+
+                save_kwargs = {
+                    "format": "JPEG",
+                    "quality": quality,
+                    "optimize": optimize,
+                    "progressive": progressive,
+                }
+
+                # 採樣率設定
+                if subsampling == "444":
+                    save_kwargs["subsampling"] = 0
+                elif subsampling == "422":
+                    save_kwargs["subsampling"] = 1
+                elif subsampling == "420":
+                    save_kwargs["subsampling"] = 2
+                elif subsampling == "keep":
+                    orig_sub = im.info.get("subsampling")
+                    if orig_sub is not None:
+                        save_kwargs["subsampling"] = orig_sub
+
+                # 元資料保留
+                if preserve_metadata:
+                    if "dpi" in im.info:
+                        orig_dpi = im.info["dpi"]
+                        if scale != 1.0:
+                            save_kwargs["dpi"] = (
+                                max(72, int(round(orig_dpi[0] * scale))),
+                                max(72, int(round(orig_dpi[1] * scale))),
+                            )
+                        else:
+                            save_kwargs["dpi"] = orig_dpi
+                    if "icc_profile" in im.info:
+                        save_kwargs["icc_profile"] = im.info["icc_profile"]
+                    if "exif" in im.info:
+                        save_kwargs["exif"] = im.info["exif"]
 
             # 原子性寫入：先寫入臨時檔再覆蓋
             temp_file = dst_p.with_name(f".{dst_p.name}.tmp_{os.getpid()}_{time.time_ns()}")
@@ -151,6 +198,7 @@ def _worker_task(args_tuple) -> Dict:
             "new_size": new_size,
             "orig_dim": (orig_w, orig_h),
             "new_dim": (new_w, new_h),
+            "is_png": is_png,
             "error": None,
         }
 
@@ -163,13 +211,14 @@ def _worker_task(args_tuple) -> Dict:
             "new_size": 0,
             "orig_dim": (0, 0),
             "new_dim": (0, 0),
+            "is_png": is_png,
             "error": str(e),
         }
 
 
-def collect_jpg_files(input_dir: Path) -> List[Tuple[Path, Path]]:
+def collect_image_files(input_dir: Path) -> List[Tuple[Path, Path]]:
     """
-    遞迴收集指定目錄下的所有 JPG 檔，並計算相對路徑
+    遞迴收集指定目錄下的所有 JPG 與 PNG 檔案，並計算相對路徑
     :return: list of (abs_path, rel_path)
     """
     items = []
@@ -201,11 +250,12 @@ def recompress_directory(
     progressive: bool = False,
     subsampling: str = "keep",
     preserve_metadata: bool = True,
+    png_lossless: bool = False,
     dry_run: bool = False,
     verbose: bool = True,
 ) -> Dict:
     """
-    遞迴重新壓縮指定目錄及其子目錄下的所有 JPG 檔案。
+    遞迴重新壓縮指定目錄及其子目錄下的所有 JPG 與 PNG 檔案。
     """
     in_dir = Path(input_dir).resolve()
     out_dir = Path(output_dir).resolve()
@@ -216,14 +266,17 @@ def recompress_directory(
     if in_dir == out_dir:
         raise ValueError("安全防護：輸出目錄不能與輸入目錄完全相同！請指定一個獨立的新目錄。")
 
-    # 1. 掃描圖檔清單
-    all_files = collect_jpg_files(in_dir)
+    # 1. 掃描圖檔清單 (JPG 與 PNG)
+    all_files = collect_image_files(in_dir)
     total_files = len(all_files)
 
     if total_files == 0:
         if verbose:
-            print(f"[-] 在目錄 '{in_dir}' 下未找到任何 JPG/JPEG 檔案！")
+            print(f"[-] 在目錄 '{in_dir}' 下未找到任何 JPG 或 PNG 檔案！")
         return {"total_files": 0, "presets": []}
+
+    jpg_cnt = sum(1 for _, p in all_files if p.suffix.lower() in (".jpg", ".jpeg"))
+    png_cnt = sum(1 for _, p in all_files if p.suffix.lower() == ".png")
 
     workers = workers or min(os.cpu_count() or 4, 16)
     is_multi_combo = (len(qualities) > 1) or (len(scales) > 1)
@@ -234,13 +287,17 @@ def recompress_directory(
         print("======================================================================")
         print(f"[*] 輸入目錄:    {in_dir}")
         print(f"[*] 輸出目錄:    {out_dir}")
-        print(f"[*] 找到圖檔:    {total_files} 個 JPG 檔案 (包含所有子目錄)")
+        print(f"[*] 找到圖檔:    {total_files} 個圖檔 (含 {jpg_cnt} 個 JPG, {png_cnt} 個 PNG，涵蓋所有子目錄)")
         print(f"[*] 壓縮品質:    {qualities}")
         print(f"[*] 縮放比例:    {[f'{int(s*100)}%' if s<=10 else f'{s}' for s in scales]}")
         if max_dim:
             print(f"[*] 最大長寬:    {max_dim} px")
         print(f"[*] 並行 Worker: {workers}")
         print(f"[*] 演算法最佳化: Lanczos 重採樣 | Huffman 最佳化={optimize}")
+        if png_lossless:
+            print(f"[*] PNG 模式:    無損全彩 (不執行調色盤降階)")
+        else:
+            print(f"[*] PNG 模式:    自適應調色盤量化壓縮 (隨 -q 品質縮減體積)")
         if dry_run:
             print("[*] 執行模式:    ⚠️ 模擬運行 (Dry Run - 不寫入檔案)")
         print("======================================================================\n")
@@ -278,6 +335,7 @@ def recompress_directory(
                     progressive,
                     subsampling,
                     preserve_metadata,
+                    png_lossless,
                 ))
 
             if dry_run:
@@ -315,8 +373,9 @@ def recompress_directory(
                             rel_show = Path(res["dst"]).relative_to(preset_out_dir)
                             dim_show = f"[{res['orig_dim'][0]}x{res['orig_dim'][1]} -> {res['new_dim'][0]}x{res['new_dim'][1]}]"
                             ratio = (res["new_size"] - res["orig_size"]) / max(1, res["orig_size"]) * 100
+                            fmt_tag = "PNG" if res.get("is_png") else "JPG"
                             print(
-                                f"    [{completed_cnt}/{total_files}] {rel_show} "
+                                f"    [{completed_cnt}/{total_files}] [{fmt_tag}] {rel_show} "
                                 f"({format_bytes(res['orig_size'])} -> {format_bytes(res['new_size'])}, {ratio:+.1f}%) {dim_show}"
                             )
                     else:
@@ -380,13 +439,13 @@ def recompress_directory(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ScanORC: 批次圖片重新壓縮與縮放工具 (遞迴遍歷子目錄並完整維持相對分布)",
+        description="ScanORC: 批次圖片重新壓縮與縮放工具 (預設同時掃描 JPG 與 PNG，遞迴鏡像維持相對目錄結構)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""使用範例:
   # 1. 基本使用：壓縮指定目錄，品質設為 75，維持所有子目錄結構輸出至 output_q75:
   python recompress_images.py samples -o output_q75 -q 75
 
-  # 2. 同時縮小尺寸 (例如寬高縮減至 75% 且品質 70):
+  # 2. 同時縮小尺寸 (例如寬高縮減至 75% 且品質 70，JPG 與 PNG 同步縮小與壓縮):
   python recompress_images.py samples -o output_compressed -q 70 -s 0.75
 
   # 3. 多組品質與縮放比例批次生成 (自動建立 q50_s100, q75_s75, q85_s50 等子目錄以供對比):
@@ -395,7 +454,10 @@ def main():
   # 4. 指定最大長寬限制 (例如長邊不超過 1920 像素):
   python recompress_images.py samples -o output_hd -q 80 --max-dim 1920
 
-  # 5. 模擬運行預覽清單 (不實際寫入任何檔案):
+  # 5. PNG 保持無損全彩 (僅縮放尺寸與 zlib 壓縮，不執行量化調色盤降階):
+  python recompress_images.py samples -o output_lossless -q 80 -s 0.8 --png-lossless
+
+  # 6. 模擬運行預覽清單 (不實際寫入任何檔案):
   python recompress_images.py samples -o output_preview -q 75 --dry-run
 """
     )
@@ -404,7 +466,7 @@ def main():
         "input",
         nargs="?",
         default=None,
-        help="輸入來源目錄路徑 (包含 JPG 圖檔與各層子目錄)"
+        help="輸入來源目錄路徑 (包含 JPG/PNG 圖檔與各層子目錄)"
     )
     parser.add_argument(
         "--input", "-i",
@@ -422,13 +484,13 @@ def main():
         nargs="+",
         type=int,
         default=[75],
-        help="JPEG 壓縮品質 (1~100，預設: 75；支援傳入多個值如 -q 50 75 85)"
+        help="壓縮品質 (1~100，預設: 75；支援傳入多個值如 -q 50 75 85。對 JPG 為編碼品質，對 PNG 為調色盤自適應量化品質)"
     )
     parser.add_argument(
         "--scale", "-s",
         nargs="+",
         default=["1.0"],
-        help="圖片尺寸縮放比例 (例如 0.75 或 75%%，預設: 1.0；支援傳入多個值如 -s 1.0 0.8 0.5)"
+        help="圖片尺寸縮放比例 (例如 0.75 或 75%%，預設: 1.0；支援傳入多個值如 -s 1.0 0.8 0.5。同時作用於 JPG 與 PNG)"
     )
     parser.add_argument(
         "--max-dim", "-m",
@@ -443,20 +505,25 @@ def main():
         help="並行 Worker 數 (預設: 系統 CPU 核心數)"
     )
     parser.add_argument(
+        "--png-lossless",
+        action="store_true",
+        help="強制 PNG 保持無損全彩 (不執行調色盤降階量化，僅套用 -s 縮放與 zlib 最佳化壓縮)"
+    )
+    parser.add_argument(
         "--subsampling",
         choices=["keep", "444", "422", "420"],
         default="keep",
-        help="色彩抽樣模式 (keep: 保留原格式, 444: 無色度抽樣最清晰, 420: 壓縮率最高)"
+        help="[JPG專用] 色彩抽樣模式 (keep: 保留原格式, 444: 無色度抽樣最清晰, 420: 壓縮率最高)"
     )
     parser.add_argument(
         "--no-optimize",
         action="store_true",
-        help="停用 Huffman 編碼表最佳化"
+        help="停用 Huffman / zlib 編碼表最佳化"
     )
     parser.add_argument(
         "--progressive",
         action="store_true",
-        help="啟用漸進式 JPEG 編碼"
+        help="[JPG專用] 啟用漸進式 JPEG 編碼"
     )
     parser.add_argument(
         "--strip-metadata",
@@ -496,6 +563,7 @@ def main():
             progressive=args.progressive,
             subsampling=args.subsampling,
             preserve_metadata=not args.strip_metadata,
+            png_lossless=args.png_lossless,
             dry_run=args.dry_run,
             verbose=not args.quiet,
         )
