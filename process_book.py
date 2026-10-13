@@ -97,11 +97,11 @@ def main():
         help="多進程並行 Worker 數 (預設 1，16GB 顯卡可設 3~4)"
     )
     parser.add_argument(
-        "--skip-ocr", "--no-ocr",
+        "--skip-ocr", "--skip-orc", "--no-ocr",
         nargs="*",
         default=[],
         dest="skip_ocr",
-        help="不作 OCR 的檔案清單 (可指定檔名、頁碼或包含清單的純文字檔路徑，直接以原始圖檔嵌入 HTML/EPUB)"
+        help="略過 OCR / ScanTailor 處理的檔案清單 (可指定檔名、頁碼或包含清單的純文字檔路徑，直接以原始圖檔導出並嵌入 HTML/EPUB)"
     )
     parser.add_argument(
         "--epub",
@@ -164,6 +164,8 @@ def main():
     ]
     if args.dpi:
         step1_cmd.extend(["--dpi", str(args.dpi)])
+    if args.skip_ocr:
+        step1_cmd.extend(["--skip-orc", *args.skip_ocr])
 
     print(f"[*] 執行指令: {' '.join(step1_cmd)}")
     subprocess.run(step1_cmd, check=True)

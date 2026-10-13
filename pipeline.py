@@ -917,7 +917,7 @@ def main():
         help="是否將封面/目錄頁 (Cover-*.jpg) 編排於內文頁 (Page-*.jpg) 之前 (預設: True，使用 --no-cover-first 則內文頁優先)"
     )
     parser.add_argument(
-        "--skip-ocr", "--no-ocr",
+        "--skip-ocr", "--skip-orc", "--no-ocr",
         nargs="*",
         default=[],
         dest="skip_ocr",

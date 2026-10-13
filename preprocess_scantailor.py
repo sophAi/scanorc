@@ -12,6 +12,7 @@ ScanORC: 掃描書本前置預處理工具 (基於 ScanTailor 引擎)
 
 import os
 import sys
+import re
 import time
 import shutil
 import argparse
@@ -96,6 +97,97 @@ def convert_tif_to_target_format(
         shutil.copy2(tif_path, target_path)
 
 
+def export_image_to_target_format(
+    src_path: Path,
+    target_path: Path,
+    target_format: str = "jpg",
+    quality: int = 95
+):
+    """
+    將原圖導出為指定的目標格式 (若格式相同直接快速複製，否則轉換儲存)
+    """
+    fmt = target_format.lower()
+    target_ext = f".{fmt}" if fmt != "jpeg" else ".jpg"
+    if src_path.suffix.lower() == target_ext and fmt != "jpg":
+        shutil.copy2(src_path, target_path)
+        return
+
+    try:
+        with Image.open(src_path) as im:
+            if fmt in ("jpg", "jpeg"):
+                if im.mode not in ("RGB", "L"):
+                    im = im.convert("RGB")
+                im.save(target_path, "JPEG", quality=quality)
+            elif fmt == "png":
+                im.save(target_path, "PNG", optimize=True)
+            elif fmt in ("tif", "tiff"):
+                im.save(target_path, "TIFF")
+            else:
+                shutil.copy2(src_path, target_path)
+    except Exception:
+        shutil.copy2(src_path, target_path)
+
+
+def parse_skip_ocr_targets(skip_args: List[str]) -> set:
+    """
+    解析不作 ScanTailor 處理 / 略過 OCR 的頁面目標清單：
+    支援檔名 (Page-050.jpg, page-050)、純頁碼 (50)、純文字清單檔案 (skip.txt)
+    傳回標準化之小寫字串集合
+    """
+    targets = set()
+    for item in skip_args:
+        item_str = str(item).strip()
+        if not item_str:
+            continue
+
+        p = Path(item_str)
+        if p.is_file() and p.suffix.lower() in (".txt", ".list", ".csv"):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            targets.add(line.lower())
+                            targets.add(Path(line).stem.lower())
+                            nums = re.findall(r"\d+", line)
+                            if nums:
+                                targets.add(nums[-1])
+                                targets.add(str(int(nums[-1])))
+                                targets.add(f"page-{int(nums[-1]):03d}.jpg".lower())
+                                targets.add(f"page-{int(nums[-1]):03d}".lower())
+            except Exception as e:
+                print(f"[-] 讀取略過清單檔案失敗 '{item_str}': {e}", file=sys.stderr)
+            continue
+
+        targets.add(item_str.lower())
+        targets.add(Path(item_str).stem.lower())
+        nums = re.findall(r"\d+", item_str)
+        if nums:
+            targets.add(nums[-1])
+            targets.add(str(int(nums[-1])))
+            targets.add(f"page-{int(nums[-1]):03d}.jpg".lower())
+            targets.add(f"page-{int(nums[-1]):03d}".lower())
+
+    return targets
+
+
+def should_skip_ocr(img_path: Path, skip_targets: set) -> bool:
+    """
+    判斷特定圖檔是否應略過 ScanTailor 處理：
+    比對完整檔名、stem 或結尾數字頁碼
+    """
+    if not skip_targets:
+        return False
+    name_lower = img_path.name.lower()
+    stem_lower = img_path.stem.lower()
+    if name_lower in skip_targets or stem_lower in skip_targets:
+        return True
+    nums = re.findall(r"\d+", stem_lower)
+    if nums and (nums[-1] in skip_targets or str(int(nums[-1])) in skip_targets):
+        return True
+    return False
+
+
 def collect_image_groups(input_paths: List[Path], output_base_dir: Optional[Path] = None) -> List[Tuple[Path, List[Path]]]:
     """
     掃描輸入路徑清單 (支援傳入目錄與單個/多個檔案)，按子目錄分組收集所有支援的圖檔：
@@ -142,23 +234,48 @@ def process_image_group(
     img_files: List[Path],
     output_base_dir: Path,
     scantailor_cmd: List[str],
-    args: argparse.Namespace
+    args: argparse.Namespace,
+    skip_targets: set
 ) -> int:
     """
     針對每個獨立子目錄 (對應一本書的掃描檔)：
     1. 使用全新、獨立的轉正與裁切計算，不共享任何全域狀態或歷史目錄規格
     2. 預設不作圖形縮放 (input_dpi == output_dpi)，保持 1:1 原生解析度；僅在指定 --dpi 時進行縮放
+    3. 若圖檔位於略過清單 (skip_targets) 中，直接繞過 ScanTailor 運算，無損導出至目標目錄
     """
     dest_dir = output_base_dir / rel_dir
     dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # 分流：篩選出略過圖檔與需前置處理之圖檔
+    files_to_skip = [p for p in img_files if should_skip_ocr(p, skip_targets)]
+    files_to_process = [p for p in img_files if not should_skip_ocr(p, skip_targets)]
+
+    total_converted = 0
+
+    # 1. 處理略過圖檔：直接導出原始圖檔至目標目錄，繞過 ScanTailor
+    for skip_img in files_to_skip:
+        target_name = f"{skip_img.stem}.{args.format.lower()}"
+        final_dest = dest_dir / target_name
+        export_image_to_target_format(
+            skip_img,
+            final_dest,
+            target_format=args.format,
+            quality=args.quality
+        )
+        total_converted += 1
+        print(f"    [*] [略過 ScanTailor 處理] {skip_img.name} -> 直接導出原始圖檔至目標目錄")
+
+    # 若所有圖檔皆被略過，直接返回
+    if not files_to_process:
+        return total_converted
 
     # 建立該子目錄專屬的臨時工作區，執行前徹底清空確保無殘留
     temp_tif_dir = dest_dir / ".scantailor_temp"
     shutil.rmtree(temp_tif_dir, ignore_errors=True)
     temp_tif_dir.mkdir(parents=True, exist_ok=True)
 
-    # 檢測該子目錄圖檔的原生 DPI
-    detected_dpi = get_directory_dpi(img_files)
+    # 檢測待處理圖檔的原生 DPI
+    detected_dpi = get_directory_dpi(files_to_process)
 
     # 解析度處理邏輯：
     # 若使用者未傳入 --dpi (預設 None)，設定 in_dpi = out_dpi = detected_dpi，比率 1:1，不縮放圖形
@@ -177,12 +294,10 @@ def process_image_group(
 
     # 判斷是否需要按批次分批送給 ScanTailor
     batch_size = args.batch_size
-    if batch_size > 0 and len(img_files) > batch_size:
-        batches = [img_files[i:i + batch_size] for i in range(0, len(img_files), batch_size)]
+    if batch_size > 0 and len(files_to_process) > batch_size:
+        batches = [files_to_process[i:i + batch_size] for i in range(0, len(files_to_process), batch_size)]
     else:
-        batches = [img_files]
-
-    total_converted = 0
+        batches = [files_to_process]
 
     try:
         for batch in batches:
@@ -294,6 +409,13 @@ def main():
         default=0,
         help="單一子目錄內分批處理之頁數大小 (預設: 0 表示整目錄一次處理以保持章節尺寸統一；圖檔過多時可設 100~200)"
     )
+    parser.add_argument(
+        "--skip-orc", "--skip-ocr", "--no-ocr",
+        nargs="*",
+        default=[],
+        dest="skip_ocr",
+        help="略過 ScanTailor 幾何轉正與裁切處理的檔案清單 (可指定檔名、頁碼、路徑或 .txt 清單，直接將原始圖檔導出至輸出目錄)"
+    )
     args = parser.parse_args()
 
     scantailor_cmd = check_scantailor_cmd()
@@ -315,6 +437,8 @@ def main():
         print(f"[-] 在輸入清單 {args.input} 中未找到任何支援的圖片檔案！", file=sys.stderr)
         sys.exit(1)
 
+    skip_targets = parse_skip_ocr_targets(args.skip_ocr)
+
     dpi_summary = f"{args.dpi} DPI (變更解析度)" if args.dpi else "原生 1:1 不縮放"
 
     print("==================================================")
@@ -325,6 +449,8 @@ def main():
     print(f"[*] 輸入來源: {args.input}")
     print(f"[*] 輸出目錄: {output_base_dir}")
     print(f"[*] 參數設定: {args.format.upper()} (解析度: {dpi_summary}, 邊距: {args.margins}mm, 色彩: {args.color_mode})")
+    if skip_targets:
+        print(f"[*] 略過設定: 發現 {len(skip_targets)} 個略過項目 (將繞過 ScanTailor 運算並直接導出原圖)")
     print(f"[*] 掃描統計: 發現 {len(image_groups)} 個書籍/章節目錄群組，共計 {total_images} 張圖片待處理")
     print("--------------------------------------------------")
 
@@ -349,7 +475,8 @@ def main():
                 img_files=imgs,
                 output_base_dir=output_base_dir,
                 scantailor_cmd=scantailor_cmd,
-                args=args
+                args=args,
+                skip_targets=skip_targets
             )
             grand_total_converted += converted
             group_elapsed = time.time() - group_start

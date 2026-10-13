@@ -743,6 +743,17 @@ class MainWindow(QMainWindow):
         h_fmt.addWidget(self.s1_dpi)
         form.addRow("輸出品質:", h_fmt)
 
+        self.s1_skip = QLineEdit("")
+        self.s1_skip.setPlaceholderText("指定略過頁碼/檔名 (自動同步左側『略過OCR』勾選項，繞過 ScanTailor 直接導出原圖)")
+        self.s1_skip.textChanged.connect(self.update_command_preview)
+        btn_sync_s1_skip = QPushButton("🔄 同步略過清單")
+        btn_sync_s1_skip.setToolTip("自動同步左側檔案清單中已勾選為『略過OCR』的檔案")
+        btn_sync_s1_skip.clicked.connect(self.sync_step1_skip)
+        h_skip1 = QHBoxLayout()
+        h_skip1.addWidget(self.s1_skip)
+        h_skip1.addWidget(btn_sync_s1_skip)
+        form.addRow("略過處理頁面 (--skip-orc):", h_skip1)
+
         layout.addLayout(form)
 
         h_act = QHBoxLayout()
@@ -1099,6 +1110,22 @@ class MainWindow(QMainWindow):
                 self.lbl_status.setText("步驟 1 輸入重設為預設目錄 (samples)")
         self.update_command_preview()
 
+    def sync_step1_skip(self):
+        """主動將左側檔案清單中勾選為『略過OCR』的檔案同步至步驟 1 (--skip-orc)"""
+        skip_files = self.file_manager.get_selected_skip_names()
+        if skip_files:
+            self.s1_skip.setText(" ".join(skip_files))
+            self.lbl_status.setText(f"已同步 {len(skip_files)} 個略過處理頁面至步驟 1")
+        else:
+            selected_names = self.file_manager.get_selected_row_names()
+            if selected_names:
+                self.s1_skip.setText(" ".join(selected_names))
+                self.lbl_status.setText(f"步驟 1 已將選取的 {len(selected_names)} 個圖檔設為略過處理")
+            else:
+                self.s1_skip.setText("")
+                self.lbl_status.setText("步驟 1 略過清單已清空")
+        self.update_command_preview()
+
     def sync_step4_target_dir(self):
         """主動將左側檔案清單中圖檔所在目錄同步至步驟 4 待歸檔目錄 (--organize-pages)"""
         selected_paths = self.file_manager.get_selected_row_paths()
@@ -1134,6 +1161,7 @@ class MainWindow(QMainWindow):
         """左側檔案清單更新時，自動同步參數預設值"""
         if not self.file_manager.files_data:
             self.s1_input.setText("samples")
+            self.s1_skip.setText("")
             self.oc_input.setText("samples")
             self.s4_target.setText("preprocessed_samples")
             self.s4_input.setText("preprocessed_samples/Cover-06.jpg")
@@ -1165,6 +1193,7 @@ class MainWindow(QMainWindow):
         skip_files = self.file_manager.get_selected_skip_names()
         skip_str = " ".join(skip_files)
         self.oc_skip.setText(skip_str)
+        self.s1_skip.setText(skip_str)
         self.s3_skip.setText(skip_str)
 
         # 同步 Patch 勾選
@@ -1211,6 +1240,9 @@ class MainWindow(QMainWindow):
             cmd.extend(["--quality", str(self.s1_quality.value())])
             if self.s1_dpi.text().strip():
                 cmd.extend(["--dpi", self.s1_dpi.text().strip()])
+            s1_skips = safe_split_args(self.s1_skip.text())
+            if s1_skips:
+                cmd.extend(["--skip-orc"] + s1_skips)
             return cmd
 
         elif idx == 2:  # 步驟 2: extract_toc.py
