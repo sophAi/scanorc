@@ -124,11 +124,18 @@ pip install -r requirements.txt
 本專案提供自動下載腳本，自動從 HuggingFace 取得 DocLayout-YOLO 與 GLM-OCR 模型權重：
 
 ```bash
+# 預設下載至專案內 models/
 python download_models.py
+
+# 或自訂集中存放目錄 (跨專案共享 / 外接硬碟 / NAS)，亦可設定環境變數 SCANORC_MODELS_DIR
+python download_models.py --models-dir /opt/ai_models
 ```
 模型將自動下載至：
-* `models/doclayout_yolo/` (~39MB)
-* `models/glm-ocr/` (~2.5GB)
+* `<models_dir>/doclayout_yolo/` (~39MB)
+* `<models_dir>/glm-ocr/` (~2.5GB)
+
+> [!TIP]
+> **集中存放與環境變數支援**：若有多個專案共用模型權重或存放於不同磁碟，可設定環境變數 `export SCANORC_MODELS_DIR=/path/to/models`，所有 CLI 工具與 GUI 控制台將自動優先沿用，無需重複下載與複製。
 
 ---
 
@@ -148,13 +155,13 @@ python app_gui.py
   * **右鍵捷徑選單**：支援 `🗑️ 從清單移除選取的檔案 (Delete / Backspace)`、`📑 標記為目錄頁 (TOC)`、`🚫 標記為略過 OCR`、`🩹 標記為 Patch 修復頁` 與 `📂 開啟所在資料夾`。
   * **雙向選擇與參數傳遞**：在左側表格選取單張或多張圖檔時，自動將選取路徑即時填入**步驟 1 (`--input`)**；勾選「略過 OCR」時同步傳入**步驟 1 (`--skip-orc`)**、**總控**與**步驟 3**；歸檔目錄則同步至**步驟 4 (`--organize-pages` 與 `--input`)**，亦可隨時點擊各步驟旁的「🔄 同步」按鈕手動同步。
 * **分頁工作區與響應式排版**：
-  * **🚀 一鍵端到端總控**：自動執行轉正 $\rightarrow$ 目錄抽取 $\rightarrow$ AI 辨識 $\rightarrow$ 章節歸檔全流程；功能開關採雙排網格排列，兼顧緊湊與清晰。
+  * **🚀 一鍵端到端總控**：自動執行轉正 $\rightarrow$ 目錄抽取 $\rightarrow$ AI 辨識 $\rightarrow$ 章節歸檔全流程；內建「模型權重目錄 (`--models-dir`)」瀏覽與選取列；功能開關採雙排網格排列，兼顧緊湊與清晰。
   * **📐 步驟 1**：幾何轉正與裁切設定（支援多檔/多目錄輸入與 `--skip-orc` 略過處理設定）。
-  * **📑 步驟 2**：目錄抽取（內建 JSON 樹狀檢視與即時編輯儲存）。
-  * **🤖 步驟 3**：AI 版面與 EPUB 生成（快捷工具採 2x2 緊湊網格，支援即時開啟成果 HTML/EPUB 或直接重編）。
+  * **📑 步驟 2**：目錄抽取（支援自訂模型目錄 `--models-dir`，內建 JSON 樹狀檢視與即時編輯儲存）。
+  * **🤖 步驟 3**：AI 版面與 EPUB 生成（支援自訂模型目錄 `--models-dir`，快捷工具採 2x2 緊湊網格，支援即時開啟成果 HTML/EPUB 或直接重編）。
   * **📁 步驟 4**：章節目錄歸檔（支援圖檔移動或複製）。
   * **🩹 步驟 5**：頁面微創替換（支援 `--list` 狀態檢視與一鍵 `--revert` 還原）。
-  * **📚 批次多書處理**：支援母目錄自動掃描 (`--input-dir`) 或自選多目錄 (`--dirs`)，提供斷點續傳 (`--skip-existing`)、TOC 自動優先沿用、Dry-run 排程模擬預覽與批次執行報告 (`batch_report.json`) 一鍵檢視。
+  * **📚 批次多書處理**：支援母目錄自動掃描 (`--input-dir`) 或自選多目錄 (`--dirs`)，全書預設參數包含模型權重目錄 (`--models-dir`)，提供斷點續傳 (`--skip-existing`)、TOC 自動優先沿用、Dry-run 排程模擬預覽與批次執行報告 (`batch_report.json`) 一鍵檢視。
 * **各分頁 JSON 偏好設定載入與範本匯出（雙向繫結）**：
   * **主選單列快捷鍵**：上方提供 `檔案(&F)` 選單，支援 `Ctrl+O` 載入設定 (`-p`) 與 `Ctrl+S` 匯出範本 (`-t`)，完全不佔用任何水平版面寬度。
   * **分頁面板緊湊動作條**：每個 Tab 頂部皆內建 `[ 📂 載入設定 (-p) ] [ 💾 匯出設定 (-t) ]` 快捷按鈕，直觀標示對應之預設檔案（如 `book_config.json`, `batch_config.json`, `step1_config.json`, `step3_config.json` 等）。
@@ -350,7 +357,8 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | :--- | :---: | :---: | :--- |
 | `--input` | `-i` | `samples/Cover-06.jpg` | 輸入目錄頁圖檔路徑或現有 `toc.json` 檔案（傳入 JSON 時可直接載入現有章節結構進行歸檔，免重複加載模型推論） |
 | `--output` | `-o` | `toc.json` | 輸出結構化 JSON 檔案路徑 |
-| `--model-dir` | - | `models/glm-ocr` | GLM-OCR 模型權重目錄 |
+| `--models-dir` | - | `None` | AI 模型權重母目錄（預設讀取 `<models-dir>/glm-ocr`；若未指定則依序檢查 `SCANORC_MODELS_DIR` 與專案內建 `models/`） |
+| `--model-dir` | - | `models/glm-ocr` | GLM-OCR 模型權重目錄（若指定則具最高優先權覆蓋 `--models-dir`） |
 | `--book-title` | - | `""` | 書名（選填，將記錄於 JSON metadata） |
 | `--organize-pages` | - | `None` | 自動建立對應目錄（如 `01-一切從此開始`），並將 `Page-xxx.jpg` 檔案移入對應章節目錄（可指定目錄；未指定則預設整理輸入圖檔所在目錄） |
 | `--copy` | - | `False` | 配合 `--organize-pages` 使用：改為複製圖檔而非移動圖檔 |
@@ -376,6 +384,9 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--batch-size` | - | `2` | 單頁內 OCR 區塊批次大小（建議：4GB 顯卡設 2；16GB 顯卡可設 4~8） |
 | `--workers` | - | `1` | 並行處理 Worker 進程數（建議：4GB 顯卡設 1；16GB 顯卡設 3~4） |
 | `--skip-ocr` | `--skip-orc`, `--no-ocr` | `[]` | 不作 OCR 的檔案清單（支援檔名、頁碼或 txt 清單，直接以原始圖檔嵌入 HTML/EPUB） |
+| `--models-dir` | - | `None` | AI 模型權重母目錄（自動解析子目錄內 YOLO 權重與 GLM 模型；亦可透過 `SCANORC_MODELS_DIR` 環境變數指定） |
+| `--yolo-weights` | - | `None` | 明確指定 DocLayout-YOLO 權重檔案 (.pt) 路徑（優先級高於 `--models-dir`） |
+| `--glm-model-dir` | - | `None` | 明確指定 GLM-OCR 模型目錄路徑（優先級高於 `--models-dir`） |
 
 ---
 
@@ -404,6 +415,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--organize-pages` | `--no-organize-pages` | `True` | 是否自動執行章節目錄結構建立與 Page-xxx.jpg 歸檔（**預設啟用**） |
 | `--copy` | - | `False` | 章節歸檔時改為複製而非移動圖檔（預設: 移動圖檔） |
 | `--organize-target` | - | `preprocessed` | 建立章節目錄並歸檔之目標：`preprocessed` 或 `input` |
+| `--models-dir` | - | `None` | AI 模型權重母目錄（若指定則自動透傳至 `extract_toc.py` 與 `pipeline.py`；亦可透過 `SCANORC_MODELS_DIR` 設定） |
 | `--preference` | `-p`, `--config`, `-c` | `None` | 載入 JSON 偏好設定檔並套用所有參數（命令列傳入者具最高優先覆蓋權） |
 | `--template` | `-t`, `--dump-config` | `None` | 匯出包含此腳本全部參數預設值之標準 JSON 範本檔（可指定檔名，留空印至終端機） |
 
@@ -467,12 +479,13 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--stop-on-error` | - | `False` | 任一本書籍處理失敗時立即中止整個批次佇列 |
 | `--dry-run` | - | `False` | 僅解析掃描各目錄設定與 TOC 狀態並輸出預覽清單，不實際執行運算 |
 | `--report` | - | `<output-root>/batch_report.json` | 批次彙整報告輸出路徑（同時自動產出 Markdown 格式日誌） |
+| `--models-dir` | - | `None` | AI 模型權重母目錄（若指定則透傳至各書籍之 `process_book.py`；亦可透過 `SCANORC_MODELS_DIR` 設定，支援各書目錄內 `book_config.json` 獨立覆蓋） |
 | `--preference` | `-p`, `--config`, `-c` | `None` | 載入批次全域偏好設定檔 |
 | `--template` | `-t`, `--dump-config` | `None` | 匯出批次調度器全參數預設值之標準 JSON 範本檔 |
 
 ---
 
-### 7. `images_compressed.py` / `recompress_images.py`（JPG 與 PNG 批次重新壓縮與縮放工具）
+### 8. `images_compressed.py` / `recompress_images.py`（JPG 與 PNG 批次重新壓縮與縮放工具）
 
 | 參數 | 簡寫 | 預設值 | 說明 |
 | :--- | :---: | :---: | :--- |

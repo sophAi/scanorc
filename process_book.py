@@ -174,6 +174,11 @@ def main():
         default="preprocessed",
         help="執行章節資料夾建立與 Page-xxx.jpg 歸檔之目標 (預設: preprocessed 轉正後圖檔目錄)"
     )
+    parser.add_argument(
+        "--models-dir",
+        default=None,
+        help="AI 模型權重母目錄 (若指定則傳遞至 extract_toc 與 pipeline；亦可透過 SCANORC_MODELS_DIR 設定)"
+    )
     args = attach_preference_and_template_support(parser, "process_book")
 
     script_dir = Path(__file__).parent.resolve()
@@ -261,6 +266,8 @@ def main():
                 "--output", str(toc_json_path),
                 "--book-title", book_title,
             ]
+            if args.models_dir:
+                step2_cmd.extend(["--models-dir", str(args.models_dir)])
             print(f"[*] 執行指令: {' '.join(step2_cmd)}")
             try:
                 subprocess.run(step2_cmd, check=True)
@@ -288,6 +295,8 @@ def main():
         step3_cmd.extend(["--toc", str(toc_json_path)])
     if args.epub:
         step3_cmd.append("--epub")
+    if args.models_dir:
+        step3_cmd.extend(["--models-dir", str(args.models_dir)])
     if args.skip_ocr:
         step3_cmd.extend(["--skip-ocr", *args.skip_ocr])
 

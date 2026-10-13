@@ -178,6 +178,11 @@ def main():
         default="preprocessed",
         help="章節歸檔目標目錄 (預設: preprocessed)"
     )
+    parser.add_argument(
+        "--models-dir",
+        default=None,
+        help="AI 模型權重母目錄 (若指定則傳遞至每本書之 process_book.py；亦可透過 SCANORC_MODELS_DIR 設定)"
+    )
 
     args = attach_preference_and_template_support(parser, "batch_process")
 
@@ -344,6 +349,9 @@ def main():
             cmd.extend(["--dpi", str(dpi)])
         if cover:
             cmd.extend(["--cover", str(cover)])
+        models_dir = cfg_data.get("models_dir", args.models_dir)
+        if models_dir:
+            cmd.extend(["--models-dir", str(models_dir)])
 
         # TOC
         if t["has_existing_toc"] and t["toc_path"]:

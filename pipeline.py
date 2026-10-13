@@ -246,28 +246,58 @@ def should_skip_ocr(img_path: Path, skip_targets: set) -> bool:
     return False
 
 
+def resolve_model_paths(models_dir: Optional[str] = None, yolo_weights: Optional[str] = None, glm_model_dir: Optional[str] = None):
+    """解析 AI 模型權重路徑 (優先順序: 明確指定 > --models-dir > SCANORC_MODELS_DIR > 專案內置 models)"""
+    script_dir = Path(__file__).resolve().parent
+    env_models_dir = os.environ.get("SCANORC_MODELS_DIR")
+
+    if models_dir:
+        base_models = Path(models_dir).resolve()
+    elif env_models_dir:
+        base_models = Path(env_models_dir).resolve()
+    else:
+        cand = script_dir / "models"
+        base_models = cand.resolve() if cand.exists() else Path("models").resolve()
+
+    if not yolo_weights:
+        yolo_pt = base_models / "doclayout_yolo" / "doclayout_yolo_docstructbench_imgsz1024.pt"
+        if not yolo_pt.exists():
+            pts = list((base_models / "doclayout_yolo").glob("*.pt")) if (base_models / "doclayout_yolo").exists() else []
+            if pts:
+                yolo_pt = pts[0]
+        yolo_weights = str(yolo_pt)
+
+    if not glm_model_dir:
+        glm_path = base_models / "glm-ocr"
+        glm_model_dir = str(glm_path)
+
+    return str(yolo_weights), str(glm_model_dir)
+
+
 class DocumentConverter:
     def __init__(
         self,
-        yolo_weights: str = "models/doclayout_yolo/doclayout_yolo_docstructbench_imgsz1024.pt",
-        glm_model_dir: str = "models/glm-ocr",
+        models_dir: Optional[str] = None,
+        yolo_weights: Optional[str] = None,
+        glm_model_dir: Optional[str] = None,
         device: str = "cuda:0",
         dtype: torch.dtype = torch.float16,
         max_ocr_dim: int = 1024,
         batch_size: int = 2,
     ):
+        resolved_yolo, resolved_glm = resolve_model_paths(models_dir, yolo_weights, glm_model_dir)
         self.device = device if torch.cuda.is_available() else "cpu"
         self.dtype = dtype
         self.max_ocr_dim = max_ocr_dim
         self.batch_size = max(1, batch_size)
 
-        print(f"[*] 載入 DocLayout-YOLO 模型 ({self.device})...")
-        self.yolo = YOLOv10(yolo_weights)
+        print(f"[*] 載入 DocLayout-YOLO 模型 ({resolved_yolo}) ({self.device})...")
+        self.yolo = YOLOv10(resolved_yolo)
 
-        print(f"[*] 載入 GLM-OCR 0.9B 模型與處理器 ({self.device}, {dtype}, batch_size={self.batch_size})...")
-        self.processor = AutoProcessor.from_pretrained(glm_model_dir, trust_remote_code=True)
+        print(f"[*] 載入 GLM-OCR 0.9B 模型與處理器 ({resolved_glm}) ({self.device}, {dtype}, batch_size={self.batch_size})...")
+        self.processor = AutoProcessor.from_pretrained(resolved_glm, trust_remote_code=True)
         self.glm = GlmOcrForConditionalGeneration.from_pretrained(
-            glm_model_dir,
+            resolved_glm,
             dtype=self.dtype,
             device_map=self.device,
             trust_remote_code=True
@@ -948,9 +978,14 @@ def build_epub_with_pandoc(
 
 def _worker_process_page(args_tuple):
     """多進程 Worker 任務函數"""
-    task_idx, img_path, output_dir, batch_size, skip_ocr = args_tuple
-    # 每個子進程獨立初始化 Converter
-    converter = DocumentConverter(batch_size=batch_size)
+    task_idx, img_path, output_dir, batch_size, skip_ocr, models_dir, yolo_weights, glm_model_dir = args_tuple
+    # 每個子進程獨立初始化 Converter (套用傳入之模型目錄)
+    converter = DocumentConverter(
+        models_dir=models_dir,
+        yolo_weights=yolo_weights,
+        glm_model_dir=glm_model_dir,
+        batch_size=batch_size
+    )
     res = converter.process_page(img_path, output_dir, skip_ocr=skip_ocr)
     res["_task_idx"] = task_idx
     return res
@@ -1020,6 +1055,21 @@ def main():
         default=[],
         dest="skip_ocr",
         help="不作 OCR 的檔案清單 (可指定檔名、頁碼或包含清單的純文字檔路徑，直接以原始圖檔嵌入 HTML/EPUB)"
+    )
+    parser.add_argument(
+        "--models-dir",
+        default=None,
+        help="AI 模型權重母目錄 (若指定則自動尋找 doclayout_yolo/ 與 glm-ocr/；亦可透過 SCANORC_MODELS_DIR 設定)"
+    )
+    parser.add_argument(
+        "--yolo-weights",
+        default=None,
+        help="自訂 DocLayout-YOLO 權重檔案路徑 (選填，若未指定則自動從 --models-dir 解析)"
+    )
+    parser.add_argument(
+        "--glm-model-dir",
+        default=None,
+        help="自訂 GLM-OCR 模型權重目錄 (選填，若未指定則自動從 --models-dir 解析)"
     )
     args = attach_preference_and_template_support(parser, "pipeline")
 
@@ -1095,7 +1145,16 @@ def main():
             pass
 
         tasks = [
-            (idx, str(img_path), args.output, args.batch_size, should_skip_ocr(img_path, skip_targets))
+            (
+                idx,
+                str(img_path),
+                args.output,
+                args.batch_size,
+                should_skip_ocr(img_path, skip_targets),
+                args.models_dir,
+                args.yolo_weights,
+                args.glm_model_dir,
+            )
             for idx, img_path in enumerate(image_files)
         ]
         with mp.Pool(processes=args.workers) as pool:
@@ -1103,7 +1162,12 @@ def main():
         # 確保結果嚴格依照任務與編排順序排序
         all_page_results.sort(key=lambda x: x["_task_idx"])
     else:
-        converter = DocumentConverter(batch_size=args.batch_size)
+        converter = DocumentConverter(
+            models_dir=args.models_dir,
+            yolo_weights=args.yolo_weights,
+            glm_model_dir=args.glm_model_dir,
+            batch_size=args.batch_size
+        )
         for idx, img_path in enumerate(image_files):
             p_res = converter.process_page(
                 str(img_path),

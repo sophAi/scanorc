@@ -958,6 +958,16 @@ class MainWindow(QMainWindow):
         h_cov.addWidget(btn_cov_detect)
         form.addRow("EPUB 封面圖檔 (--cover):", h_cov)
 
+        self.oc_models_dir = QLineEdit("")
+        self.oc_models_dir.setPlaceholderText("留空使用專案預設 models/ 或 SCANORC_MODELS_DIR 環境變數")
+        self.oc_models_dir.textChanged.connect(self.update_command_preview)
+        btn_oc_models = QPushButton("瀏覽目錄...")
+        btn_oc_models.clicked.connect(lambda: self.browse_dir(self.oc_models_dir))
+        h_oc_mod = QHBoxLayout()
+        h_oc_mod.addWidget(self.oc_models_dir)
+        h_oc_mod.addWidget(btn_oc_models)
+        form.addRow("模型權重目錄 (--models-dir):", h_oc_mod)
+
         h_opts = QHBoxLayout()
         self.oc_workers = QSpinBox()
         self.oc_workers.setRange(1, 16)
@@ -1170,6 +1180,16 @@ class MainWindow(QMainWindow):
         self.s2_title.textChanged.connect(self.update_command_preview)
         form.addRow("書籍標題 (--book-title):", self.s2_title)
 
+        self.s2_models_dir = QLineEdit("")
+        self.s2_models_dir.setPlaceholderText("留空使用專案預設 models/ 或 SCANORC_MODELS_DIR")
+        self.s2_models_dir.textChanged.connect(self.update_command_preview)
+        btn_s2_models = QPushButton("瀏覽目錄...")
+        btn_s2_models.clicked.connect(lambda: self.browse_dir(self.s2_models_dir))
+        h_s2_mod = QHBoxLayout()
+        h_s2_mod.addWidget(self.s2_models_dir)
+        h_s2_mod.addWidget(btn_s2_models)
+        form.addRow("模型權重目錄 (--models-dir):", h_s2_mod)
+
         layout.addLayout(form)
 
         # 內嵌 JSON 檢視與編輯區
@@ -1271,6 +1291,16 @@ class MainWindow(QMainWindow):
         h_s3_cov.addWidget(btn_s3_cov_browse)
         h_s3_cov.addWidget(btn_s3_cov_detect)
         form.addRow("EPUB 封面圖檔 (--cover):", h_s3_cov)
+
+        self.s3_models_dir = QLineEdit("")
+        self.s3_models_dir.setPlaceholderText("留空使用專案預設 models/ 或 SCANORC_MODELS_DIR")
+        self.s3_models_dir.textChanged.connect(self.update_command_preview)
+        btn_s3_models = QPushButton("瀏覽目錄...")
+        btn_s3_models.clicked.connect(lambda: self.browse_dir(self.s3_models_dir))
+        h_s3_mod = QHBoxLayout()
+        h_s3_mod.addWidget(self.s3_models_dir)
+        h_s3_mod.addWidget(btn_s3_models)
+        form.addRow("模型權重目錄 (--models-dir):", h_s3_mod)
 
         h_perf = QHBoxLayout()
         self.s3_workers = QSpinBox()
@@ -1616,6 +1646,16 @@ class MainWindow(QMainWindow):
         grid_common_chk.addWidget(self.batch_copy, 1, 1)
         form_common.addRow("功能開關:", grid_common_chk)
 
+        self.batch_models_dir = QLineEdit("")
+        self.batch_models_dir.setPlaceholderText("留空使用專案預設 models/ 或 SCANORC_MODELS_DIR")
+        self.batch_models_dir.textChanged.connect(self.update_command_preview)
+        btn_batch_models = QPushButton("瀏覽目錄...")
+        btn_batch_models.clicked.connect(lambda: self.browse_dir(self.batch_models_dir))
+        h_b_mod = QHBoxLayout()
+        h_b_mod.addWidget(self.batch_models_dir)
+        h_b_mod.addWidget(btn_batch_models)
+        form_common.addRow("模型權重目錄 (--models-dir):", h_b_mod)
+
         layout.addLayout(form)
         layout.addWidget(box_common)
 
@@ -1912,6 +1952,8 @@ class MainWindow(QMainWindow):
             in_dir = self.oc_input.text().strip() or "samples"
             out_dir = self.oc_output.text().strip() or "output"
             cmd.extend(["--input", in_dir, "--output", out_dir])
+            if self.oc_models_dir.text().strip():
+                cmd.extend(["--models-dir", self.oc_models_dir.text().strip()])
             if self.oc_title.text().strip():
                 cmd.extend(["--title", self.oc_title.text().strip()])
             if self.oc_cover.text().strip():
@@ -1962,6 +2004,8 @@ class MainWindow(QMainWindow):
             cmd.extend(["--output", self.s2_output.text().strip() or "toc.json"])
             if self.s2_title.text().strip():
                 cmd.extend(["--book-title", self.s2_title.text().strip()])
+            if self.s2_models_dir.text().strip():
+                cmd.extend(["--models-dir", self.s2_models_dir.text().strip()])
             return cmd
 
         elif idx == 3:  # 步驟 3: pipeline.py
@@ -1974,6 +2018,8 @@ class MainWindow(QMainWindow):
                 cmd.extend(["--toc", self.s3_toc.text().strip()])
             if self.s3_cover.text().strip():
                 cmd.extend(["--cover", self.s3_cover.text().strip()])
+            if self.s3_models_dir.text().strip():
+                cmd.extend(["--models-dir", self.s3_models_dir.text().strip()])
             cmd.extend(["--workers", str(self.s3_workers.value())])
             cmd.extend(["--batch-size", str(self.s3_batch.value())])
             if self.s3_compress_images.isChecked():
@@ -2035,6 +2081,8 @@ class MainWindow(QMainWindow):
                 cmd.extend(["--config-name", cfg_name])
             out_root = self.batch_output_root.text().strip() or "output_batch"
             cmd.extend(["--output-root", out_root])
+            if self.batch_models_dir.text().strip():
+                cmd.extend(["--models-dir", self.batch_models_dir.text().strip()])
 
             if self.batch_skip_existing.isChecked():
                 cmd.append("--skip-existing")
@@ -2168,6 +2216,7 @@ class MainWindow(QMainWindow):
                 "title": self.oc_title.text().strip(),
                 "toc": None,
                 "force_toc": False,
+                "models_dir": self.oc_models_dir.text().strip() or None,
                 "dpi": dpi_val,
                 "margins": 1,
                 "quality": 85,
@@ -2211,6 +2260,7 @@ class MainWindow(QMainWindow):
             return {
                 "input": in_args if in_args else ["preprocessed_samples/Cover-06.jpg"],
                 "output": self.s2_output.text().strip() or "toc.json",
+                "models_dir": self.s2_models_dir.text().strip() or None,
                 "model_dir": "models/glm-ocr",
                 "book_title": self.s2_title.text().strip(),
                 "organize_pages": None,
@@ -2228,6 +2278,7 @@ class MainWindow(QMainWindow):
                 "output": self.s3_output.text().strip() or "output",
                 "title": self.s3_title.text().strip() or "數位化掃描書本",
                 "toc": self.s3_toc.text().strip() or None,
+                "models_dir": self.s3_models_dir.text().strip() or None,
                 "epub": self.s3_epub.isChecked(),
                 "cover": self.s3_cover.text().strip() or None,
                 "compress_images": self.s3_compress_images.isChecked(),
@@ -2279,6 +2330,7 @@ class MainWindow(QMainWindow):
                 "pattern": self.batch_pattern.text().strip() or "*",
                 "config_name": self.batch_config_name.text().strip() or "book_config.json",
                 "output_root": self.batch_output_root.text().strip() or "output_batch",
+                "models_dir": self.batch_models_dir.text().strip() or None,
                 "report": None,
                 "skip_existing": self.batch_skip_existing.isChecked(),
                 "use_existing_toc": self.batch_use_existing_toc.isChecked(),
@@ -2322,6 +2374,8 @@ class MainWindow(QMainWindow):
                 self.oc_title.setText(str(data["title"]) if data["title"] is not None else "")
             if "cover" in data:
                 self.oc_cover.setText(str(data["cover"]) if data["cover"] is not None else "")
+            if "models_dir" in data:
+                self.oc_models_dir.setText(str(data["models_dir"]) if data["models_dir"] is not None else "")
             if "dpi" in data:
                 self.oc_dpi.setText(str(data["dpi"]) if data["dpi"] is not None else "")
             if "workers" in data and data["workers"] is not None:
@@ -2382,6 +2436,10 @@ class MainWindow(QMainWindow):
                 self.s2_output.setText(str(data["output"]))
             if "book_title" in data:
                 self.s2_title.setText(str(data["book_title"]) if data["book_title"] is not None else "")
+            if "models_dir" in data:
+                self.s2_models_dir.setText(str(data["models_dir"]) if data["models_dir"] is not None else "")
+            elif "model_dir" in data and data["model_dir"] and not str(data["model_dir"]).endswith("glm-ocr"):
+                self.s2_models_dir.setText(str(data["model_dir"]))
 
         elif tab_idx == 3:
             samples_val = data.get("samples", data.get("input"))
@@ -2398,6 +2456,8 @@ class MainWindow(QMainWindow):
                 self.s3_toc.setText(str(data["toc"]) if data["toc"] is not None else "")
             if "cover" in data:
                 self.s3_cover.setText(str(data["cover"]) if data["cover"] is not None else "")
+            if "models_dir" in data:
+                self.s3_models_dir.setText(str(data["models_dir"]) if data["models_dir"] is not None else "")
             if "workers" in data and data["workers"] is not None:
                 self.s3_workers.setValue(int(data["workers"]))
             if "batch_size" in data and data["batch_size"] is not None:
@@ -2456,6 +2516,8 @@ class MainWindow(QMainWindow):
                 self.batch_config_name.setText(str(data["config_name"]))
             if "output_root" in data and data["output_root"] is not None:
                 self.batch_output_root.setText(str(data["output_root"]))
+            if "models_dir" in data:
+                self.batch_models_dir.setText(str(data["models_dir"]) if data["models_dir"] is not None else "")
             if "skip_existing" in data and data["skip_existing"] is not None:
                 self.batch_skip_existing.setChecked(bool(data["skip_existing"]))
             if "use_existing_toc" in data and data["use_existing_toc"] is not None:

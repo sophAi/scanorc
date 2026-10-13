@@ -287,9 +287,14 @@ def main():
         help="輸出 JSON 檔案路徑 (預設: toc.json)"
     )
     parser.add_argument(
+        "--models-dir",
+        default=None,
+        help="AI 模型權重母目錄 (若指定則自動尋找 <models-dir>/glm-ocr；亦可透過 SCANORC_MODELS_DIR 設定)"
+    )
+    parser.add_argument(
         "--model-dir",
-        default="models/glm-ocr",
-        help="GLM-OCR 模型權重目錄 (預設: models/glm-ocr)"
+        default=None,
+        help="GLM-OCR 模型權重目錄 (若未指定則優先由 --models-dir 或 SCANORC_MODELS_DIR 推導，預設: models/glm-ocr)"
     )
     parser.add_argument(
         "--book-title",
@@ -348,11 +353,25 @@ def main():
             print(f"    ({idx}/{len(sorted_images)}) {p}")
         print(f"[*] 輸出位置: {args.output}")
         print(f"[*] 推論裝置: {device} ({dtype})")
-        print(f"[*] 載入模型: {args.model_dir} ...")
+        # 解析 GLM-OCR 模型路徑 (優先級: --model-dir > --models-dir/glm-ocr > SCANORC_MODELS_DIR > 專案內置 models)
+        script_dir = Path(__file__).resolve().parent
+        env_models_dir = os.environ.get("SCANORC_MODELS_DIR")
+        if args.model_dir:
+            actual_model_dir = Path(args.model_dir).resolve()
+        elif args.models_dir:
+            actual_model_dir = (Path(args.models_dir) / "glm-ocr").resolve()
+        elif env_models_dir:
+            actual_model_dir = (Path(env_models_dir) / "glm-ocr").resolve()
+        else:
+            cand = script_dir / "models" / "glm-ocr"
+            actual_model_dir = cand.resolve() if cand.exists() else Path("models/glm-ocr").resolve()
+        model_dir_str = str(actual_model_dir)
 
-        processor = AutoProcessor.from_pretrained(args.model_dir, trust_remote_code=True)
+        print(f"[*] 載入模型: {model_dir_str} ...")
+
+        processor = AutoProcessor.from_pretrained(model_dir_str, trust_remote_code=True)
         model = GlmOcrForConditionalGeneration.from_pretrained(
-            args.model_dir,
+            model_dir_str,
             dtype=dtype,
             device_map=device,
             trust_remote_code=True
@@ -397,7 +416,7 @@ def main():
             "book_title": book_title,
             "source_images": [str(p) for p in sorted_images],
             "extracted_at": datetime.now().isoformat(),
-            "model": args.model_dir,
+            "model": model_dir_str,
             "total_chapters": len(all_entries),
             "toc": all_entries,
             "raw_text": "\n\n".join(raw_texts)
