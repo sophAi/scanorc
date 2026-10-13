@@ -7,6 +7,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+!bin/lib/**
 .pytest_cache/
 
 # AI Model Weights & Cache (Use download_models.py to fetch)

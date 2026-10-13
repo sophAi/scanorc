@@ -17,16 +17,46 @@ import os
 import sys
 import re
 import json
-import ctypes
+import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Dict, Optional
 
 # -------------------------------------------------------------
-# Qt 6 / PySide6 環境自適應配置 (解決 Conda Qt5 衝突與 libxcb-cursor 缺失)
+# Linux / Conda 環境相容性自動引導 (解決 Conda Qt5 插件衝突、舊版 libxkbcommon 段錯誤與 libxcb-cursor 缺失)
 # -------------------------------------------------------------
+project_root = Path(__file__).resolve().parent
+bundled_lib_dir = project_root / "bin" / "lib"
+
+# 檢查是否需要透過 LD_PRELOAD 解決 Conda 舊版 libxkbcommon 造成的段錯誤
+if sys.platform.startswith("linux") and not os.environ.get("_SCANORC_GUI_BOOTSTRAPPED"):
+    preload_candidates = [
+        bundled_lib_dir / "libxkbcommon-x11.so.0",
+        bundled_lib_dir / "libxkbcommon.so.0",
+        Path("/usr/lib/x86_64-linux-gnu/libxkbcommon-x11.so.0"),
+        Path("/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0"),
+    ]
+    preload_libs = [str(p) for p in preload_candidates if p.exists()]
+    seen = set()
+    unique_libs = [x for x in preload_libs if not (x in seen or seen.add(x))]
+
+    current_preload = os.environ.get("LD_PRELOAD", "")
+    if unique_libs and "libxkbcommon-x11" not in current_preload:
+        os.environ["_SCANORC_GUI_BOOTSTRAPPED"] = "1"
+        os.environ["LD_PRELOAD"] = ":".join(unique_libs) + (f":{current_preload}" if current_preload else "")
+
+        try:
+            import PySide6
+            qt_plugins_dir = Path(PySide6.__file__).resolve().parent / "Qt" / "plugins"
+            if qt_plugins_dir.exists():
+                os.environ["QT_PLUGIN_PATH"] = str(qt_plugins_dir)
+        except Exception:
+            pass
+
+        # 自身重啟以套用更新後的動態鏈接環境
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
 try:
-    import shutil
     import PySide6
     # 1. 強制設定 QT_PLUGIN_PATH 指向 PySide6 自帶的 Qt6 外掛目錄，避免 Conda 載入舊版 Qt5 插件
     pyside_dir = Path(PySide6.__file__).resolve().parent
@@ -34,19 +64,21 @@ try:
     if qt_plugins_dir.exists():
         os.environ["QT_PLUGIN_PATH"] = str(qt_plugins_dir)
 
-    # 2. 自動補充 PySide6 Qt/lib 缺失之 libxcb-cursor.so.0 (解決 Ubuntu 24.04+ / Linux Mint 22 缺庫問題)
+    # 2. 自動補充 PySide6 Qt/lib 缺失之函式庫
     qt_lib_dir = pyside_dir / "Qt" / "lib"
-    bundled_lib_dir = Path(__file__).resolve().parent / "bin" / "lib"
-    cursor_lib = bundled_lib_dir / "libxcb-cursor.so.0"
-    target_cursor = qt_lib_dir / "libxcb-cursor.so.0"
-    if qt_lib_dir.exists() and cursor_lib.exists() and not target_cursor.exists() and os.access(qt_lib_dir, os.W_OK):
-        try:
-            shutil.copy2(cursor_lib, target_cursor)
-            cursor_real = bundled_lib_dir / "libxcb-cursor.so.0.0.0"
-            if cursor_real.exists():
-                shutil.copy2(cursor_real, qt_lib_dir / "libxcb-cursor.so.0.0.0")
-        except Exception:
-            pass
+    if qt_lib_dir.exists() and bundled_lib_dir.exists() and os.access(qt_lib_dir, os.W_OK):
+        for fn in [
+            "libxcb-cursor.so.0", "libxcb-cursor.so.0.0.0",
+            "libxkbcommon.so.0", "libxkbcommon.so.0.0.0",
+            "libxkbcommon-x11.so.0", "libxkbcommon-x11.so.0.0.0"
+        ]:
+            src = bundled_lib_dir / fn
+            dst = qt_lib_dir / fn
+            if src.exists() and not dst.exists():
+                try:
+                    shutil.copy2(src, dst)
+                except Exception:
+                    pass
 except ImportError:
     pass
 
