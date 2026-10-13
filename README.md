@@ -304,9 +304,14 @@ python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossle
 | `--samples` | `-i`, `--input` | `samples` | 待處理圖檔來源（支援單圖檔、多圖檔、目錄或萬用字元，可傳入多個路徑） |
 | `--output` | `-o` | `output` | 成果儲存目錄（產出 HTML、EPUB 與裁切圖片） |
 | `--title` | - | `數位化掃描書本` | 書名 / 文件標題（若有 toc.json 且未指定書名，將自動套用其書名） |
-| `--toc` | - | `None` | 目錄結構 JSON 檔案路徑（預設自動偵測 `toc.json`，將自動生成目錄索引並連結至各頁檔名） |
+| `--toc` | - | `None` | 目錄結構 JSON 檔案路徑（自動生成目錄索引，並於對應頁面注入章節標題寫入 EPUB Outline 大綱） |
+| `--cover` | `--cover-image` | `None` | 指定 EPUB 封面圖片路徑（未指定則自動在圖片中搜尋 Cover-*.jpg 或 cover.*） |
+| `--compress-images` | - | `False` | 是否在編譯 EPUB 前自動將 `output/images` 目錄中的 JPG 與 PNG 重新壓縮與縮放（大幅縮減 EPUB 體積） |
+| `--image-quality` | - | `75` | images 圖檔壓縮品質（1~100，預設: 75） |
+| `--image-scale` | - | `1.0` | images 圖檔尺寸縮放比例（例如 0.8 或 1.0，預設: 1.0） |
+| `--image-max-dim` | - | `None` | images 圖檔最大長寬像素限制（例如 1920，預設 None 不限制） |
 | `--recursive` | `-r` | `True` | 是否遞迴讀取子目錄所有圖檔（**預設啟用**，若使用 `--no-recursive` 則僅讀取頂層目錄） |
-| `--cover-first` | - | `True` | 頁面編排順序：是否將封面/目錄頁（`Cover-*.jpg`）編排於內文頁（`Page-*.jpg`）之前（**預設啟用**；若使用 `--no-cover-first` 則內文頁優先；各群組內部均依自然數字順序排序） |
+| `--cover-first` | - | `True` | 頁面編排順序：是否將封面/目錄頁（`Cover-*.jpg`）編排於內文頁（`Page-*.jpg`）之前（**預設啟用**；各群組內部均依自然數字順序排序） |
 | `--epub` | - | `False` | 是否在生成 HTML 後自動調用 Pandoc 編譯 MathML EPUB |
 | `--batch-size` | - | `2` | 單頁內 OCR 區塊批次大小（建議：4GB 顯卡設 2；16GB 顯卡可設 4~8） |
 | `--workers` | - | `1` | 並行處理 Worker 進程數（建議：4GB 顯卡設 1；16GB 顯卡設 3~4） |
@@ -321,6 +326,11 @@ python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossle
 | `--input` | `-i` | `samples` | 輸入書籍原始圖檔目錄（包含 `Cover-xx.jpg` 與 `Page-xxx.jpg`） |
 | `--output` | `-o` | `output` | 輸出成果目錄（產出 HTML、EPUB、images/ 與 preprocessed/） |
 | `--title` | `-t` | `""` | 書名 / 文件標題（若未指定則自動從目錄名或 toc.json 讀取） |
+| `--cover` | `--cover-image` | `None` | 指定 EPUB 封面圖檔路徑（未指定則自動在輸入或轉正目錄中偵測 Cover-*.jpg） |
+| `--compress-images` | - | `False` | 是否在打包 EPUB 前將 `images/` 目錄圖檔重新壓縮與縮放（大幅瘦身 EPUB） |
+| `--image-quality` | - | `75` | images 圖檔壓縮品質（1~100，預設: 75） |
+| `--image-scale` | - | `1.0` | images 圖檔尺寸縮放比例（例如 0.8 或 1.0） |
+| `--image-max-dim` | - | `None` | images 圖檔最大長寬限制（例如 1920） |
 | `--dpi` | - | `None` | 輸出解析度 DPI（預設保持 1:1 原生尺寸無損輸出） |
 | `--margins` | - | `10` | 版心四周均勻留白邊距 (mm) |
 | `--color-mode` | - | `color_grayscale` | 轉正色彩模式：`color_grayscale`、`mixed`、`black_and_white` |
@@ -354,15 +364,20 @@ python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossle
 | `input` | `--html`, `-i` | `output/book.html` | 輸入 HTML 檔案路徑或包含 book.html 的目錄 |
 | `--output` | `-o` | `<html_dir>/<stem>.epub` | 輸出 EPUB 檔案路徑 |
 | `--images` | `--images-dir` | `images/` | 圖片資源目錄（預設自動搜尋 HTML 旁的 images/ 資料夾） |
+| `--toc` | - | `None` | 目錄結構 JSON 檔案路徑（未指定則自動在同目錄搜尋 `toc.json`，自動注入 `<h1>` 章節標題至 EPUB Outline 大綱） |
 | `--title` | `-t` | 自動提取 | 書籍標題（預設自動自 HTML `<title>` 標籤中抽取） |
 | `--author` | `-a` | `None` | 書籍作者名稱（選填） |
 | `--lang` | `-l` | 自動提取 | 語系代碼（預設自動自 HTML `<html lang>` 讀取，若無則為 zh-TW） |
-| `--cover` | `-c` | 自動偵測 | 封面圖片路徑（選填，未指定則自動偵測 cover.* 圖檔） |
+| `--cover` | `-c` | 自動偵測 | 封面圖片路徑（選填，未指定則自動偵測 Cover-*.jpg 或 cover.* 圖檔） |
+| `--compress-images` | - | `False` | 編譯 EPUB 前是否自動重新壓縮 images/ 中的 JPG 與 PNG 圖檔 |
+| `--image-quality` | - | `75` | images 圖檔壓縮品質（1~100，預設: 75） |
+| `--image-scale` | - | `1.0` | images 圖檔尺寸縮放比例（例如 0.8 或 1.0） |
+| `--image-max-dim` | - | `None` | images 圖檔最大長寬限制（例如 1920） |
 | `--css` | - | `None` | 自訂 EPUB 樣式表 CSS 檔案路徑 |
 | `--toc-depth` | - | `3` | EPUB 目錄深度層級 |
 | `--no-toc` | - | `False` | 不生成 EPUB 目錄導覽 |
 | `--no-mathml` | - | `False` | 停用 LaTeX 數學公式轉譯為 MathML 向量公式 |
-| `--chapter-level` | - | `2` | EPUB 章節切分標題層級（預設按 h2 切割） |
+| `--chapter-level` | - | `1` | EPUB 章節切分標題層級（預設依 h1 章節切分獨立 XHTML） |
 
 ---
 

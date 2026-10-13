@@ -110,6 +110,35 @@ def main():
         help="是否生成 MathML EPUB3 電子書 (預設: True)"
     )
     parser.add_argument(
+        "--cover", "--cover-image",
+        default=None,
+        dest="cover",
+        help="指定 EPUB 封面圖檔路徑 (若未指定將自動偵測 Cover-*.jpg 或 cover.* 圖檔)"
+    )
+    parser.add_argument(
+        "--compress-images",
+        action="store_true",
+        help="在編譯 EPUB 前，自動對 output/images 目錄中的 JPG 與 PNG 圖檔進行重新壓縮與尺寸縮放"
+    )
+    parser.add_argument(
+        "--image-quality",
+        type=int,
+        default=75,
+        help="images 圖檔壓縮品質 (1-100，預設: 75)"
+    )
+    parser.add_argument(
+        "--image-scale",
+        type=float,
+        default=1.0,
+        help="images 圖檔尺寸縮放比例 (例如 0.8 或 1.0，預設: 1.0)"
+    )
+    parser.add_argument(
+        "--image-max-dim",
+        type=int,
+        default=None,
+        help="images 圖檔最大長寬限制 (例如 1920，預設 None 不限制)"
+    )
+    parser.add_argument(
         "--copy",
         action="store_true",
         help="章節歸檔時改為複製圖檔而非移動圖檔 (預設: 移動圖檔)"
@@ -218,6 +247,28 @@ def main():
         step3_cmd.append("--epub")
     if args.skip_ocr:
         step3_cmd.extend(["--skip-ocr", *args.skip_ocr])
+
+    # 封面圖檔設定與自動偵測
+    actual_cover = args.cover
+    if not actual_cover:
+        if cover_images:
+            actual_cover = str(cover_images[0])
+        else:
+            for cand in [output_dir / "cover.jpg", input_dir / "cover.jpg", input_dir / "Cover.jpg"]:
+                if cand.exists():
+                    actual_cover = str(cand)
+                    break
+    if actual_cover and os.path.exists(actual_cover):
+        step3_cmd.extend(["--cover", str(actual_cover)])
+        print(f"[*] 設定 EPUB 封面圖檔: {actual_cover}")
+
+    # images 圖檔重新壓縮與縮放設定
+    if args.compress_images:
+        step3_cmd.append("--compress-images")
+        step3_cmd.extend(["--image-quality", str(args.image_quality)])
+        step3_cmd.extend(["--image-scale", str(args.image_scale)])
+        if args.image_max_dim:
+            step3_cmd.extend(["--image-max-dim", str(args.image_max_dim)])
 
     print(f"[*] 執行指令: {' '.join(step3_cmd)}")
     subprocess.run(step3_cmd, check=True)

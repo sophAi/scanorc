@@ -14,11 +14,17 @@ ScanORC: HTML 與圖片直接轉 EPUB 工具 (html_to_epub.py)
 import os
 import re
 import sys
+import json
 import shutil
 import argparse
 import subprocess
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Union
+
+try:
+    from recompress_images import recompress_directory
+except ImportError:
+    recompress_directory = None
 
 
 def find_pandoc(custom_path: Optional[str] = None) -> Optional[str]:
@@ -89,16 +95,21 @@ def inspect_html(html_path: Path, images_dir: Optional[Path] = None) -> Dict:
 
 
 def auto_detect_cover(images_dir: Optional[Path], html_dir: Path) -> Optional[Path]:
-    """自動偵測封面圖片"""
+    """自動偵測封面圖片 (支援 cover.*, Cover-*.jpg, 封面.* 等)"""
     search_dirs = []
     if images_dir and images_dir.exists():
         search_dirs.append(images_dir)
     if html_dir.exists() and html_dir not in search_dirs:
         search_dirs.append(html_dir)
 
+    # 額外擴充搜尋 samples 與 preprocessed 目錄
+    for extra in [html_dir.parent / "samples", html_dir / "preprocessed", html_dir.parent / "preprocessed"]:
+        if extra.exists() and extra not in search_dirs:
+            search_dirs.append(extra)
+
     cover_patterns = [
         re.compile(r"^cover\.(jpg|jpeg|png|webp)$", re.IGNORECASE),
-        re.compile(r"^cover[-_]?0*1\.(jpg|jpeg|png|webp)$", re.IGNORECASE),
+        re.compile(r"^cover[-_]?\d+\.(jpg|jpeg|png|webp)$", re.IGNORECASE),
         re.compile(r"^封面\.(jpg|jpeg|png|webp)$", re.IGNORECASE),
         re.compile(r"^front[-_]?cover\.(jpg|jpeg|png|webp)$", re.IGNORECASE),
     ]
@@ -112,10 +123,158 @@ def auto_detect_cover(images_dir: Optional[Path], html_dir: Path) -> Optional[Pa
     return None
 
 
+def ensure_epub_outline(
+    html_text: str,
+    toc_path: Optional[Path] = None,
+    html_dir: Optional[Path] = None,
+    verbose: bool = True,
+) -> Tuple[str, bool]:
+    """
+    確保 HTML 檔案具備頂層 <h1> 章節標題，供 Pandoc EPUB Outline (nav.xhtml / toc.ncx) 識別。
+    若發現 HTML 尚未包含章節 <h1>，則嘗試從 toc.json 或內嵌之 <nav id="toc"> 提取章節清單，
+    並於各章對應頁面區塊前自動注入 <h1 id="chapter-..." class="chapter-heading">章節標題</h1>。
+    """
+    # 檢查是否已有足夠的 h1 標題
+    h1_matches = re.findall(r'<h1[^>]*class=["\'][^"\']*chapter-heading[^"\']*["\']', html_text, re.IGNORECASE)
+    if len(h1_matches) >= 2:
+        return html_text, False
+
+    # 1. 取得章節資料
+    toc_data = None
+    toc_file = toc_path
+    if not toc_file and html_dir:
+        for c in [html_dir / "toc.json", html_dir.parent / "toc.json", Path("toc.json"), Path("output/toc.json")]:
+            if c.exists():
+                toc_file = c
+                break
+
+    if toc_file and toc_file.exists():
+        try:
+            with open(toc_file, "r", encoding="utf-8") as f:
+                toc_data = json.load(f)
+            if verbose:
+                print(f"[*] 載入目錄索引檔用於建立 EPUB Outline: {toc_file}")
+        except Exception as e:
+            if verbose:
+                print(f"[-] 讀取目錄索引檔失敗: {e}")
+
+    chapters = []
+    if toc_data and "toc" in toc_data:
+        for idx, entry in enumerate(toc_data["toc"], start=1):
+            chapters.append({
+                "index": idx,
+                "title": entry.get("full_title", entry.get("title", f"第 {idx} 章")),
+                "start_page": entry.get("start_page", 0),
+                "end_page": entry.get("end_page", entry.get("start_page", 0)),
+            })
+    else:
+        # 從 <nav id="toc"> 解析
+        nav_match = re.search(r'<nav[^>]+id=["\']toc["\'][^>]*>(.*?)</nav>', html_text, re.DOTALL | re.IGNORECASE)
+        if nav_match:
+            item_matches = re.finditer(
+                r'<li[^>]*class=["\']toc-item["\'][^>]*>\s*<a[^>]+href=["\']#([^"\']+)["\'][^>]*>.*?<span[^>]*class=["\']toc-chapter["\'][^>]*>(.*?)</span>',
+                nav_match.group(1),
+                re.DOTALL | re.IGNORECASE
+            )
+            for idx, m in enumerate(item_matches, start=1):
+                target = m.group(1).strip()
+                title_txt = re.sub(r'<[^>]+>', '', m.group(2)).strip()
+                nums = re.findall(r'\d+', target)
+                p_num = int(nums[-1]) if nums else 0
+                chapters.append({
+                    "index": idx,
+                    "title": title_txt,
+                    "start_page": p_num,
+                    "end_page": p_num,
+                    "target_id": target,
+                })
+
+    if not chapters:
+        return html_text, False
+
+    # 搜尋 HTML 中的所有頁面 section
+    page_sections = list(re.finditer(r'<section[^>]+(?:class=["\'][^"\']*book-page[^"\']*["\'][^>]*id=["\']([^"\']+)["\']|id=["\']([^"\']+)["\'][^>]*class=["\'][^"\']*book-page[^"\']*["\'])', html_text, re.IGNORECASE))
+    if not page_sections:
+        page_sections = list(re.finditer(r'<section[^>]+id=["\']([^"\']+)["\']', html_text, re.IGNORECASE))
+
+    page_map = {}
+    for m in page_sections:
+        sec_id = m.group(1) or m.group(2)
+        nums = re.findall(r'\d+', sec_id)
+        p_num = int(nums[-1]) if nums else None
+        page_map[sec_id] = (p_num, m.start())
+
+    # 計算各章節插入點
+    insertions = []
+
+    # 檢查是否需要目錄標題
+    if not re.search(r'<h1[^>]*id=["\']toc-heading["\']', html_text, re.IGNORECASE):
+        nav_pos = html_text.find('<nav id="toc"')
+        if nav_pos == -1:
+            nav_pos = html_text.find('<nav class="book-toc"')
+        if nav_pos != -1:
+            insertions.append((nav_pos, '<h1 id="toc-heading" class="chapter-heading">目錄</h1>\n'))
+
+    assigned_targets = set()
+    for chap in chapters:
+        target_sec_id = None
+        if "target_id" in chap and chap["target_id"] in page_map:
+            target_sec_id = chap["target_id"]
+        if not target_sec_id:
+            for s_id, (p_num, _) in page_map.items():
+                if p_num is not None and p_num == chap["start_page"]:
+                    target_sec_id = s_id
+                    break
+        if not target_sec_id:
+            for s_id, (p_num, _) in page_map.items():
+                if p_num is not None and chap["start_page"] <= p_num <= chap["end_page"]:
+                    target_sec_id = s_id
+                    break
+
+        if target_sec_id and target_sec_id not in assigned_targets:
+            assigned_targets.add(target_sec_id)
+            pos = page_map[target_sec_id][1]
+            h1_html = f'<h1 id="chapter-{chap["index"]}" class="chapter-heading">{chap["title"]}</h1>\n'
+            insertions.append((pos, h1_html))
+
+    if not insertions:
+        return html_text, False
+
+    # 按位置從後向前插入，避免位移
+    insertions.sort(key=lambda x: x[0], reverse=True)
+    new_html = html_text
+    for pos, h1_html in insertions:
+        new_html = new_html[:pos] + h1_html + new_html[pos:]
+
+    # 確保包含 CSS 樣式
+    if "h1.chapter-heading" not in new_html:
+        css_inject = """
+    h1.chapter-heading {
+      font-size: 1.85rem;
+      font-weight: 700;
+      color: var(--primary-color, #1a202c);
+      margin: 44px 0 20px 0;
+      padding-bottom: 10px;
+      border-bottom: 2px solid var(--accent-color, #3498db);
+      page-break-before: always;
+      break-before: page;
+    }
+"""
+        style_end = new_html.find("</style>")
+        if style_end != -1:
+            new_html = new_html[:style_end] + css_inject + new_html[style_end:]
+
+    if verbose:
+        print(f"[+] 自動為 HTML 注入 {len(insertions)} 個章節標題 (<h1>)，生成完整 EPUB 大綱導覽 (Outline)！")
+
+    return new_html, True
+
+
 def convert_html_to_epub(
     html_path: str | Path,
     output_path: Optional[str | Path] = None,
     images_dir: Optional[str | Path] = None,
+    toc_path: Optional[str | Path] = None,
     title: Optional[str] = None,
     author: Optional[str] = None,
     lang: Optional[str] = None,
@@ -124,7 +283,11 @@ def convert_html_to_epub(
     toc_depth: int = 3,
     generate_toc: bool = True,
     mathml: bool = True,
-    chapter_level: int = 2,
+    chapter_level: int = 1,
+    compress_images: bool = False,
+    image_quality: int = 75,
+    image_scale: float = 1.0,
+    image_max_dim: Optional[int] = None,
     pandoc_bin: Optional[str] = None,
     verbose: bool = True,
 ) -> Path:
@@ -134,6 +297,7 @@ def convert_html_to_epub(
     :param html_path: 輸入 HTML 檔案路徑（或包含 book.html 的目錄）
     :param output_path: 輸出 EPUB 檔案路徑 (預設: <html_dir>/<html_stem>.epub)
     :param images_dir: 圖片資源目錄 (預設: 自動定位 HTML 旁的 images/ 目錄)
+    :param toc_path: 目錄結構 JSON 檔案路徑 (若未指定則自動在同目錄尋找 toc.json)
     :param title: 書名 (若未指定則自動從 HTML <title> 標籤提取)
     :param author: 作者名稱 (選填)
     :param lang: 語言標籤 (若未指定則自動從 HTML 提取，預設 zh-TW)
@@ -142,7 +306,11 @@ def convert_html_to_epub(
     :param toc_depth: 目錄層級深度 (預設: 3)
     :param generate_toc: 是否生成 EPUB 目錄導覽 (預設: True)
     :param mathml: 是否啟用 MathML 向量數學公式渲染 (預設: True)
-    :param chapter_level: EPUB 章節切分標題層級 (預設: 2，即依 <h2> 切分)
+    :param chapter_level: EPUB 章節切分標題層級 (預設: 1，即依 <h1> 章節標題切分)
+    :param compress_images: 是否於編譯前重新壓縮 images 目錄中的 JPG/PNG 圖檔
+    :param image_quality: 圖片壓縮品質 (1-100，預設 75)
+    :param image_scale: 圖片尺寸縮放比例 (例如 0.8 或 1.0，預設 1.0)
+    :param image_max_dim: 圖片最大長寬限制 (例如 1920，預設 None)
     :param pandoc_bin: 自訂 Pandoc 執行檔路徑 (選填)
     :param verbose: 是否於終端機輸出詳細進度資訊
     :return: 生成的 EPUB 檔案 Path 物件
@@ -150,7 +318,6 @@ def convert_html_to_epub(
     # 1. 規範化路徑
     h_path = Path(html_path).resolve()
     if h_path.is_dir():
-        # 若傳入為目錄，嘗試尋找 book.html 或 index.html
         candidate1 = h_path / "book.html"
         candidate2 = h_path / "index.html"
         if candidate1.exists():
@@ -170,7 +337,6 @@ def convert_html_to_epub(
     if images_dir:
         img_dir = Path(images_dir).resolve()
     else:
-        # 預設同層的 images 目錄
         default_img = html_dir / "images"
         img_dir = default_img if default_img.exists() else None
 
@@ -194,7 +360,38 @@ def convert_html_to_epub(
             "  Conda: conda install -c conda-forge pandoc"
         )
 
-    # 3. 分析與檢驗 HTML 內容
+    # 3. 執行 images 圖檔重新壓縮與縮放 (若啟用)
+    if compress_images and img_dir and img_dir.exists() and any(img_dir.iterdir()):
+        if recompress_directory is None:
+            if verbose:
+                print("[-] 警告: 未能載入 recompress_images 模組，略過圖片壓縮步驟")
+        else:
+            if verbose:
+                print(f"[*] 執行 images 目錄圖片重新壓縮 (品質={image_quality}, 縮放={image_scale}, 最大尺寸={image_max_dim})...")
+            tmp_opt_dir = img_dir.parent / "images_opt_tmp"
+            if tmp_opt_dir.exists():
+                shutil.rmtree(tmp_opt_dir)
+            try:
+                recompress_directory(
+                    input_dir=img_dir,
+                    output_dir=tmp_opt_dir,
+                    qualities=[image_quality],
+                    scales=[image_scale],
+                    max_dim=image_max_dim,
+                    workers=min(os.cpu_count() or 4, 16),
+                    verbose=verbose,
+                )
+                shutil.rmtree(img_dir)
+                tmp_opt_dir.rename(img_dir)
+                if verbose:
+                    print(f"[+] images 目錄圖檔重新壓縮完成！")
+            except Exception as e:
+                if verbose:
+                    print(f"[-] 圖片壓縮過程異常: {e}")
+                if tmp_opt_dir.exists():
+                    shutil.rmtree(tmp_opt_dir)
+
+    # 4. 分析與檢驗 HTML 內容
     info = inspect_html(h_path, img_dir)
     book_title = title.strip() if title else info["title"]
     book_lang = lang.strip() if lang else info["lang"]
@@ -224,7 +421,23 @@ def convert_html_to_epub(
             else:
                 print(f"[+] 圖片校驗通過：所有引用圖檔均完整存在於目錄中")
 
-    # 4. 封面圖片設定
+    # 5. 確保具備 EPUB 大綱目錄 (注入章節 <h1>)
+    html_raw = h_path.read_text(encoding="utf-8", errors="replace")
+    updated_html, injected = ensure_epub_outline(
+        html_raw,
+        toc_path=Path(toc_path) if toc_path else None,
+        html_dir=html_dir,
+        verbose=verbose,
+    )
+
+    compile_target_name = html_name
+    temp_html_path = None
+    if injected:
+        temp_html_path = html_dir / f"__epub_temp_{h_path.stem}.html"
+        temp_html_path.write_text(updated_html, encoding="utf-8")
+        compile_target_name = temp_html_path.name
+
+    # 6. 封面圖片設定
     actual_cover = None
     if cover_image:
         cov_p = Path(cover_image).resolve()
@@ -237,46 +450,38 @@ def convert_html_to_epub(
         if actual_cover and verbose:
             print(f"[*] 自動偵測並套用封面圖檔: {actual_cover.name}")
 
-    # 5. 組裝 Pandoc 命令
-    # 支援公式：html+tex_math_dollars
+    # 7. 組裝 Pandoc 命令
     cmd = [
         pandoc_exec,
         "-f", "html+tex_math_dollars",
-        html_name,
+        compile_target_name,
         "-o", str(out_epub),
     ]
 
-    # resource-path: 讓 Pandoc 能夠順利找到相對與絕對圖片
     res_paths = ["."]
     if img_dir and img_dir.exists():
         res_paths.append(str(img_dir))
         res_paths.append(str(img_dir.parent))
     cmd.append(f"--resource-path={':'.join(res_paths)}")
 
-    # 數學公式設定
     if mathml:
         cmd.append("--mathml")
 
-    # 目錄設定
     if generate_toc:
         cmd.append("--toc")
         cmd.append(f"--toc-depth={toc_depth}")
 
-    # 章節切割層級 (通常為 2，按 <h2> 分割 XHTML 檔)
     if chapter_level and chapter_level > 0:
-        cmd.append(f"--epub-chapter-level={chapter_level}")
+        cmd.append(f"--split-level={chapter_level}")
 
-    # 元資料
     cmd.extend(["--metadata", f"title={book_title}"])
     cmd.extend(["--metadata", f"language={book_lang}"])
     if author:
         cmd.extend(["--metadata", f"author={author}"])
 
-    # 封面
     if actual_cover:
         cmd.append(f"--epub-cover-image={str(actual_cover)}")
 
-    # 自訂 CSS
     if css_path:
         c_path = Path(css_path).resolve()
         if c_path.exists():
@@ -288,48 +493,54 @@ def convert_html_to_epub(
         print(f"\n[*] 執行 Pandoc 指令 (工作目錄: {html_dir}):")
         print(f"    {' '.join(cmd)}\n")
 
-    # 6. 執行 Pandoc
-    proc = subprocess.run(
-        cmd,
-        cwd=html_dir,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=html_dir,
+            capture_output=True,
+            text=True,
+        )
 
-    if proc.returncode != 0:
-        err_msg = proc.stderr.strip() or proc.stdout.strip()
-        raise RuntimeError(f"Pandoc 編譯 EPUB 失敗 (結束碼 {proc.returncode}):\n{err_msg}")
+        if proc.returncode != 0:
+            err_msg = proc.stderr.strip() or proc.stdout.strip()
+            raise RuntimeError(f"Pandoc 編譯 EPUB 失敗 (結束碼 {proc.returncode}):\n{err_msg}")
 
-    if not out_epub.exists() or out_epub.stat().st_size == 0:
-        raise RuntimeError(f"EPUB 生成失敗，未產出有效檔案: {out_epub}")
+        if not out_epub.exists() or out_epub.stat().st_size == 0:
+            raise RuntimeError(f"EPUB 生成失敗，未產出有效檔案: {out_epub}")
 
-    file_size_mb = out_epub.stat().st_size / (1024 * 1024)
-    if verbose:
-        print("======================================================================")
-        print(f"[🎉] EPUB 電子書生成成功！")
-        print(f"      檔案路徑: {out_epub}")
-        print(f"      檔案大小: {file_size_mb:.2f} MB ({out_epub.stat().st_size:,} bytes)")
-        print("======================================================================")
+        file_size_mb = out_epub.stat().st_size / (1024 * 1024)
+        if verbose:
+            print("======================================================================")
+            print(f"[🎉] EPUB 電子書生成成功！(含原生 MathML 與章節大綱 Outline)")
+            print(f"      檔案路徑: {out_epub}")
+            print(f"      檔案大小: {file_size_mb:.2f} MB ({out_epub.stat().st_size:,} bytes)")
+            print("======================================================================")
 
-    return out_epub
+        return out_epub
+    finally:
+        if temp_html_path and temp_html_path.exists():
+            try:
+                temp_html_path.unlink()
+            except Exception:
+                pass
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ScanORC: 由 book.html 與 images 目錄直接秒級生成 EPUB3 電子書 (含原生 MathML 渲染)",
+        description="ScanORC: 由 book.html 與 images 目錄直接秒級生成 EPUB3 電子書 (含原生 MathML 渲染與章節 Outline)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""使用範例:
-  # 1. 預設轉換 (自動搜尋 output/book.html 或當前目錄之 book.html):
+  # 1. 預設轉換 (自動搜尋 output/book.html 或當前目錄之 book.html，自動套用目錄 outline 與封面):
   python html_to_epub.py
 
   # 2. 指定 HTML 檔案:
   python html_to_epub.py output/book.html
 
-  # 3. 指定輸出路徑與書名:
-  python html_to_epub.py output/book.html -o my_book.epub --title "量子力學基礎"
+  # 3. 指定輸出路徑、書名與目錄索引:
+  python html_to_epub.py output/book.html -o my_book.epub --title "多空操作秘笈" --toc output/toc.json
 
-  # 4. 指定圖片目錄與封面:
-  python html_to_epub.py output/book.html --images output/images --cover output/images/cover.jpg
+  # 4. 啟用 images 圖片重新壓縮與縮放:
+  python html_to_epub.py output/book.html --compress-images --image-quality 75 --image-scale 0.8
 """
     )
 
@@ -356,6 +567,11 @@ def main():
         help="插圖資源目錄 (預設: HTML 所在目錄旁的 images/ 資料夾)"
     )
     parser.add_argument(
+        "--toc",
+        default=None,
+        help="目錄結構 JSON 檔案路徑 (例如 toc.json，未指定時自動尋找同目錄 toc.json)"
+    )
+    parser.add_argument(
         "--title", "-t",
         default=None,
         help="書籍標題 (預設: 自動從 HTML <title> 標籤中抽取)"
@@ -373,7 +589,30 @@ def main():
     parser.add_argument(
         "--cover", "-c",
         default=None,
-        help="封面圖片路徑 (選填，未指定則自動偵測 cover.* 圖檔)"
+        help="封面圖片路徑 (選填，未指定則自動偵測 Cover-*.jpg 或 cover.* 圖檔)"
+    )
+    parser.add_argument(
+        "--compress-images",
+        action="store_true",
+        help="在編譯 EPUB 前，自動對 images 目錄中的 JPG 與 PNG 圖檔進行重新壓縮與尺寸縮放"
+    )
+    parser.add_argument(
+        "--image-quality",
+        type=int,
+        default=75,
+        help="images 圖檔壓縮品質 (1-100，預設: 75)"
+    )
+    parser.add_argument(
+        "--image-scale",
+        type=float,
+        default=1.0,
+        help="images 圖檔尺寸縮放比例 (例如 0.8 或 1.0，預設: 1.0)"
+    )
+    parser.add_argument(
+        "--image-max-dim",
+        type=int,
+        default=None,
+        help="images 圖檔最大長寬限制 (例如 1920，預設 None 不限制)"
     )
     parser.add_argument(
         "--css",
@@ -399,8 +638,8 @@ def main():
     parser.add_argument(
         "--chapter-level",
         type=int,
-        default=2,
-        help="EPUB 章節檔案切分標題層級 (預設: 2，即按 h2 切割)"
+        default=1,
+        help="EPUB 章節檔案切分標題層級 (預設: 1，即按 h1 切割)"
     )
     parser.add_argument(
         "--pandoc",
@@ -418,7 +657,6 @@ def main():
     # 判定 HTML 輸入目標
     target_html = args.html or args.input
     if not target_html:
-        # 自動搜尋候選路徑
         candidates = [
             Path("output/book.html"),
             Path("book.html"),
@@ -440,6 +678,7 @@ def main():
             html_path=target_html,
             output_path=args.output,
             images_dir=args.images,
+            toc_path=args.toc,
             title=args.title,
             author=args.author,
             lang=args.lang,
@@ -449,6 +688,10 @@ def main():
             generate_toc=not args.no_toc,
             mathml=not args.no_mathml,
             chapter_level=args.chapter_level,
+            compress_images=args.compress_images,
+            image_quality=args.image_quality,
+            image_scale=args.image_scale,
+            image_max_dim=args.image_max_dim,
             pandoc_bin=args.pandoc,
             verbose=not args.quiet,
         )

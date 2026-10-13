@@ -89,7 +89,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QTabWidget, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox,
-    QSpinBox, QComboBox, QTextEdit, QFileDialog, QMessageBox,
+    QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QFileDialog, QMessageBox,
     QGroupBox, QFormLayout, QProgressBar, QFrame
 )
 
@@ -801,6 +801,20 @@ class MainWindow(QMainWindow):
         self.oc_title.textChanged.connect(self.update_command_preview)
         form.addRow("書籍標題 (--title):", self.oc_title)
 
+        # 封面圖檔設定
+        self.oc_cover = QLineEdit("")
+        self.oc_cover.setPlaceholderText("留空則自動偵測 Cover-*.jpg 或 cover.*")
+        self.oc_cover.textChanged.connect(self.update_command_preview)
+        btn_cov_browse = QPushButton("瀏覽圖檔...")
+        btn_cov_browse.clicked.connect(lambda: self.browse_image_file(self.oc_cover))
+        btn_cov_detect = QPushButton("🔄 自動偵測")
+        btn_cov_detect.clicked.connect(lambda: self.auto_detect_cover_for_tab(self.oc_input, self.oc_cover))
+        h_cov = QHBoxLayout()
+        h_cov.addWidget(self.oc_cover)
+        h_cov.addWidget(btn_cov_browse)
+        h_cov.addWidget(btn_cov_detect)
+        form.addRow("EPUB 封面圖檔 (--cover):", h_cov)
+
         h_opts = QHBoxLayout()
         self.oc_workers = QSpinBox()
         self.oc_workers.setRange(1, 16)
@@ -822,6 +836,40 @@ class MainWindow(QMainWindow):
         h_opts.addWidget(QLabel("DPI:"))
         h_opts.addWidget(self.oc_dpi)
         form.addRow("效能與尺寸參數:", h_opts)
+
+        # images 插圖重新壓縮與尺寸縮放設定
+        self.oc_compress_images = QCheckBox("啟用 images 插圖壓縮與縮放 (--compress-images)")
+        self.oc_compress_images.setChecked(False)
+        self.oc_compress_images.stateChanged.connect(self.update_command_preview)
+
+        self.oc_img_quality = QSpinBox()
+        self.oc_img_quality.setRange(1, 100)
+        self.oc_img_quality.setValue(75)
+        self.oc_img_quality.setSuffix(" %")
+        self.oc_img_quality.valueChanged.connect(self.update_command_preview)
+
+        self.oc_img_scale = QDoubleSpinBox()
+        self.oc_img_scale.setRange(0.1, 2.0)
+        self.oc_img_scale.setSingleStep(0.05)
+        self.oc_img_scale.setValue(1.0)
+        self.oc_img_scale.valueChanged.connect(self.update_command_preview)
+
+        self.oc_img_max_dim = QSpinBox()
+        self.oc_img_max_dim.setRange(0, 4096)
+        self.oc_img_max_dim.setValue(0)
+        self.oc_img_max_dim.setSpecialValueText("不限制 (原尺寸)")
+        self.oc_img_max_dim.valueChanged.connect(self.update_command_preview)
+
+        h_img_opt = QHBoxLayout()
+        h_img_opt.addWidget(QLabel("品質:"))
+        h_img_opt.addWidget(self.oc_img_quality)
+        h_img_opt.addWidget(QLabel("縮放:"))
+        h_img_opt.addWidget(self.oc_img_scale)
+        h_img_opt.addWidget(QLabel("最大長寬:"))
+        h_img_opt.addWidget(self.oc_img_max_dim)
+
+        form.addRow("images 圖片優化:", self.oc_compress_images)
+        form.addRow("圖片品質與尺寸:", h_img_opt)
 
         self.oc_skip = QLineEdit("")
         self.oc_skip.setPlaceholderText("自動同步檔案清單之『略過OCR』勾選項，亦可在此手動輸入")
@@ -1057,6 +1105,20 @@ class MainWindow(QMainWindow):
         self.s3_toc.textChanged.connect(self.update_command_preview)
         form.addRow("目錄結構 JSON (--toc):", self.s3_toc)
 
+        # 封面圖檔設定
+        self.s3_cover = QLineEdit("")
+        self.s3_cover.setPlaceholderText("留空則自動偵測 Cover-*.jpg 或 cover.*")
+        self.s3_cover.textChanged.connect(self.update_command_preview)
+        btn_s3_cov_browse = QPushButton("瀏覽圖檔...")
+        btn_s3_cov_browse.clicked.connect(lambda: self.browse_image_file(self.s3_cover))
+        btn_s3_cov_detect = QPushButton("🔄 自動偵測")
+        btn_s3_cov_detect.clicked.connect(lambda: self.auto_detect_cover_for_tab(self.s3_input, self.s3_cover))
+        h_s3_cov = QHBoxLayout()
+        h_s3_cov.addWidget(self.s3_cover)
+        h_s3_cov.addWidget(btn_s3_cov_browse)
+        h_s3_cov.addWidget(btn_s3_cov_detect)
+        form.addRow("EPUB 封面圖檔 (--cover):", h_s3_cov)
+
         h_perf = QHBoxLayout()
         self.s3_workers = QSpinBox()
         self.s3_workers.setRange(1, 16)
@@ -1072,6 +1134,40 @@ class MainWindow(QMainWindow):
         h_perf.addWidget(QLabel("單頁 Batch:"))
         h_perf.addWidget(self.s3_batch)
         form.addRow("推理並行設定:", h_perf)
+
+        # images 插圖重新壓縮與尺寸縮放設定
+        self.s3_compress_images = QCheckBox("啟用 images 插圖壓縮與縮放 (--compress-images)")
+        self.s3_compress_images.setChecked(False)
+        self.s3_compress_images.stateChanged.connect(self.update_command_preview)
+
+        self.s3_img_quality = QSpinBox()
+        self.s3_img_quality.setRange(1, 100)
+        self.s3_img_quality.setValue(75)
+        self.s3_img_quality.setSuffix(" %")
+        self.s3_img_quality.valueChanged.connect(self.update_command_preview)
+
+        self.s3_img_scale = QDoubleSpinBox()
+        self.s3_img_scale.setRange(0.1, 2.0)
+        self.s3_img_scale.setSingleStep(0.05)
+        self.s3_img_scale.setValue(1.0)
+        self.s3_img_scale.valueChanged.connect(self.update_command_preview)
+
+        self.s3_img_max_dim = QSpinBox()
+        self.s3_img_max_dim.setRange(0, 4096)
+        self.s3_img_max_dim.setValue(0)
+        self.s3_img_max_dim.setSpecialValueText("不限制 (原尺寸)")
+        self.s3_img_max_dim.valueChanged.connect(self.update_command_preview)
+
+        h_s3_img_opt = QHBoxLayout()
+        h_s3_img_opt.addWidget(QLabel("品質:"))
+        h_s3_img_opt.addWidget(self.s3_img_quality)
+        h_s3_img_opt.addWidget(QLabel("縮放:"))
+        h_s3_img_opt.addWidget(self.s3_img_scale)
+        h_s3_img_opt.addWidget(QLabel("最大長寬:"))
+        h_s3_img_opt.addWidget(self.s3_img_max_dim)
+
+        form.addRow("images 圖片優化:", self.s3_compress_images)
+        form.addRow("圖片品質與尺寸:", h_s3_img_opt)
 
         self.s3_skip = QLineEdit("")
         self.s3_skip.setPlaceholderText("自動同步檔案清單之『略過OCR』勾選項，亦可在此手動輸入")
@@ -1249,8 +1345,65 @@ class MainWindow(QMainWindow):
         if p:
             line_edit.setText(p)
 
+    def browse_image_file(self, line_edit: QLineEdit):
+        """開啟檔案選擇對話框選取圖片檔案"""
+        f, _ = QFileDialog.getOpenFileName(
+            self, "選取封面圖檔", str(Path.cwd()),
+            "圖片檔案 (*.jpg *.jpeg *.png *.webp);;所有檔案 (*.*)"
+        )
+        if f:
+            line_edit.setText(format_rel_path(Path(f)))
+
+    def auto_detect_cover_for_tab(self, dir_input: QLineEdit, cover_input: QLineEdit):
+        """在指定的輸入或輸出目錄中自動偵測 Cover 圖檔"""
+        target_dir_str = dir_input.text().strip() or "samples"
+        search_dirs = [Path(target_dir_str)]
+        out_dir = Path("output")
+        if out_dir.exists():
+            search_dirs.append(out_dir)
+            search_dirs.append(out_dir / "preprocessed")
+        cur_dir = Path(".")
+        search_dirs.append(cur_dir)
+
+        cover_patterns = [
+            re.compile(r"^cover\.(jpg|jpeg|png|webp)$", re.IGNORECASE),
+            re.compile(r"^cover[-_]?\d+\.(jpg|jpeg|png|webp)$", re.IGNORECASE),
+            re.compile(r"^封面\.(jpg|jpeg|png|webp)$", re.IGNORECASE),
+            re.compile(r"^front[-_]?cover\.(jpg|jpeg|png|webp)$", re.IGNORECASE),
+        ]
+
+        found = None
+        for d in search_dirs:
+            if not d.exists():
+                continue
+            if d.is_file():
+                for pat in cover_patterns:
+                    if pat.match(d.name):
+                        found = d
+                        break
+            elif d.is_dir():
+                for root, _, files in os.walk(d):
+                    for fn in sorted(files):
+                        for pat in cover_patterns:
+                            if pat.match(fn):
+                                found = Path(root) / fn
+                                break
+                        if found:
+                            break
+                    if found:
+                        break
+            if found:
+                break
+
+        if found:
+            rel = format_rel_path(found)
+            cover_input.setText(rel)
+            self.lbl_status.setText(f"已自動偵測並設定封面圖檔: {rel}")
+        else:
+            QMessageBox.information(self, "提示", f"在目錄 '{target_dir_str}' 及相關路徑中未找到符合 Cover-*.jpg 或 cover.* 的圖檔。")
+
     def on_file_selection_changed(self):
-        """左側表格列選取變更時，依參數需求傳遞至步驟 1 與步驟 4"""
+        """左側表格列選取變更時，依參數需求傳遞至步驟 1 與步驟 4，並智能代入封面"""
         selected_paths = self.file_manager.get_selected_row_paths()
         if not selected_paths:
             return
@@ -1271,6 +1424,16 @@ class MainWindow(QMainWindow):
         ]
         if selected_toc:
             self.s4_input.setText(format_paths_arg(selected_toc))
+
+        # c. 若選取單一圖檔且為 Cover/封面圖，且封面設定為空時自動代入
+        if len(selected_paths) == 1:
+            p_sel = Path(selected_paths[0])
+            if re.search(r"(^cover|^封面|^front[-_]?cover)", p_sel.stem.lower()):
+                rel_cov = format_rel_path(p_sel)
+                if not self.oc_cover.text().strip():
+                    self.oc_cover.setText(rel_cov)
+                if not self.s3_cover.text().strip():
+                    self.s3_cover.setText(rel_cov)
 
         self.update_command_preview()
 
@@ -1395,10 +1558,18 @@ class MainWindow(QMainWindow):
             cmd.extend(["--input", in_dir, "--output", out_dir])
             if self.oc_title.text().strip():
                 cmd.extend(["--title", self.oc_title.text().strip()])
+            if self.oc_cover.text().strip():
+                cmd.extend(["--cover", self.oc_cover.text().strip()])
             if self.oc_dpi.text().strip():
                 cmd.extend(["--dpi", self.oc_dpi.text().strip()])
             cmd.extend(["--workers", str(self.oc_workers.value())])
             cmd.extend(["--batch-size", str(self.oc_batch.value())])
+            if self.oc_compress_images.isChecked():
+                cmd.append("--compress-images")
+                cmd.extend(["--image-quality", str(self.oc_img_quality.value())])
+                cmd.extend(["--image-scale", str(self.oc_img_scale.value())])
+                if self.oc_img_max_dim.value() > 0:
+                    cmd.extend(["--image-max-dim", str(self.oc_img_max_dim.value())])
             skips = safe_split_args(self.oc_skip.text())
             if skips:
                 cmd.extend(["--skip-ocr"] + skips)
@@ -1443,8 +1614,16 @@ class MainWindow(QMainWindow):
                 cmd.extend(["--title", self.s3_title.text().strip()])
             if self.s3_toc.text().strip():
                 cmd.extend(["--toc", self.s3_toc.text().strip()])
+            if self.s3_cover.text().strip():
+                cmd.extend(["--cover", self.s3_cover.text().strip()])
             cmd.extend(["--workers", str(self.s3_workers.value())])
             cmd.extend(["--batch-size", str(self.s3_batch.value())])
+            if self.s3_compress_images.isChecked():
+                cmd.append("--compress-images")
+                cmd.extend(["--image-quality", str(self.s3_img_quality.value())])
+                cmd.extend(["--image-scale", str(self.s3_img_scale.value())])
+                if self.s3_img_max_dim.value() > 0:
+                    cmd.extend(["--image-max-dim", str(self.s3_img_max_dim.value())])
             skips = safe_split_args(self.s3_skip.text())
             if skips:
                 cmd.extend(["--skip-ocr"] + skips)
@@ -1590,6 +1769,16 @@ class MainWindow(QMainWindow):
         cmd = [sys.executable, "html_to_epub.py", str(html_p)]
         if self.s3_title.text().strip():
             cmd.extend(["--title", self.s3_title.text().strip()])
+        if self.s3_toc.text().strip():
+            cmd.extend(["--toc", self.s3_toc.text().strip()])
+        if self.s3_cover.text().strip():
+            cmd.extend(["--cover", self.s3_cover.text().strip()])
+        if self.s3_compress_images.isChecked():
+            cmd.append("--compress-images")
+            cmd.extend(["--image-quality", str(self.s3_img_quality.value())])
+            cmd.extend(["--image-scale", str(self.s3_img_scale.value())])
+            if self.s3_img_max_dim.value() > 0:
+                cmd.extend(["--image-max-dim", str(self.s3_img_max_dim.value())])
         self.execute_cmd_list(cmd)
 
     def open_folder(self, folder_str: str):
