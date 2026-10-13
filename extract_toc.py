@@ -309,85 +309,105 @@ def main():
     )
     args = parser.parse_args()
 
-    sorted_images = collect_toc_images(args.input)
-    if not sorted_images:
-        print(f"[-] 錯誤：未在指定的輸入路徑找到任何有效的圖片檔案！{args.input}", file=sys.stderr)
-        sys.exit(1)
+    json_candidates = [Path(a).resolve() for a in args.input if Path(a).is_file() and Path(a).suffix.lower() == ".json"]
+    if json_candidates:
+        json_file = json_candidates[0]
+        print("==================================================")
+        print(" ScanORC 書本目錄結構與自動歸檔工具 (載入現有 JSON)")
+        print("==================================================")
+        print(f"[*] 載入現有目錄索引 JSON 檔案: {json_file}")
+        try:
+            with open(json_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            all_entries = data.get("toc", [])
+            if not all_entries:
+                print(f"[-] 錯誤：'{json_file.name}' 中未找到任何目錄條目 (toc)！", file=sys.stderr)
+                sys.exit(1)
+            print(f"[+] 成功讀取 {len(all_entries)} 個章節目錄條目，無需加載模型推論！")
+            sorted_images = []
+        except Exception as e:
+            print(f"[-] 讀取 JSON 檔案失敗: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        sorted_images = collect_toc_images(args.input)
+        if not sorted_images:
+            print(f"[-] 錯誤：未在指定的輸入路徑找到任何有效的圖片檔案！{args.input}", file=sys.stderr)
+            sys.exit(1)
 
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-    print("==================================================")
-    print(" ScanORC 書本目錄結構化抽取工具 (方案 A: GLM-OCR)")
-    print("==================================================")
-    print(f"[*] 發現 {len(sorted_images)} 個目錄圖檔，依檔名順序排列：")
-    for idx, p in enumerate(sorted_images, 1):
-        print(f"    ({idx}/{len(sorted_images)}) {p}")
-    print(f"[*] 輸出位置: {args.output}")
-    print(f"[*] 推論裝置: {device} ({dtype})")
-    print(f"[*] 載入模型: {args.model_dir} ...")
+        print("==================================================")
+        print(" ScanORC 書本目錄結構化抽取工具 (方案 A: GLM-OCR)")
+        print("==================================================")
+        print(f"[*] 發現 {len(sorted_images)} 個目錄圖檔，依檔名順序排列：")
+        for idx, p in enumerate(sorted_images, 1):
+            print(f"    ({idx}/{len(sorted_images)}) {p}")
+        print(f"[*] 輸出位置: {args.output}")
+        print(f"[*] 推論裝置: {device} ({dtype})")
+        print(f"[*] 載入模型: {args.model_dir} ...")
 
-    processor = AutoProcessor.from_pretrained(args.model_dir, trust_remote_code=True)
-    model = GlmOcrForConditionalGeneration.from_pretrained(
-        args.model_dir,
-        dtype=dtype,
-        device_map=device,
-        trust_remote_code=True
-    )
-    model.eval()
+        processor = AutoProcessor.from_pretrained(args.model_dir, trust_remote_code=True)
+        model = GlmOcrForConditionalGeneration.from_pretrained(
+            args.model_dir,
+            dtype=dtype,
+            device_map=device,
+            trust_remote_code=True
+        )
+        model.eval()
 
-    print(f"[+] 模型就緒！開始依序識別各目錄頁...")
+        print(f"[+] 模型就緒！開始依序識別各目錄頁...")
 
-    all_entries = []
-    raw_texts = []
+        all_entries = []
+        raw_texts = []
 
-    for idx, img_path in enumerate(sorted_images, 1):
-        print(f"\n[*] [{idx}/{len(sorted_images)}] 正在識別目錄頁: {img_path.name}...")
-        raw_ocr_text = extract_toc_from_image(img_path, processor, model, device)
-        raw_texts.append(f"--- File: {img_path.name} ---\n" + raw_ocr_text.strip())
+        for idx, img_path in enumerate(sorted_images, 1):
+            print(f"\n[*] [{idx}/{len(sorted_images)}] 正在識別目錄頁: {img_path.name}...")
+            raw_ocr_text = extract_toc_from_image(img_path, processor, model, device)
+            raw_texts.append(f"--- File: {img_path.name} ---\n" + raw_ocr_text.strip())
 
-        page_entries = parse_toc_text_raw(raw_ocr_text, source_filename=img_path.name)
-        print(f"    [+] 從 {img_path.name} 解析出 {len(page_entries)} 個章節條目")
-        all_entries.extend(page_entries)
+            page_entries = parse_toc_text_raw(raw_ocr_text, source_filename=img_path.name)
+            print(f"    [+] 從 {img_path.name} 解析出 {len(page_entries)} 個章節條目")
+            all_entries.extend(page_entries)
 
-    if not all_entries:
-        print("[-] 警告：未能在所有目錄圖片中解析出任何有效目錄條目！", file=sys.stderr)
-        sys.exit(1)
+        if not all_entries:
+            print("[-] 警告：未能在所有目錄圖片中解析出任何有效目錄條目！", file=sys.stderr)
+            sys.exit(1)
 
-    # 全域計算結束頁碼與總頁數
-    for i in range(len(all_entries)):
-        all_entries[i]["index"] = i + 1
-        if i < len(all_entries) - 1:
-            end_page = all_entries[i + 1]["start_page"] - 1
-            all_entries[i]["end_page"] = end_page
-            all_entries[i]["page_count"] = max(1, end_page - all_entries[i]["start_page"] + 1)
-        else:
-            all_entries[i]["end_page"] = None
-            all_entries[i]["page_count"] = None
+        # 全域計算結束頁碼與總頁數
+        for i in range(len(all_entries)):
+            all_entries[i]["index"] = i + 1
+            if i < len(all_entries) - 1:
+                end_page = all_entries[i + 1]["start_page"] - 1
+                all_entries[i]["end_page"] = end_page
+                all_entries[i]["page_count"] = max(1, end_page - all_entries[i]["start_page"] + 1)
+            else:
+                all_entries[i]["end_page"] = None
+                all_entries[i]["page_count"] = None
 
-    # 校驗頁碼連續性
-    validate_toc(all_entries)
+        # 校驗頁碼連續性
+        validate_toc(all_entries)
 
-    # 封裝標準 JSON
-    book_title = args.book_title or sorted_images[0].parent.name or "Unknown"
-    result_data = {
-        "book_title": book_title,
-        "source_images": [str(p) for p in sorted_images],
-        "source_image": str(sorted_images[0]),
-        "extracted_at": datetime.now().isoformat(),
-        "total_chapters": len(all_entries),
-        "toc": all_entries,
-        "raw_text": "\n\n".join(raw_texts)
-    }
+        # 封裝標準 JSON
+        book_title = args.book_title or sorted_images[0].parent.name or "Unknown"
+        result_data = {
+            "book_title": book_title,
+            "source_images": [str(p) for p in sorted_images],
+            "extracted_at": datetime.now().isoformat(),
+            "model": args.model_dir,
+            "total_chapters": len(all_entries),
+            "toc": all_entries,
+            "raw_text": "\n\n".join(raw_texts)
+        }
 
-    output_path = Path(args.output).resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(result_data, f, ensure_ascii=False, indent=2)
+        output_path = Path(args.output).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(result_data, f, ensure_ascii=False, indent=2)
 
-    print("\n==================================================")
-    print(f"[+] 跨頁目錄識別完成！全書共 {len(all_entries)} 個章節目錄條目")
-    print(f"[+] JSON 成果已儲存至: {output_path}")
+        print("\n==================================================")
+        print(f"[+] 跨頁目錄識別完成！全書共 {len(all_entries)} 個章節目錄條目")
+        print(f"[+] JSON 成果已儲存至: {output_path}")
 
     # 印出預覽表格
     print("\n" + "=" * 68)
@@ -401,7 +421,13 @@ def main():
 
     # 執行自動建立目錄與移動 Page-xxx.jpg 歸檔
     if args.organize_pages is not None:
-        target_pages_dir = Path(args.organize_pages).resolve() if args.organize_pages else sorted_images[0].parent
+        if args.organize_pages:
+            target_pages_dir = Path(args.organize_pages).resolve()
+        elif sorted_images:
+            target_pages_dir = sorted_images[0].parent
+        else:
+            target_pages_dir = Path.cwd()
+
         if not target_pages_dir.exists():
             print(f"[-] 錯誤：找不到待整理之目錄 '{target_pages_dir}'！", file=sys.stderr)
             sys.exit(1)

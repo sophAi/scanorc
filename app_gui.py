@@ -24,13 +24,32 @@ from pathlib import Path
 from typing import List, Dict, Optional, Union
 
 # -------------------------------------------------------------
-# Linux / Conda 環境相容性自動引導 (解決 Conda Qt5 插件衝突、舊版 libxkbcommon 段錯誤與 libxcb-cursor 缺失)
+# Linux / Conda 環境相容性自動引導 (途徑 C: PyQt6 原生輸入法優先適配 + PySide6 雙引擎)
 # -------------------------------------------------------------
 project_root = Path(__file__).resolve().parent
 bundled_lib_dir = project_root / "bin" / "lib"
 
-# 檢查是否需要透過 LD_PRELOAD 解決 Conda 舊版 libxkbcommon 造成的段錯誤
+# 1. 在 Linux 環境下，優先檢查是否可切換至相容系統原生 Fcitx5 輸入法外掛的 Python3 (PyQt6)
 if sys.platform.startswith("linux") and not os.environ.get("_SCANORC_GUI_BOOTSTRAPPED"):
+    can_use_current_pyqt6 = False
+    try:
+        import PyQt6
+        can_use_current_pyqt6 = True
+    except ImportError:
+        pass
+
+    sys_py = "/usr/bin/python3"
+    if not can_use_current_pyqt6 and Path(sys_py).exists() and sys.executable != sys_py:
+        try:
+            chk = subprocess.run([sys_py, "-c", "import PyQt6.QtWidgets"], capture_output=True)
+            if chk.returncode == 0:
+                os.environ["_SCANORC_GUI_BOOTSTRAPPED"] = "1"
+                os.environ["_SCANORC_ORIGINAL_PYTHON"] = sys.executable
+                os.execv(sys_py, [sys_py] + sys.argv)
+        except Exception:
+            pass
+
+    # 若維持在當前 Python，檢查是否需要透過 LD_PRELOAD 解決 Conda 舊版 libxkbcommon 造成的段錯誤
     preload_candidates = [
         bundled_lib_dir / "libxkbcommon-x11.so.0",
         bundled_lib_dir / "libxkbcommon.so.0",
@@ -57,70 +76,91 @@ if sys.platform.startswith("linux") and not os.environ.get("_SCANORC_GUI_BOOTSTR
         # 自身重啟以套用更新後的動態鏈接環境
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
+# 2. 雙引擎 Qt 導入層 (PyQt6 優先，PySide6 作為 fallback)
 try:
-    import PySide6
-    # 1. 強制設定 QT_PLUGIN_PATH 指向 PySide6 自帶的 Qt6 外掛目錄，避免 Conda 載入舊版 Qt5 插件
-    pyside_dir = Path(PySide6.__file__).resolve().parent
-    qt_plugins_dir = pyside_dir / "Qt" / "plugins"
-    if qt_plugins_dir.exists():
-        os.environ["QT_PLUGIN_PATH"] = str(qt_plugins_dir)
+    from PyQt6 import QtCore, QtGui, QtWidgets
+    from PyQt6.QtCore import Qt, QProcess, pyqtSignal as Signal, pyqtSlot as Slot
+    from PyQt6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QSplitter, QTabWidget, QLabel, QLineEdit, QPushButton,
+        QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox,
+        QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QFileDialog, QMessageBox,
+        QGroupBox, QFormLayout, QProgressBar, QFrame
+    )
 
-    # 2. 自動補充 PySide6 Qt/lib 缺失之函式庫
-    qt_lib_dir = pyside_dir / "Qt" / "lib"
-    if qt_lib_dir.exists() and bundled_lib_dir.exists() and os.access(qt_lib_dir, os.W_OK):
-        for fn in [
-            "libxcb-cursor.so.0", "libxcb-cursor.so.0.0.0",
-            "libxkbcommon.so.0", "libxkbcommon.so.0.0.0",
-            "libxkbcommon-x11.so.0", "libxkbcommon-x11.so.0.0.0"
-        ]:
-            src = bundled_lib_dir / fn
-            dst = qt_lib_dir / fn
-            if src.exists() and not dst.exists():
+    # 確保全域輸入法模組使用 fcitx 原生通道
+    if sys.platform.startswith("linux") and "QT_IM_MODULE" not in os.environ:
+        os.environ["QT_IM_MODULE"] = "fcitx"
+
+    # PyQt6 全域列舉向後相容對齊：將 Scoped Enums 回填至主類別命名空間，確保與 PySide6 / 舊式語法 100% 雙向相容
+    def _patch_qt6_enums():
+        for mod in (QtCore, QtGui, QtWidgets):
+            for cls_name in dir(mod):
+                if cls_name.startswith("_"):
+                    continue
                 try:
-                    shutil.copy2(src, dst)
+                    cls = getattr(mod, cls_name)
+                    if isinstance(cls, type):
+                        for sub_name in dir(cls):
+                            if sub_name.startswith("_"):
+                                continue
+                            try:
+                                sub = getattr(cls, sub_name)
+                                if isinstance(sub, type):
+                                    for val_name in dir(sub):
+                                        if not val_name.startswith("_") and not hasattr(cls, val_name):
+                                            try:
+                                                setattr(cls, val_name, getattr(sub, val_name))
+                                            except Exception:
+                                                pass
+                            except Exception:
+                                pass
                 except Exception:
                     pass
+        # 常用複合對齊旗標
+        setattr(QtCore.Qt, "AlignCenter", QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignVCenter)
 
-    # 3. Linux 中文輸入法 (Fcitx5 / IBus) 自動適配引導
-    # 原因說明：
-    # 系統雖然安裝了 fcitx5-frontend-qt6，但它是針對系統 Qt6 (Qt 6.4) 編譯的。
-    # pip 安裝的 PySide6 自帶獨立 Qt6 函式庫，由於 Qt Private API 符號不相容，
-    # 無法載入系統的 libfcitx5platforminputcontextplugin.so。
-    # 幸好 Fcitx5 原生啟動了標準 IBus 服務 (org.freedesktop.IBus)，
-    # 且 PySide6 原生內建完全相容的 libibusplatforminputcontextplugin.so。
-    # 將 QT_IM_MODULE 自動橋接為 ibus 並載入 IBUS_ADDRESS，
-    # 即可讓 PySide6 完美呼出 Fcitx5 進行 Ctrl+Space 中文輸入與選字！
-    if sys.platform.startswith("linux"):
-        cur_im = os.environ.get("QT_IM_MODULE", "")
-        if cur_im in ("fcitx", "fcitx5", ""):
-            os.environ["QT_IM_MODULE"] = "ibus"
+    _patch_qt6_enums()
+    QT_LIB = "PyQt6"
 
-        if "IBUS_ADDRESS" not in os.environ:
-            bus_dir = Path.home() / ".config" / "ibus" / "bus"
-            if bus_dir.exists():
-                for f in bus_dir.iterdir():
-                    if f.is_file() and not f.name.endswith(".bak"):
-                        try:
-                            for line in f.read_text().splitlines():
-                                if line.startswith("IBUS_ADDRESS="):
-                                    os.environ["IBUS_ADDRESS"] = line.split("=", 1)[1].strip()
-                                    break
-                        except Exception:
-                            pass
-                        if "IBUS_ADDRESS" in os.environ:
-                            break
 except ImportError:
-    pass
+    # Fallback 至 PySide6
+    try:
+        import PySide6
+        # 強制設定 QT_PLUGIN_PATH 指向 PySide6 自帶的外掛目錄
+        pyside_dir = Path(PySide6.__file__).resolve().parent
+        qt_plugins_dir = pyside_dir / "Qt" / "plugins"
+        if qt_plugins_dir.exists():
+            os.environ["QT_PLUGIN_PATH"] = str(qt_plugins_dir)
 
-from PySide6 import QtCore, QtGui, QtWidgets
-from PySide6.QtCore import Qt, QProcess, Signal, Slot
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QSplitter, QTabWidget, QLabel, QLineEdit, QPushButton,
-    QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox,
-    QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QFileDialog, QMessageBox,
-    QGroupBox, QFormLayout, QProgressBar, QFrame
-)
+        # 自動補充缺失之庫
+        qt_lib_dir = pyside_dir / "Qt" / "lib"
+        if qt_lib_dir.exists() and bundled_lib_dir.exists() and os.access(qt_lib_dir, os.W_OK):
+            for fn in [
+                "libxcb-cursor.so.0", "libxcb-cursor.so.0.0.0",
+                "libxkbcommon.so.0", "libxkbcommon.so.0.0.0",
+                "libxkbcommon-x11.so.0", "libxkbcommon-x11.so.0.0.0"
+            ]:
+                src = bundled_lib_dir / fn
+                dst = qt_lib_dir / fn
+                if src.exists() and not dst.exists():
+                    try:
+                        shutil.copy2(src, dst)
+                    except Exception:
+                        pass
+    except ImportError:
+        pass
+
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtCore import Qt, QProcess, Signal, Slot
+    from PySide6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QSplitter, QTabWidget, QLabel, QLineEdit, QPushButton,
+        QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox,
+        QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QFileDialog, QMessageBox,
+        QGroupBox, QFormLayout, QProgressBar, QFrame
+    )
+    QT_LIB = "PySide6"
 
 VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 
@@ -624,9 +664,68 @@ class FileManagerWidget(QWidget):
         return [d["name"] for d in self.files_data if d["patch"]]
 
 
+def get_ui_font_family_str() -> str:
+    """
+    獲取跨平台與繁體中文/Emoji 字型備選鏈 CSS 字串，確保在 Linux Qt6/QSS 下
+    分頁與按鈕的 Emoji (🚀, 📐, 🤖 等) 及中文字型正常渲染，不出現缺字方框框。
+    """
+    candidate_families = [
+        "Noto Sans CJK TC",
+        "Noto Sans TC",
+        "Microsoft JhengHei",
+        "PingFang TC",
+        "WenQuanYi Micro Hei",
+        "DejaVu Sans",
+        "Sans Serif",
+        "Noto Color Emoji",
+        "Segoe UI Emoji",
+        "Apple Color Emoji",
+    ]
+    available = set(QtGui.QFontDatabase.families())
+    matched = [f"'{f}'" for f in candidate_families if f in available or f == "Sans Serif"]
+    if "'Noto Color Emoji'" not in matched and "Noto Color Emoji" in available:
+        matched.append("'Noto Color Emoji'")
+    if not matched:
+        matched = ["sans-serif"]
+    return ", ".join(matched)
+
+
+def setup_app_fonts(app: Optional[QApplication] = None):
+    """
+    設定跨平台與繁體中文/Emoji 字型備選鏈 (Fallback Chain)，
+    確保 Linux/PyQt6 下分頁標籤與按鈕 Emoji (🚀, 📐, 🤖, 📁 等) 及中文字元不出現方框框 (Tofu)。
+    """
+    if app is None:
+        app = QApplication.instance()
+    if not app:
+        return
+    font = app.font()
+    available = set(QtGui.QFontDatabase.families())
+    candidate_families = [
+        "Noto Sans CJK TC",
+        "Noto Sans TC",
+        "Microsoft JhengHei",
+        "PingFang TC",
+        "WenQuanYi Micro Hei",
+        "DejaVu Sans",
+        font.family(),
+        "Noto Color Emoji",
+    ]
+    chain = [f for f in candidate_families if f in available or f == font.family()]
+    if "Noto Color Emoji" in available and "Noto Color Emoji" not in chain:
+        chain.append("Noto Color Emoji")
+    if chain:
+        font.setFamilies(chain)
+        app.setFont(font)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        setup_app_fonts()
+        app_inst = QApplication.instance()
+        if app_inst:
+            self.setFont(app_inst.font())
         self.setWindowTitle("ScanORC - 掃描書本轉語意結構化 HTML/EPUB 控制台")
         self.resize(1280, 850)
 
@@ -847,14 +946,14 @@ class MainWindow(QMainWindow):
         h_opts = QHBoxLayout()
         self.oc_workers = QSpinBox()
         self.oc_workers.setRange(1, 16)
-        self.oc_workers.setValue(4)
+        self.oc_workers.setValue(1)
         self.oc_workers.valueChanged.connect(self.update_command_preview)
         h_opts.addWidget(QLabel("並行 Workers:"))
         h_opts.addWidget(self.oc_workers)
 
         self.oc_batch = QSpinBox()
         self.oc_batch.setRange(1, 8)
-        self.oc_batch.setValue(4)
+        self.oc_batch.setValue(2)
         self.oc_batch.valueChanged.connect(self.update_command_preview)
         h_opts.addWidget(QLabel("單頁 Batch:"))
         h_opts.addWidget(self.oc_batch)
@@ -868,7 +967,7 @@ class MainWindow(QMainWindow):
 
         # images 插圖重新壓縮與尺寸縮放設定
         self.oc_compress_images = QCheckBox("啟用 images 插圖壓縮與縮放 (--compress-images)")
-        self.oc_compress_images.setChecked(False)
+        self.oc_compress_images.setChecked(True)
         self.oc_compress_images.stateChanged.connect(self.update_command_preview)
 
         self.oc_img_quality = QSpinBox()
@@ -880,7 +979,7 @@ class MainWindow(QMainWindow):
         self.oc_img_scale = QDoubleSpinBox()
         self.oc_img_scale.setRange(0.1, 2.0)
         self.oc_img_scale.setSingleStep(0.05)
-        self.oc_img_scale.setValue(1.0)
+        self.oc_img_scale.setValue(0.75)
         self.oc_img_scale.valueChanged.connect(self.update_command_preview)
 
         self.oc_img_max_dim = QSpinBox()
@@ -911,6 +1010,11 @@ class MainWindow(QMainWindow):
         self.oc_epub.stateChanged.connect(self.update_command_preview)
         h_chk.addWidget(self.oc_epub)
 
+        self.oc_organize = QCheckBox("自動執行章節目錄歸檔 (--organize-pages)")
+        self.oc_organize.setChecked(True)
+        self.oc_organize.stateChanged.connect(self.update_command_preview)
+        h_chk.addWidget(self.oc_organize)
+
         self.oc_copy = QCheckBox("章節歸檔使用複製而非移動 (--copy)")
         self.oc_copy.stateChanged.connect(self.update_command_preview)
         h_chk.addWidget(self.oc_copy)
@@ -918,7 +1022,7 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(form)
         desc = QLabel(
-            "<b>說明：</b> 一鍵自動串聯【轉正裁切 $\\rightarrow$ 目錄抽取 $\\rightarrow$ AI OCR & EPUB $\\rightarrow$ 章節歸檔】全流程。"
+            "<b>說明：</b> 一鍵自動串聯【轉正裁切 → 目錄抽取 → AI OCR & EPUB → 章節歸檔】全流程。"
         )
         desc.setStyleSheet("color: #444; margin-top: 10px;")
         layout.addWidget(desc)
@@ -969,7 +1073,7 @@ class MainWindow(QMainWindow):
 
         self.s1_margins = QSpinBox()
         self.s1_margins.setRange(0, 100)
-        self.s1_margins.setValue(10)
+        self.s1_margins.setValue(1)
         self.s1_margins.valueChanged.connect(self.update_command_preview)
         h_params.addWidget(QLabel("邊距 (mm):"))
         h_params.addWidget(self.s1_margins)
@@ -984,7 +1088,7 @@ class MainWindow(QMainWindow):
 
         self.s1_quality = QSpinBox()
         self.s1_quality.setRange(1, 100)
-        self.s1_quality.setValue(95)
+        self.s1_quality.setValue(85)
         self.s1_quality.valueChanged.connect(self.update_command_preview)
         h_fmt.addWidget(QLabel("品質:"))
         h_fmt.addWidget(self.s1_quality)
@@ -1151,14 +1255,14 @@ class MainWindow(QMainWindow):
         h_perf = QHBoxLayout()
         self.s3_workers = QSpinBox()
         self.s3_workers.setRange(1, 16)
-        self.s3_workers.setValue(4)
+        self.s3_workers.setValue(1)
         self.s3_workers.valueChanged.connect(self.update_command_preview)
         h_perf.addWidget(QLabel("Workers 並行數:"))
         h_perf.addWidget(self.s3_workers)
 
         self.s3_batch = QSpinBox()
         self.s3_batch.setRange(1, 8)
-        self.s3_batch.setValue(4)
+        self.s3_batch.setValue(2)
         self.s3_batch.valueChanged.connect(self.update_command_preview)
         h_perf.addWidget(QLabel("單頁 Batch:"))
         h_perf.addWidget(self.s3_batch)
@@ -1166,7 +1270,7 @@ class MainWindow(QMainWindow):
 
         # images 插圖重新壓縮與尺寸縮放設定
         self.s3_compress_images = QCheckBox("啟用 images 插圖壓縮與縮放 (--compress-images)")
-        self.s3_compress_images.setChecked(False)
+        self.s3_compress_images.setChecked(True)
         self.s3_compress_images.stateChanged.connect(self.update_command_preview)
 
         self.s3_img_quality = QSpinBox()
@@ -1178,7 +1282,7 @@ class MainWindow(QMainWindow):
         self.s3_img_scale = QDoubleSpinBox()
         self.s3_img_scale.setRange(0.1, 2.0)
         self.s3_img_scale.setSingleStep(0.05)
-        self.s3_img_scale.setValue(1.0)
+        self.s3_img_scale.setValue(0.75)
         self.s3_img_scale.valueChanged.connect(self.update_command_preview)
 
         self.s3_img_max_dim = QSpinBox()
@@ -1363,10 +1467,13 @@ class MainWindow(QMainWindow):
     # 輔助與事件處理
     # -------------------------------------------------------------
     def get_python_bin(self) -> str:
-        """取得適當的 Python 直譯器 (優先使用包含依賴的專案內置 .venv)"""
+        """取得適當的 Python 直譯器 (優先使用包含依賴的專案內置 .venv，次選原始啟動環境)"""
         venv_py = Path.cwd() / ".venv" / "bin" / "python"
         if venv_py.exists():
             return str(venv_py)
+        orig_py = os.environ.get("_SCANORC_ORIGINAL_PYTHON")
+        if orig_py and Path(orig_py).exists():
+            return orig_py
         return sys.executable
 
     def browse_dir(self, line_edit: QLineEdit):
@@ -1441,9 +1548,10 @@ class MainWindow(QMainWindow):
         self.s1_input.setText(format_paths_arg(selected_paths))
 
         # 2. 傳遞至步驟 4:
-        # a. 待歸檔圖檔目錄 (--organize-pages): 填入所選檔案所在目錄
-        first_parent = Path(selected_paths[0]).parent
-        self.s4_target.setText(format_rel_path(first_parent))
+        # a. 待歸檔圖檔目錄 (--organize-pages): 若目前為空才填入所選檔案所在目錄
+        if not self.s4_target.text().strip():
+            first_parent = Path(selected_paths[0]).parent
+            self.s4_target.setText(format_rel_path(first_parent))
 
         # b. 目錄來源 (--input): 若選取項目包含 TOC 標記或 Cover/目錄關鍵字，自動帶入
         selected_toc = [
@@ -1551,8 +1659,8 @@ class MainWindow(QMainWindow):
                 self.oc_input.setText(formatted_first_dir)
             if not self.s1_input.text() or self.s1_input.text() == "samples":
                 self.s1_input.setText(formatted_first_dir)
-            if not self.s4_target.text() or self.s4_target.text() == "preprocessed_samples":
-                self.s4_target.setText(formatted_first_dir)
+            if not self.s4_target.text().strip():
+                self.s4_target.setText("preprocessed_samples")
 
         # 同步 TOC 勾選
         toc_files = self.file_manager.get_selected_toc_paths()
@@ -1604,6 +1712,8 @@ class MainWindow(QMainWindow):
                 cmd.extend(["--skip-ocr"] + skips)
             if not self.oc_epub.isChecked():
                 cmd.append("--no-epub")
+            if not self.oc_organize.isChecked():
+                cmd.append("--no-organize-pages")
             if self.oc_copy.isChecked():
                 cmd.append("--copy")
             return cmd
@@ -1669,11 +1779,8 @@ class MainWindow(QMainWindow):
             in_files = safe_split_args(self.s4_input.text())
             if in_files:
                 cmd.extend(["--input"] + in_files)
-            target_dir = self.s4_target.text().strip()
-            if target_dir:
-                cmd.extend(["--organize-pages", target_dir])
-            else:
-                cmd.append("--organize-pages")
+            target_dir = self.s4_target.text().strip() or "preprocessed_samples"
+            cmd.extend(["--organize-pages", target_dir])
             if self.s4_copy.isChecked():
                 cmd.append("--copy")
             return cmd
@@ -1818,17 +1925,22 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", f"目錄不存在: {p}")
 
     def apply_styles(self):
-        """套用現代乾淨桌面風格"""
-        self.setStyleSheet("""
-            QMainWindow {
+        """套用現代乾淨桌面風格與 Emoji/CJK 字型鏈"""
+        ui_font_stack = get_ui_font_family_str()
+        self.setStyleSheet(f"""
+            * {{
+                font-family: {ui_font_stack};
+            }}
+            QMainWindow {{
                 background-color: #f7f9fa;
-            }
-            QTabWidget::pane {
+            }}
+            QTabWidget::pane {{
                 border: 1px solid #d0d7de;
                 background: white;
                 border-radius: 4px;
-            }
-            QTabBar::tab {
+            }}
+            QTabBar::tab {{
+                font-family: {ui_font_stack};
                 background: #eef2f5;
                 border: 1px solid #d0d7de;
                 padding: 8px 14px;
@@ -1836,52 +1948,56 @@ class MainWindow(QMainWindow):
                 border-top-left-radius: 4px;
                 border-top-right-radius: 4px;
                 font-weight: 500;
-            }
-            QTabBar::tab:selected {
+            }}
+            QTabBar::tab:selected {{
                 background: white;
                 border-bottom-color: white;
                 font-weight: bold;
                 color: #007acc;
-            }
-            QGroupBox {
+            }}
+            QGroupBox {{
                 font-weight: bold;
                 border: 1px solid #d0d7de;
                 border-radius: 6px;
                 margin-top: 10px;
                 padding-top: 10px;
                 background: #ffffff;
-            }
-            QGroupBox::title {
+            }}
+            QGroupBox::title {{
                 subcontrol-origin: margin;
                 left: 10px;
                 padding: 0 4px;
-            }
-            QPushButton {
+            }}
+            QPushButton {{
+                font-family: {ui_font_stack};
                 border-radius: 4px;
                 padding: 4px 10px;
                 border: 1px solid #bbb;
                 background-color: #f6f8fa;
-            }
-            QPushButton:hover {
+            }}
+            QPushButton:hover {{
                 background-color: #e6ebf1;
-            }
-            QTableWidget {
+            }}
+            QTableWidget {{
+                font-family: {ui_font_stack};
                 border: 1px solid #d0d7de;
                 background-color: white;
                 gridline-color: #f0f0f0;
-            }
-            QHeaderView::section {
+            }}
+            QHeaderView::section {{
+                font-family: {ui_font_stack};
                 background-color: #f0f3f6;
                 padding: 4px;
                 border: 1px solid #e1e4e8;
                 font-weight: bold;
-            }
-            QLineEdit, QSpinBox, QComboBox {
+            }}
+            QLineEdit, QSpinBox, QComboBox {{
+                font-family: {ui_font_stack};
                 padding: 4px;
                 border: 1px solid #ccc;
                 border-radius: 3px;
                 background: white;
-            }
+            }}
         """)
 
     def apply_terminal_style(self):
@@ -1932,6 +2048,7 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    setup_app_fonts(app)
     app.setApplicationName("ScanORC GUI")
     window = MainWindow()
     window.show()

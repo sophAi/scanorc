@@ -44,7 +44,9 @@
    - 自動抽取 `<title>` 書名、語系設定，自動校驗所有插圖引用之完整性防止破圖，並支援自動偵測封面圖檔與自訂樣式。
 
 8. **全功能視覺化控制台 (`app_gui.py`)**：
-   - 基於 PySide6 打造，提供完整分步頁籤（轉正 $\rightarrow$ 目錄抽取 $\rightarrow$ AI 辨識 $\rightarrow$ 章節歸檔 $\rightarrow$ 微創修復）與「一鍵端到端總控」。
+   - 基於 PyQt6 / PySide6 雙引擎架構打造，具備自適應原生引導機制，全面相容 Linux Fcitx5 繁簡中文輸入法切換。
+   - 內建跨平台字型備選鏈 (Font Fallback Chain)，完美支援 `Noto Color Emoji` 全彩圖示與繁體中文顯示，徹底杜絕方框缺字 (Tofu)。
+   - 提供完整分步頁籤（轉正 → 目錄抽取 → AI 辨識 → 章節歸檔 → 微創修復）與「一鍵端到端總控」，預設參數全面最佳化（邊距 1mm、品質 85、Worker 1、Batch 2、自動壓縮插圖、預設自動分章歸檔）。
    - 內建智慧檔案清單與標記機制，所有參數可視化即時調整，並同步預覽與複製對應之 CLI 終端指令。
    - 非同步進程通訊，即時串流終端日誌，底層 Python 腳本 100% 解耦保留，可隨時於終端機單獨使用。
 
@@ -275,10 +277,10 @@ python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossle
 | `--output` | `-o` | `preprocessed_samples` | 輸出目錄（自動鏡像建立相同的子目錄結構） |
 | `--format` | `-f` | `jpg` | 最終圖檔格式，可選：`jpg`、`png`、`tif` |
 | `--dpi` | - | `None` | 輸出解析度 DPI（**預設 None 不縮放，保持 1:1 原生像素**；指定時才執行重新取樣） |
-| `--margins` | - | `10` | 版心四周均勻邊距大小 (單位: mm) |
+| `--margins` | - | `1` | 版心四周均勻邊距大小 (單位: mm，預設 1) |
 | `--color-mode` | - | `color_grayscale` | 色彩模式：`color_grayscale` (保留插圖/照片階調)、`mixed`、`black_and_white` |
 | `--despeckle` | - | `normal` | 去雜點強度：`normal`、`cautious`、`aggressive`、`off` |
-| `--quality` | - | `95` | JPG 輸出壓縮品質 (1~100) |
+| `--quality` | - | `85` | JPG 輸出壓縮品質 (1~100，預設 85) |
 | `--batch-size` | - | `0` | 單一目錄分批大小 (預設 0 表示整章節一次性處理以維持版心尺寸統一) |
 | `--skip-orc` | `--skip-ocr`, `--no-ocr` | `[]` | 略過 ScanTailor 幾何轉正與裁切處理的檔案清單（可指定檔名、頁碼、路徑或 .txt 清單，直接將原始圖檔導出至輸出目錄） |
 
@@ -288,7 +290,7 @@ python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossle
 
 | 參數 | 簡寫 | 預設值 | 說明 |
 | :--- | :---: | :---: | :--- |
-| `--input` | `-i` | `samples/Cover-06.jpg` | 輸入目錄頁圖檔路徑（支援傳入多個圖檔、萬用字元或目錄，自動按自然檔名順序讀取） |
+| `--input` | `-i` | `samples/Cover-06.jpg` | 輸入目錄頁圖檔路徑或現有 `toc.json` 檔案（傳入 JSON 時可直接載入現有章節結構進行歸檔，免重複加載模型推論） |
 | `--output` | `-o` | `toc.json` | 輸出結構化 JSON 檔案路徑 |
 | `--model-dir` | - | `models/glm-ocr` | GLM-OCR 模型權重目錄 |
 | `--book-title` | - | `""` | 書名（選填，將記錄於 JSON metadata） |
@@ -308,7 +310,7 @@ python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossle
 | `--cover` | `--cover-image` | `None` | 指定 EPUB 封面圖片路徑（未指定則自動在圖片中搜尋 Cover-*.jpg 或 cover.*） |
 | `--compress-images` | - | `False` | 是否在編譯 EPUB 前自動將 `output/images` 目錄中的 JPG 與 PNG 重新壓縮與縮放（大幅縮減 EPUB 體積） |
 | `--image-quality` | - | `75` | images 圖檔壓縮品質（1~100，預設: 75） |
-| `--image-scale` | - | `1.0` | images 圖檔尺寸縮放比例（例如 0.8 或 1.0，預設: 1.0） |
+| `--image-scale` | - | `0.75` | images 圖檔尺寸縮放比例（例如 0.75 或 1.0，預設: 0.75） |
 | `--image-max-dim` | - | `None` | images 圖檔最大長寬像素限制（例如 1920，預設 None 不限制） |
 | `--recursive` | `-r` | `True` | 是否遞迴讀取子目錄所有圖檔（**預設啟用**，若使用 `--no-recursive` 則僅讀取頂層目錄） |
 | `--cover-first` | - | `True` | 頁面編排順序：是否將封面/目錄頁（`Cover-*.jpg`）編排於內文頁（`Page-*.jpg`）之前（**預設啟用**；各群組內部均依自然數字順序排序） |
@@ -327,18 +329,20 @@ python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossle
 | `--output` | `-o` | `output` | 輸出成果目錄（產出 HTML、EPUB、images/ 與 preprocessed/） |
 | `--title` | `-t` | `""` | 書名 / 文件標題（若未指定則自動從目錄名或 toc.json 讀取） |
 | `--cover` | `--cover-image` | `None` | 指定 EPUB 封面圖檔路徑（未指定則自動在輸入或轉正目錄中偵測 Cover-*.jpg） |
-| `--compress-images` | - | `False` | 是否在打包 EPUB 前將 `images/` 目錄圖檔重新壓縮與縮放（大幅瘦身 EPUB） |
+| `--compress-images` | `--no-compress-images` | `True` | 是否在打包 EPUB 前將 `images/` 目錄圖檔重新壓縮與縮放（**預設啟用**，大幅瘦身 EPUB） |
 | `--image-quality` | - | `75` | images 圖檔壓縮品質（1~100，預設: 75） |
-| `--image-scale` | - | `1.0` | images 圖檔尺寸縮放比例（例如 0.8 或 1.0） |
-| `--image-max-dim` | - | `None` | images 圖檔最大長寬限制（例如 1920） |
+| `--image-scale` | - | `0.75` | images 圖檔尺寸縮放比例（預設: 0.75） |
+| `--image-max-dim` | - | `None` | images 圖檔最大長寬限制（例如 1920，預設 None 不限制） |
 | `--dpi` | - | `None` | 輸出解析度 DPI（預設保持 1:1 原生尺寸無損輸出） |
-| `--margins` | - | `10` | 版心四周均勻留白邊距 (mm) |
+| `--margins` | - | `1` | 版心四周均勻留白邊距 (mm，預設: 1) |
+| `--quality` | - | `85` | 轉正裁切若輸出為 JPG 時的壓縮品質 (1~100，預設: 85) |
 | `--color-mode` | - | `color_grayscale` | 轉正色彩模式：`color_grayscale`、`mixed`、`black_and_white` |
-| `--workers` | - | `1` | 多進程並行 Worker 數（建議：16GB 顯卡設 3~4） |
-| `--batch-size` | - | `2` | 單頁內 OCR 區塊批次大小（建議：16GB 顯卡設 4） |
+| `--workers` | - | `1` | 多進程並行 Worker 數（預設 1；16GB 顯卡可設 3~4） |
+| `--batch-size` | - | `2` | 單頁內 OCR 區塊批次大小（預設 2；16GB 顯卡可設 4） |
 | `--skip-ocr` | `--skip-orc`, `--no-ocr` | `[]` | 不作 OCR / 轉正處理的檔案清單（自動於步驟 1 傳入 `--skip-orc`，於步驟 3 傳入 `--skip-ocr`） |
-| `--epub` | - | `True` | 是否自動編譯 MathML EPUB3 |
-| `--copy` | - | `False` | 章節歸檔時改為複製而非移動圖檔 |
+| `--epub` | `--no-epub` | `True` | 是否自動編譯 MathML EPUB3（預設: True） |
+| `--organize-pages` | `--no-organize-pages` | `True` | 是否自動執行章節目錄結構建立與 Page-xxx.jpg 歸檔（**預設啟用**） |
+| `--copy` | - | `False` | 章節歸檔時改為複製而非移動圖檔（預設: 移動圖檔） |
 | `--organize-target` | - | `preprocessed` | 建立章節目錄並歸檔之目標：`preprocessed` 或 `input` |
 
 ---

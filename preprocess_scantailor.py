@@ -382,8 +382,8 @@ def main():
     parser.add_argument(
         "--margins",
         type=int,
-        default=10,
-        help="版心四周均勻邊距大小 (預設: 10 mm)"
+        default=1,
+        help="版心四周均勻邊距大小 (預設: 1 mm)"
     )
     parser.add_argument(
         "--color-mode",
@@ -400,8 +400,8 @@ def main():
     parser.add_argument(
         "--quality",
         type=int,
-        default=95,
-        help="若輸出為 JPG 時的壓縮品質 1-100 (預設: 95)"
+        default=85,
+        help="若輸出為 JPG 時的壓縮品質 1-100 (預設: 85)"
     )
     parser.add_argument(
         "--batch-size",

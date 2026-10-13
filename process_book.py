@@ -75,8 +75,14 @@ def main():
     parser.add_argument(
         "--margins",
         type=int,
-        default=10,
-        help="版心四周均勻邊距大小 (單位: mm，預設: 10)"
+        default=1,
+        help="版心四周均勻邊距大小 (單位: mm，預設: 1)"
+    )
+    parser.add_argument(
+        "--quality",
+        type=int,
+        default=85,
+        help="轉正裁切若輸出為 JPG 時的壓縮品質 (1-100，預設: 85)"
     )
     parser.add_argument(
         "--color-mode",
@@ -117,8 +123,9 @@ def main():
     )
     parser.add_argument(
         "--compress-images",
-        action="store_true",
-        help="在編譯 EPUB 前，自動對 output/images 目錄中的 JPG 與 PNG 圖檔進行重新壓縮與尺寸縮放"
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="在編譯 EPUB 前，自動對 output/images 目錄中的 JPG 與 PNG 圖檔進行重新壓縮與尺寸縮放 (預設: True)"
     )
     parser.add_argument(
         "--image-quality",
@@ -129,14 +136,20 @@ def main():
     parser.add_argument(
         "--image-scale",
         type=float,
-        default=1.0,
-        help="images 圖檔尺寸縮放比例 (例如 0.8 或 1.0，預設: 1.0)"
+        default=0.75,
+        help="images 圖檔尺寸縮放比例 (例如 0.75 或 1.0，預設: 0.75)"
     )
     parser.add_argument(
         "--image-max-dim",
         type=int,
         default=None,
         help="images 圖檔最大長寬限制 (例如 1920，預設 None 不限制)"
+    )
+    parser.add_argument(
+        "--organize-pages",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否執行章節目錄結構自動建立與圖檔歸檔 (預設: True)"
     )
     parser.add_argument(
         "--copy",
@@ -193,6 +206,8 @@ def main():
     ]
     if args.dpi:
         step1_cmd.extend(["--dpi", str(args.dpi)])
+    if args.quality:
+        step1_cmd.extend(["--quality", str(args.quality)])
     if args.skip_ocr:
         step1_cmd.extend(["--skip-orc", *args.skip_ocr])
 
@@ -277,23 +292,39 @@ def main():
     # [步驟 4/4] 根據 toc.json 生成章節目錄並將 Page-xxx.jpg 歸檔 (extract_toc.py --organize-pages)
     # -------------------------------------------------------------------------
     print_banner(4, TOTAL_STEPS, "章節目錄結構自動建立與圖檔歸檔")
-    if has_toc and cover_images:
+    if args.organize_pages:
         target_dir = preprocessed_dir if args.organize_target == "preprocessed" else input_dir
-        print(f"[*] 準備對目錄進行章節歸檔: {target_dir}")
-        step4_cmd = [
-            sys.executable, str(script_dir / "extract_toc.py"),
-            "--input", *[str(p) for p in cover_images],
-            "--output", str(toc_json_path),
-            "--organize-pages", str(target_dir),
-        ]
-        if args.copy:
-            step4_cmd.append("--copy")
+        if toc_json_path.exists():
+            print(f"[*] 準備對目錄進行章節歸檔: {target_dir} (依據現有目錄索引: {toc_json_path.name})")
+            step4_cmd = [
+                sys.executable, str(script_dir / "extract_toc.py"),
+                "--input", str(toc_json_path),
+                "--organize-pages", str(target_dir),
+            ]
+            if args.copy:
+                step4_cmd.append("--copy")
 
-        print(f"[*] 執行指令: {' '.join(step4_cmd)}")
-        subprocess.run(step4_cmd, check=True)
-        print(f"[+] 章節資料夾建立與圖檔歸檔完成！")
+            print(f"[*] 執行指令: {' '.join(step4_cmd)}")
+            subprocess.run(step4_cmd, check=True)
+            print(f"[+] 章節資料夾建立與圖檔歸檔完成！")
+        elif cover_images:
+            print(f"[*] 準備對目錄進行章節歸檔: {target_dir} (使用目錄頁圖檔)")
+            step4_cmd = [
+                sys.executable, str(script_dir / "extract_toc.py"),
+                "--input", *[str(p) for p in cover_images],
+                "--output", str(toc_json_path),
+                "--organize-pages", str(target_dir),
+            ]
+            if args.copy:
+                step4_cmd.append("--copy")
+
+            print(f"[*] 執行指令: {' '.join(step4_cmd)}")
+            subprocess.run(step4_cmd, check=True)
+            print(f"[+] 章節資料夾建立與圖檔歸檔完成！")
+        else:
+            print("[-] 由於缺少 toc.json 或目錄資料，略過章節歸檔步驟")
     else:
-        print("[-] 由於缺少 toc.json 或目錄資料，略過章節歸檔步驟")
+        print("[*] 依設定略過章節目錄歸檔步驟 (--no-organize-pages)")
 
     # -------------------------------------------------------------------------
     # 完成總結
