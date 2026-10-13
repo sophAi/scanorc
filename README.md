@@ -39,7 +39,11 @@
    - 產出 HTML/EPUB 後，若人工檢查發現特定幾頁辨識不良或過於複雜，可直接指定檔名或頁碼將該頁替換為原始高解析圖檔。
    - 完整保留原頁面 id 與目錄跳轉錨點，並自動調用 Pandoc 在 **1~2 秒內**重新編譯完成最新 EPUB，徹底免除重跑數十分鐘全書 OCR 的時間成本。
 
-7. **全功能視覺化控制台 (`app_gui.py`)**：
+7. **秒級 HTML/圖片直轉 EPUB (`html_to_epub.py`)**：
+   - 提供輕量獨立工具，無需 GPU 或大型 AI 模型，依賴 Pandoc 即可直接將 `book.html` 與其同層 `images/` 目錄在 **1~2 秒內**秒級打包編譯為標準 MathML EPUB3 電子書。
+   - 自動抽取 `<title>` 書名、語系設定，自動校驗所有插圖引用之完整性防止破圖，並支援自動偵測封面圖檔與自訂樣式。
+
+8. **全功能視覺化控制台 (`app_gui.py`)**：
    - 基於 PySide6 打造，提供完整分步頁籤（轉正 $\rightarrow$ 目錄抽取 $\rightarrow$ AI 辨識 $\rightarrow$ 章節歸檔 $\rightarrow$ 微創修復）與「一鍵端到端總控」。
    - 內建智慧檔案清單與標記機制，所有參數可視化即時調整，並同步預覽與複製對應之 CLI 終端指令。
    - 非同步進程通訊，即時串流終端日誌，底層 Python 腳本 100% 解耦保留，可隨時於終端機單獨使用。
@@ -220,6 +224,24 @@ python patch_pages.py --revert
 
 ---
 
+### 方式 D：由 book.html 與 images 直接秒級生成 EPUB (`html_to_epub.py`)
+
+若已產出 `book.html` 與 `images/` 目錄（或手動微調修改過 HTML），可直接執行 `html_to_epub.py`，**無需載入任何深度學習模型或 GPU**，在 1~2 秒內快速編譯出含有 MathML 公式渲染的高品質 EPUB3：
+
+```bash
+# 1. 預設轉換 (自動搜尋 output/book.html 或當前目錄之 book.html)：
+python html_to_epub.py
+
+# 2. 指定 HTML 檔案或輸出目錄：
+python html_to_epub.py output/book.html
+python html_to_epub.py output
+
+# 3. 自訂 EPUB 檔名、書籍標題與封面圖檔：
+python html_to_epub.py output/book.html -o output/final_book.epub --title "幾何學精要" --cover output/images/cover.jpg
+```
+
+---
+
 ## ⚙️ 詳細指令參數說明
 
 ### 1. `preprocess_scantailor.py`（前置處理引擎）
@@ -302,6 +324,25 @@ python patch_pages.py --revert
 
 ---
 
+### 6. `html_to_epub.py`（HTML 與圖片秒級轉 EPUB 工具）
+
+| 參數 | 簡寫 | 預設值 | 說明 |
+| :--- | :---: | :---: | :--- |
+| `input` | `--html`, `-i` | `output/book.html` | 輸入 HTML 檔案路徑或包含 book.html 的目錄 |
+| `--output` | `-o` | `<html_dir>/<stem>.epub` | 輸出 EPUB 檔案路徑 |
+| `--images` | `--images-dir` | `images/` | 圖片資源目錄（預設自動搜尋 HTML 旁的 images/ 資料夾） |
+| `--title` | `-t` | 自動提取 | 書籍標題（預設自動自 HTML `<title>` 標籤中抽取） |
+| `--author` | `-a` | `None` | 書籍作者名稱（選填） |
+| `--lang` | `-l` | 自動提取 | 語系代碼（預設自動自 HTML `<html lang>` 讀取，若無則為 zh-TW） |
+| `--cover` | `-c` | 自動偵測 | 封面圖片路徑（選填，未指定則自動偵測 cover.* 圖檔） |
+| `--css` | - | `None` | 自訂 EPUB 樣式表 CSS 檔案路徑 |
+| `--toc-depth` | - | `3` | EPUB 目錄深度層級 |
+| `--no-toc` | - | `False` | 不生成 EPUB 目錄導覽 |
+| `--no-mathml` | - | `False` | 停用 LaTeX 數學公式轉譯為 MathML 向量公式 |
+| `--chapter-level` | - | `2` | EPUB 章節切分標題層級（預設按 h2 切割） |
+
+---
+
 ## 📊 硬體資源與顯存 (VRAM) 調優建議
 
 GLM-OCR 0.9B 模型在 FP16 精度下單個實例基準佔用約 **2.1 GB VRAM**。
@@ -329,6 +370,7 @@ scanorc/
 ├── app_gui.py               # [GUI 控制台] 視覺化 5 步驟+一鍵總控操作介面 (PySide6)
 ├── process_book.py          # [一鍵總控] 端到端全流程自動化腳本 (轉正->TOC->EPUB->分章)
 ├── patch_pages.py           # [微創修復] 異常頁面原圖替換與秒級重編工具
+├── html_to_epub.py          # [獨立打包] 由 book.html 與 images 直接秒級生成 EPUB 工具
 ├── preprocess_scantailor.py # 出版級轉正、留白裁切與版心標準化前處理引擎
 ├── extract_toc.py           # 目錄頁結構化抽取工具 (方案 A: GLM-OCR -> JSON)
 ├── pipeline.py              # DocLayout-YOLO + GLM-OCR 端到端轉換流水線

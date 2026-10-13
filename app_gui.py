@@ -1093,16 +1093,20 @@ class MainWindow(QMainWindow):
         layout.addLayout(form)
 
         # 快捷開啟成果按鈕
-        box_quick = QGroupBox("成果快速檢視")
+        box_quick = QGroupBox("成果快速檢視與工具")
         h_q = QHBoxLayout(box_quick)
         btn_open_html = QPushButton("🌐 在瀏覽器開啟 book.html")
         btn_open_epub = QPushButton("📖 開啟 book.epub")
+        btn_rebuild_epub = QPushButton("⚡ 從 HTML 直接重編 EPUB")
+        btn_rebuild_epub.setToolTip("調用 html_to_epub.py，免跑 AI/OCR 於 1~2 秒內直接將 HTML 與 images 打包為最新 EPUB")
         btn_open_out = QPushButton("📂 開啟 output 目錄")
         btn_open_html.clicked.connect(self.open_generated_html)
         btn_open_epub.clicked.connect(self.open_generated_epub)
+        btn_rebuild_epub.clicked.connect(self.rebuild_epub_from_html)
         btn_open_out.clicked.connect(lambda: self.open_folder(self.s3_output.text()))
         h_q.addWidget(btn_open_html)
         h_q.addWidget(btn_open_epub)
+        h_q.addWidget(btn_rebuild_epub)
         h_q.addWidget(btn_open_out)
         layout.addWidget(box_quick)
 
@@ -1577,6 +1581,16 @@ class MainWindow(QMainWindow):
             QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(epub_p.resolve())))
         else:
             QMessageBox.information(self, "提示", f"尚未生成 EPUB: {epub_p}")
+
+    def rebuild_epub_from_html(self):
+        html_p = Path(self.s3_output.text().strip() or "output") / "book.html"
+        if not html_p.exists():
+            QMessageBox.warning(self, "提示", f"尚未生成 HTML 檔案: {html_p}\n請先確認該檔案存在或已執行步驟 3。")
+            return
+        cmd = [sys.executable, "html_to_epub.py", str(html_p)]
+        if self.s3_title.text().strip():
+            cmd.extend(["--title", self.s3_title.text().strip()])
+        self.execute_cmd_list(cmd)
 
     def open_folder(self, folder_str: str):
         p = Path(folder_str.strip() or ".")
