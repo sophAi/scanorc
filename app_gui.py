@@ -81,7 +81,7 @@ try:
     from PyQt6 import QtCore, QtGui, QtWidgets
     from PyQt6.QtCore import Qt, QProcess, pyqtSignal as Signal, pyqtSlot as Slot
     from PyQt6.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
         QSplitter, QTabWidget, QLabel, QLineEdit, QPushButton,
         QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox,
         QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QFileDialog, QMessageBox,
@@ -154,7 +154,7 @@ except ImportError:
     from PySide6 import QtCore, QtGui, QtWidgets
     from PySide6.QtCore import Qt, QProcess, Signal, Slot
     from PySide6.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
         QSplitter, QTabWidget, QLabel, QLineEdit, QPushButton,
         QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox,
         QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QFileDialog, QMessageBox,
@@ -374,11 +374,16 @@ class FileManagerWidget(QWidget):
         # 檔案表格
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["檔名", "大小", "📑 TOC", "🚫 略過OCR", "🩹 Patch"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(1, 58)
+        self.table.setColumnWidth(2, 62)
+        self.table.setColumnWidth(3, 85)
+        self.table.setColumnWidth(4, 68)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -727,7 +732,7 @@ class MainWindow(QMainWindow):
         if app_inst:
             self.setFont(app_inst.font())
         self.setWindowTitle("ScanORC - 掃描書本轉語意結構化 HTML/EPUB 控制台")
-        self.resize(1280, 850)
+        self.resize(1060, 820)
 
         # 終端機色彩與字體狀態
         self.current_theme_key = "dark"
@@ -762,15 +767,18 @@ class MainWindow(QMainWindow):
 
         # 1. 左側檔案管理
         self.file_manager = FileManagerWidget()
+        self.file_manager.setMinimumWidth(410)
         self.file_manager.files_updated.connect(self.on_files_updated)
         self.file_manager.selection_changed.connect(self.on_file_selection_changed)
         self.h_splitter.addWidget(self.file_manager)
 
         # 2. 右側步驟頁籤
         self.tabs = QTabWidget()
+        self.tabs.setMinimumWidth(500)
         self.h_splitter.addWidget(self.tabs)
-        self.h_splitter.setStretchFactor(0, 1)
-        self.h_splitter.setStretchFactor(1, 2)
+        self.h_splitter.setStretchFactor(0, 2)
+        self.h_splitter.setStretchFactor(1, 3)
+        self.h_splitter.setSizes([440, 620])
 
         self.setup_tabs()
         self.tabs.currentChanged.connect(self.update_command_preview)
@@ -1004,26 +1012,27 @@ class MainWindow(QMainWindow):
         self.oc_skip.textChanged.connect(self.update_command_preview)
         form.addRow("略過 OCR 頁面 (--skip-ocr):", self.oc_skip)
 
-        h_chk = QHBoxLayout()
+        grid_chk = QGridLayout()
         self.oc_epub = QCheckBox("自動編譯 MathML EPUB3 (--epub)")
         self.oc_epub.setChecked(True)
         self.oc_epub.stateChanged.connect(self.update_command_preview)
-        h_chk.addWidget(self.oc_epub)
+        grid_chk.addWidget(self.oc_epub, 0, 0)
 
         self.oc_organize = QCheckBox("自動執行章節目錄歸檔 (--organize-pages)")
         self.oc_organize.setChecked(True)
         self.oc_organize.stateChanged.connect(self.update_command_preview)
-        h_chk.addWidget(self.oc_organize)
+        grid_chk.addWidget(self.oc_organize, 0, 1)
 
         self.oc_copy = QCheckBox("章節歸檔使用複製而非移動 (--copy)")
         self.oc_copy.stateChanged.connect(self.update_command_preview)
-        h_chk.addWidget(self.oc_copy)
-        form.addRow("功能開關:", h_chk)
+        grid_chk.addWidget(self.oc_copy, 1, 0, 1, 2)
+        form.addRow("功能開關:", grid_chk)
 
         layout.addLayout(form)
         desc = QLabel(
             "<b>說明：</b> 一鍵自動串聯【轉正裁切 → 目錄抽取 → AI OCR & EPUB → 章節歸檔】全流程。"
         )
+        desc.setWordWrap(True)
         desc.setStyleSheet("color: #444; margin-top: 10px;")
         layout.addWidget(desc)
         layout.addStretch()
@@ -1121,6 +1130,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(h_act)
 
         desc = QLabel("<b>特色：</b> 獨立書籍版心鎖定、自動旋轉校正、清除黑邊與中縫漸層陰影、1:1 原生尺寸無損輸出。")
+        desc.setWordWrap(True)
         desc.setStyleSheet("color: #444; margin-top: 10px;")
         layout.addWidget(desc)
         layout.addStretch()
@@ -1323,7 +1333,7 @@ class MainWindow(QMainWindow):
 
         # 快捷開啟成果按鈕
         box_quick = QGroupBox("成果快速檢視與工具")
-        h_q = QHBoxLayout(box_quick)
+        grid_q = QGridLayout(box_quick)
         btn_open_html = QPushButton("🌐 在瀏覽器開啟 book.html")
         btn_open_epub = QPushButton("📖 開啟 book.epub")
         btn_rebuild_epub = QPushButton("⚡ 從 HTML 直接重編 EPUB")
@@ -1333,10 +1343,10 @@ class MainWindow(QMainWindow):
         btn_open_epub.clicked.connect(self.open_generated_epub)
         btn_rebuild_epub.clicked.connect(self.rebuild_epub_from_html)
         btn_open_out.clicked.connect(lambda: self.open_folder(self.s3_output.text()))
-        h_q.addWidget(btn_open_html)
-        h_q.addWidget(btn_open_epub)
-        h_q.addWidget(btn_rebuild_epub)
-        h_q.addWidget(btn_open_out)
+        grid_q.addWidget(btn_open_html, 0, 0)
+        grid_q.addWidget(btn_open_epub, 0, 1)
+        grid_q.addWidget(btn_rebuild_epub, 1, 0)
+        grid_q.addWidget(btn_open_out, 1, 1)
         layout.addWidget(box_quick)
 
         layout.addStretch()
@@ -1380,6 +1390,7 @@ class MainWindow(QMainWindow):
         desc = QLabel(
             "<b>說明：</b> 依據目錄結構抽取結果，自動建立章節專屬子資料夾（如 <code>01-第一章</code>），並將內文圖檔精準歸入對應目錄。"
         )
+        desc.setWordWrap(True)
         desc.setStyleSheet("color: #444; margin-top: 10px;")
         layout.addWidget(desc)
         layout.addStretch()
@@ -1440,6 +1451,7 @@ class MainWindow(QMainWindow):
             "<b>說明：</b> 僅微創置換異常頁面的 <code>&lt;section&gt;</code> 為全頁原圖嵌入，"
             "完整保留目錄錨點跳轉，並在 <b>1~2 秒內</b>重新生成最新 EPUB，徹底免除重跑全書 OCR！"
         )
+        desc.setWordWrap(True)
         desc.setStyleSheet("color: #444; margin-top: 10px;")
         layout.addWidget(desc)
         layout.addStretch()
