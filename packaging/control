@@ -1,0 +1,17 @@
+Package: scanorc
+Version: 1.0.0-1~mint22.3
+Section: graphics
+Priority: optional
+Architecture: amd64
+Maintainer: ScanORC Team <scanorc@sophai.org>
+Depends: pandoc, python3 (>= 3.10), python3-venv, python3-pip, libgl1, libxkbcommon-x11-0, libxcb-cursor0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-randr0, libxcb-render-util0, libxcb-shape0, libxcb-xfixes0, libxcb-xinerama0
+Recommends: zenity | kdialog
+Homepage: https://github.com/sophAi/scanorc
+Description: Modern GPU-accelerated book scanning, deskewing, AI OCR, and EPUB3 digitizer
+ ScanORC is a high-performance book scanning and digitization pipeline.
+ It integrates automated page deskew and margin cropping (ScanTailor-CLI),
+ AI-based table of contents extraction (GLM-OCR 0.9B), document layout
+ analysis (DocLayout-YOLOv10), native MathML EPUB3 compilation, and a full
+ PySide6/PyQt6 visual desktop workbench.
+ .
+ Deep learning model weights are decoupled and stored in /opt/models.

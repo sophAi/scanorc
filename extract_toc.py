@@ -362,6 +362,10 @@ def main():
             actual_model_dir = (Path(args.models_dir) / "glm-ocr").resolve()
         elif env_models_dir:
             actual_model_dir = (Path(env_models_dir) / "glm-ocr").resolve()
+        elif (script_dir / "models" / "glm-ocr").exists():
+            actual_model_dir = (script_dir / "models" / "glm-ocr").resolve()
+        elif Path("/opt/models/glm-ocr").exists():
+            actual_model_dir = Path("/opt/models/glm-ocr").resolve()
         else:
             cand = script_dir / "models" / "glm-ocr"
             actual_model_dir = cand.resolve() if cand.exists() else Path("models/glm-ocr").resolve()

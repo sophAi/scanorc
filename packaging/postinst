@@ -1,0 +1,39 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # 確保模型母目錄 /opt/models 存在並開放適當讀寫權限
+        if [ ! -d "/opt/models" ]; then
+            mkdir -p /opt/models
+            chmod 0777 /opt/models
+        fi
+
+        # 更新桌面捷徑資料庫
+        if which update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications || true
+        fi
+
+        # 更新圖示快取
+        if which gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+        fi
+
+        echo "============================================================"
+        echo " [ScanORC] 安裝完成！"
+        echo " 1. 若尚未配置 Python 執行環境，請執行:"
+        echo "      sudo scanorc-setup          (全機共用環境)"
+        echo "    或:"
+        echo "      scanorc-setup --user        (個人使用者環境)"
+        echo " 2. 模型權重集中存放於 /opt/models"
+        echo "    可隨時執行 'scanorc-models' 下載或更新最新 AI 模型。"
+        echo " 3. 亦可自應用程式選單啟動 'ScanORC' 圖形控制台。"
+        echo "============================================================"
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

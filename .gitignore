@@ -40,3 +40,7 @@ Thumbs.db
 # Pandoc / LaTeX Logs
 *.log
 *.aux
+
+# Debian Packaging Artifacts
+deb_dist/
+*.deb

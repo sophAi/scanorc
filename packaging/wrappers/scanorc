@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# ScanORC CLI Entry Wrapper
+set -e
+
+SCANORC_DIR="/opt/scanorc"
+
+# 依序尋找可用之 Python 虛擬環境直譯器
+find_python() {
+    if [ -f "$SCANORC_DIR/.venv/bin/python" ]; then
+        echo "$SCANORC_DIR/.venv/bin/python"
+    elif [ -f "$HOME/.local/share/scanorc/venv/bin/python" ]; then
+        echo "$HOME/.local/share/scanorc/venv/bin/python"
+    elif [ -n "$VIRTUAL_ENV" ] && [ -f "$VIRTUAL_ENV/bin/python" ]; then
+        echo "$VIRTUAL_ENV/bin/python"
+    elif python3 -c "import torch, transformers, doclayout_yolo" 2>/dev/null; then
+        echo "python3"
+    else
+        echo ""
+    fi
+}
+
+PY_BIN="$(find_python)"
+
+if [ -z "$PY_BIN" ]; then
+    echo "============================================================" >&2
+    echo " [ScanORC] 尚未偵測到專屬 Python 深度學習執行環境！" >&2
+    echo " 請先執行以下指令以初始化環境並安裝相依套件：" >&2
+    echo "   sudo scanorc-setup        (全域安裝至 /opt/scanorc/.venv)" >&2
+    echo " 或:" >&2
+    echo "   scanorc-setup --user      (安裝至個人目錄 ~/.local/share/scanorc/venv)" >&2
+    echo "============================================================" >&2
+    exit 1
+fi
+
+exec "$PY_BIN" "$SCANORC_DIR/process_book.py" "$@"

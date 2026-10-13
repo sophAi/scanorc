@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# ScanORC Python Environment Setup & Maintenance Utility
+set -e
+
+SCANORC_ROOT="/opt/scanorc"
+USER_VENV_DIR="$HOME/.local/share/scanorc/venv"
+SYS_VENV_DIR="$SCANORC_ROOT/.venv"
+INSTALL_TARGET=""
+USE_CUDA="cu124"
+
+print_help() {
+    echo "ScanORC 環境初始化與套件安裝工具"
+    echo "使用方式: scanorc-setup [選項]"
+    echo ""
+    echo "選項:"
+    echo "  --system          安裝全域虛擬環境至 /opt/scanorc/.venv (需 sudo 權限，全機共用)"
+    echo "  --user            安裝使用者專屬虛擬環境至 ~/.local/share/scanorc/venv (免 sudo)"
+    echo "  --cuda            安裝 CUDA 12.4 加速版本 PyTorch (預設，推薦 NVIDIA GPU 使用者)"
+    echo "  --cpu             安裝 CPU-only 版本 PyTorch (無 GPU 環境使用)"
+    echo "  --help, -h        顯示此說明資訊"
+    echo ""
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --system)
+            INSTALL_TARGET="system"
+            shift
+            ;;
+        --user)
+            INSTALL_TARGET="user"
+            shift
+            ;;
+        --cuda)
+            USE_CUDA="cu124"
+            shift
+            ;;
+        --cpu)
+            USE_CUDA="cpu"
+            shift
+            ;;
+        --help|-h)
+            print_help
+            exit 0
+            ;;
+        *)
+            echo "[-] 未知選項: $1" >&2
+            print_help
+            exit 1
+            ;;
+    esac
+done
+
+# 自動判定安裝目錄
+if [ -z "$INSTALL_TARGET" ]; then
+    if [ "$EUID" -eq 0 ]; then
+        INSTALL_TARGET="system"
+    else
+        INSTALL_TARGET="user"
+    fi
+fi
+
+if [ "$INSTALL_TARGET" = "system" ]; then
+    TARGET_DIR="$SYS_VENV_DIR"
+    if [ "$EUID" -ne 0 ]; then
+        echo "[-] 安裝全域環境 (/opt/scanorc/.venv) 需要 root 權限！" >&2
+        echo "    請使用: sudo scanorc-setup" >&2
+        echo "    或安裝至個人目錄: scanorc-setup --user" >&2
+        exit 1
+    fi
+else
+    TARGET_DIR="$USER_VENV_DIR"
+fi
+
+echo "============================================================"
+echo "  ScanORC 專屬 Python 深度學習環境安裝程式"
+echo "============================================================"
+echo "[*] 目標虛擬環境路徑: $TARGET_DIR"
+echo "[*] PyTorch 計算引擎: $( [ "$USE_CUDA" = "cpu" ] && echo "CPU Only" || echo "NVIDIA CUDA 12.4" )"
+echo "============================================================"
+
+# 確保基礎相依性 (python3, venv)
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "[-] 找不到 python3，請先安裝: sudo apt install python3" >&2
+    exit 1
+fi
+
+mkdir -p "$(dirname "$TARGET_DIR")"
+
+# 建立 venv
+if [ ! -d "$TARGET_DIR" ] || [ ! -f "$TARGET_DIR/bin/python" ]; then
+    echo "[*] 建立 Python 虛擬環境: $TARGET_DIR ..."
+    python3 -m venv "$TARGET_DIR"
+else
+    echo "[*] 既有虛擬環境已存在，更新套件..."
+fi
+
+VENV_PY="$TARGET_DIR/bin/python"
+VENV_PIP="$TARGET_DIR/bin/pip"
+
+# 升級 pip
+echo "[*] 檢查並升級 pip 與 wheel..."
+"$VENV_PY" -m pip install --upgrade pip setuptools wheel
+
+# 安裝 PyTorch
+if [ "$USE_CUDA" = "cpu" ]; then
+    echo "[*] 安裝 PyTorch (CPU 版本)..."
+    "$VENV_PIP" install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+else
+    echo "[*] 安裝 PyTorch (NVIDIA CUDA 12.4 版本)..."
+    "$VENV_PIP" install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+fi
+
+# 安裝 requirements.txt
+REQ_FILE="$SCANORC_ROOT/requirements.txt"
+if [ -f "$REQ_FILE" ]; then
+    echo "[*] 安裝 ScanORC 核心套件 (requirements.txt)..."
+    "$VENV_PIP" install -r "$REQ_FILE"
+else
+    echo "[-] 找不到 $REQ_FILE，安裝預設套件..."
+    "$VENV_PIP" install transformers>=4.45.0 accelerate>=0.30.0 doclayout_yolo>=0.0.4 timm sentencepiece pillow numpy opencv-python huggingface_hub tqdm PySide6
+fi
+
+# 確保 /opt/models 權限
+if [ -d "/opt/models" ]; then
+    echo "[*] 偵測到 /opt/models 已就緒。"
+elif [ "$EUID" -eq 0 ]; then
+    echo "[*] 建立 /opt/models 目錄..."
+    mkdir -p /opt/models
+    chmod 0777 /opt/models
+fi
+
+echo "============================================================"
+echo "[🎉] ScanORC 執行環境已成功安裝配置完畢！"
+echo "現在您可以直接在終端機執行："
+echo "   scanorc-gui       啟動桌面圖形控制台"
+echo "   scanorc           執行一鍵命令列書籍處理"
+echo "   scanorc-models    下載或更新 AI 模型權重至 /opt/models"
+echo "============================================================"

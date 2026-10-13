@@ -135,7 +135,28 @@ python download_models.py --models-dir /opt/ai_models
 * `<models_dir>/glm-ocr/` (~2.5GB)
 
 > [!TIP]
-> **集中存放與環境變數支援**：若有多個專案共用模型權重或存放於不同磁碟，可設定環境變數 `export SCANORC_MODELS_DIR=/path/to/models`，所有 CLI 工具與 GUI 控制台將自動優先沿用，無需重複下載與複製。
+> **集中存放與環境變數支援**：若有多個專案共用模型權重或存放於不同磁碟，可設定環境變數 `export SCANORC_MODELS_DIR=/path/to/models`（或直接使用系統預設 `/opt/models`），所有 CLI 工具與 GUI 控制台將自動優先沿用，無需重複下載與複製。
+
+---
+
+### 4. (選用) 打包為 Debian 安裝檔 (`.deb`)
+
+本專案支援一鍵打包為標準的 Debian/Ubuntu 安裝包（採用**輕量微核心架構**，排除 2.6GB 大模型檔，預設集中指向 `/opt/models`，安裝包僅約 **6.7 MB**）：
+
+```bash
+# 一鍵建置 .deb 安裝包 (產出於 deb_dist/scanorc_1.0.0-1~mint22.3_amd64.deb)
+./packaging/build_deb.sh
+
+# 安裝至系統
+sudo apt install ./deb_dist/scanorc_*.deb
+```
+
+安裝後系統將註冊以下全域指令與桌面圖示：
+* `scanorc-gui`：啟動 ScanORC 桌面圖形控制台（應用程式選單亦有「ScanORC」捷徑圖示）。
+* `scanorc`：一鍵執行端到端書籍數位化處理 (`process_book.py`)。
+* `scanorc-batch`：批次多書數位化調度器 (`batch_process.py`)。
+* `scanorc-models`：一鍵下載/更新 AI 模型權重至 `/opt/models`。
+* `scanorc-setup`：自動化建立/更新 ScanORC 專屬 Python 深度學習環境（`sudo scanorc-setup` 建立全機共用環境，或 `scanorc-setup --user` 建立個人環境）。
 
 ---
 

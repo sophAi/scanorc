@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# ScanORC Batch Processor CLI Wrapper
+set -e
+
+SCANORC_DIR="/opt/scanorc"
+
+find_python() {
+    if [ -f "$SCANORC_DIR/.venv/bin/python" ]; then
+        echo "$SCANORC_DIR/.venv/bin/python"
+    elif [ -f "$HOME/.local/share/scanorc/venv/bin/python" ]; then
+        echo "$HOME/.local/share/scanorc/venv/bin/python"
+    elif [ -n "$VIRTUAL_ENV" ] && [ -f "$VIRTUAL_ENV/bin/python" ]; then
+        echo "$VIRTUAL_ENV/bin/python"
+    else
+        echo "python3"
+    fi
+}
+
+PY_BIN="$(find_python)"
+
+exec "$PY_BIN" "$SCANORC_DIR/batch_process.py" "$@"

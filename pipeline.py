@@ -255,9 +255,12 @@ def resolve_model_paths(models_dir: Optional[str] = None, yolo_weights: Optional
         base_models = Path(models_dir).resolve()
     elif env_models_dir:
         base_models = Path(env_models_dir).resolve()
+    elif (script_dir / "models").exists():
+        base_models = (script_dir / "models").resolve()
+    elif Path("/opt/models").exists():
+        base_models = Path("/opt/models").resolve()
     else:
-        cand = script_dir / "models"
-        base_models = cand.resolve() if cand.exists() else Path("models").resolve()
+        base_models = (script_dir / "models").resolve()
 
     if not yolo_weights:
         yolo_pt = base_models / "doclayout_yolo" / "doclayout_yolo_docstructbench_imgsz1024.pt"

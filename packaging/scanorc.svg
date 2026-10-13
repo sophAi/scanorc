@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="50%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="bookLeft" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#cbd5e1" />
+    </linearGradient>
+    <linearGradient id="bookRight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="100%" stop-color="#94a3b8" />
+    </linearGradient>
+    <linearGradient id="laserGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00f2fe" stop-opacity="0" />
+      <stop offset="25%" stop-color="#00f2fe" stop-opacity="0.8" />
+      <stop offset="50%" stop-color="#38bdf8" stop-opacity="1" />
+      <stop offset="75%" stop-color="#00f2fe" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#00f2fe" stop-opacity="0" />
+    </linearGradient>
+    <linearGradient id="laserGlow" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.5" />
+      <stop offset="100%" stop-color="#38bdf8" stop-opacity="0" />
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#6366f1" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- App Background (Rounded Squircle) -->
+  <rect x="24" y="24" width="464" height="464" rx="104" fill="url(#bgGrad)" stroke="#334155" stroke-width="6" />
+
+  <!-- Inner Subtle Border -->
+  <rect x="32" y="32" width="448" height="448" rx="96" fill="none" stroke="#475569" stroke-width="2" opacity="0.4" />
+
+  <!-- Open Book Base / Stand -->
+  <path d="M 120 370 Q 256 395 392 370 L 400 380 Q 256 410 112 380 Z" fill="#334155" opacity="0.6" />
+
+  <!-- Left Page -->
+  <path d="M 256 360 C 200 340 140 335 96 345 L 96 160 C 140 150 200 155 256 175 Z" fill="url(#bookLeft)" />
+
+  <!-- Right Page -->
+  <path d="M 256 360 C 312 340 372 335 416 345 L 416 160 C 372 150 312 155 256 175 Z" fill="url(#bookRight)" />
+
+  <!-- Book Spine Center Fold -->
+  <path d="M 254 175 L 254 360 L 258 360 L 258 175 Z" fill="#64748b" opacity="0.7" />
+
+  <!-- Document Layout Analysis Bounding Boxes (AI Detection overlay) -->
+  <!-- Left page lines & boxes -->
+  <rect x="120" y="180" width="105" height="12" rx="4" fill="#0284c7" opacity="0.8" />
+  <rect x="120" y="204" width="95" height="8" rx="3" fill="#64748b" opacity="0.5" />
+  <rect x="120" y="222" width="100" height="8" rx="3" fill="#64748b" opacity="0.5" />
+  <rect x="120" y="240" width="85" height="8" rx="3" fill="#64748b" opacity="0.5" />
+
+  <!-- Left page detected picture block -->
+  <rect x="120" y="262" width="105" height="60" rx="6" fill="#0369a1" opacity="0.15" stroke="#0284c7" stroke-width="2" stroke-dasharray="4,2" />
+  <circle cx="150" cy="285" r="10" fill="#38bdf8" opacity="0.6" />
+  <path d="M 135 312 L 160 292 L 180 307 L 215 280 L 215 312 Z" fill="#0284c7" opacity="0.4" />
+
+  <!-- Right page lines & boxes (Math Formula Block detected) -->
+  <rect x="285" y="180" width="105" height="8" rx="3" fill="#64748b" opacity="0.5" />
+  <rect x="285" y="198" width="90" height="8" rx="3" fill="#64748b" opacity="0.5" />
+
+  <!-- Math Formula Target Box -->
+  <rect x="280" y="218" width="115" height="52" rx="6" fill="#4f46e5" opacity="0.12" stroke="#6366f1" stroke-width="2" />
+  <!-- Formula symbol: Integral / Sigma style curves -->
+  <path d="M 295 255 C 290 255 292 230 300 230 C 304 230 305 235 305 240 C 305 250 295 245 295 255" fill="none" stroke="#818cf8" stroke-width="3" stroke-linecap="round" />
+  <path d="M 315 235 L 340 235 M 315 252 L 340 252 M 350 232 L 375 255 M 375 232 L 350 255" fill="none" stroke="#818cf8" stroke-width="2.5" stroke-linecap="round" />
+
+  <rect x="285" y="282" width="100" height="8" rx="3" fill="#64748b" opacity="0.5" />
+  <rect x="285" y="300" width="75" height="8" rx="3" fill="#64748b" opacity="0.5" />
+
+  <!-- Scanner Light Field / Beam Glow Projection -->
+  <polygon points="76,230 436,230 460,256 52,256" fill="url(#laserGlow)" opacity="0.6" />
+
+  <!-- Laser Line (Ultra vibrant scanline) -->
+  <line x1="50" y1="240" x2="462" y2="240" stroke="url(#laserGrad)" stroke-width="6" stroke-linecap="round" filter="url(#glow)" />
+  <line x1="120" y1="240" x2="392" y2="240" stroke="#ffffff" stroke-width="2" stroke-linecap="round" filter="url(#glow)" />
+
+  <!-- Top-Right AI Sparkle / Target Lens -->
+  <g transform="translate(380, 80)">
+    <circle cx="20" cy="20" r="32" fill="#0f172a" stroke="url(#accentGrad)" stroke-width="4" filter="url(#glow)" />
+    <!-- 4-point star -->
+    <path d="M 20 6 Q 20 20 6 20 Q 20 20 20 34 Q 20 20 34 20 Q 20 20 20 6 Z" fill="#38bdf8" />
+    <circle cx="20" cy="20" r="3" fill="#ffffff" />
+  </g>
+</svg>

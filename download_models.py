@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import sys
 import argparse
@@ -5,7 +6,14 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download, snapshot_download
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_MODELS_DIR = os.environ.get("SCANORC_MODELS_DIR", str(BASE_DIR / "models"))
+if "SCANORC_MODELS_DIR" in os.environ:
+    DEFAULT_MODELS_DIR = os.environ["SCANORC_MODELS_DIR"]
+elif (BASE_DIR / "models").exists():
+    DEFAULT_MODELS_DIR = str((BASE_DIR / "models").resolve())
+elif Path("/opt/models").exists():
+    DEFAULT_MODELS_DIR = "/opt/models"
+else:
+    DEFAULT_MODELS_DIR = str((BASE_DIR / "models").resolve())
 
 
 def main():

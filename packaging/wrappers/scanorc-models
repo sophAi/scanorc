@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# ScanORC AI Model Download & Update Utility
+set -e
+
+SCANORC_DIR="/opt/scanorc"
+
+find_python() {
+    if [ -f "$SCANORC_DIR/.venv/bin/python" ]; then
+        echo "$SCANORC_DIR/.venv/bin/python"
+    elif [ -f "$HOME/.local/share/scanorc/venv/bin/python" ]; then
+        echo "$HOME/.local/share/scanorc/venv/bin/python"
+    elif [ -n "$VIRTUAL_ENV" ] && [ -f "$VIRTUAL_ENV/bin/python" ]; then
+        echo "$VIRTUAL_ENV/bin/python"
+    else
+        echo "python3"
+    fi
+}
+
+PY_BIN="$(find_python)"
+
+# 若未自訂 --models-dir 且環境變數未指定，預設傳入 /opt/models
+HAS_DIR=0
+for arg in "$@"; do
+    if [[ "$arg" == "--models-dir" || "$arg" == "-o" ]]; then
+        HAS_DIR=1
+        break
+    fi
+done
+
+if [ "$HAS_DIR" -eq 0 ] && [ -z "$SCANORC_MODELS_DIR" ]; then
+    exec "$PY_BIN" "$SCANORC_DIR/download_models.py" --models-dir /opt/models "$@"
+else
+    exec "$PY_BIN" "$SCANORC_DIR/download_models.py" "$@"
+fi

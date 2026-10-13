@@ -959,7 +959,7 @@ class MainWindow(QMainWindow):
         form.addRow("EPUB 封面圖檔 (--cover):", h_cov)
 
         self.oc_models_dir = QLineEdit("")
-        self.oc_models_dir.setPlaceholderText("留空使用專案預設 models/ 或 SCANORC_MODELS_DIR 環境變數")
+        self.oc_models_dir.setPlaceholderText("留空使用預設 (/opt/models 或 models/ 或 SCANORC_MODELS_DIR)")
         self.oc_models_dir.textChanged.connect(self.update_command_preview)
         btn_oc_models = QPushButton("瀏覽目錄...")
         btn_oc_models.clicked.connect(lambda: self.browse_dir(self.oc_models_dir))
@@ -1181,7 +1181,7 @@ class MainWindow(QMainWindow):
         form.addRow("書籍標題 (--book-title):", self.s2_title)
 
         self.s2_models_dir = QLineEdit("")
-        self.s2_models_dir.setPlaceholderText("留空使用專案預設 models/ 或 SCANORC_MODELS_DIR")
+        self.s2_models_dir.setPlaceholderText("留空使用預設 (/opt/models 或 models/ 或 SCANORC_MODELS_DIR)")
         self.s2_models_dir.textChanged.connect(self.update_command_preview)
         btn_s2_models = QPushButton("瀏覽目錄...")
         btn_s2_models.clicked.connect(lambda: self.browse_dir(self.s2_models_dir))
@@ -1293,7 +1293,7 @@ class MainWindow(QMainWindow):
         form.addRow("EPUB 封面圖檔 (--cover):", h_s3_cov)
 
         self.s3_models_dir = QLineEdit("")
-        self.s3_models_dir.setPlaceholderText("留空使用專案預設 models/ 或 SCANORC_MODELS_DIR")
+        self.s3_models_dir.setPlaceholderText("留空使用預設 (/opt/models 或 models/ 或 SCANORC_MODELS_DIR)")
         self.s3_models_dir.textChanged.connect(self.update_command_preview)
         btn_s3_models = QPushButton("瀏覽目錄...")
         btn_s3_models.clicked.connect(lambda: self.browse_dir(self.s3_models_dir))
@@ -1647,7 +1647,7 @@ class MainWindow(QMainWindow):
         form_common.addRow("功能開關:", grid_common_chk)
 
         self.batch_models_dir = QLineEdit("")
-        self.batch_models_dir.setPlaceholderText("留空使用專案預設 models/ 或 SCANORC_MODELS_DIR")
+        self.batch_models_dir.setPlaceholderText("留空使用預設 (/opt/models 或 models/ 或 SCANORC_MODELS_DIR)")
         self.batch_models_dir.textChanged.connect(self.update_command_preview)
         btn_batch_models = QPushButton("瀏覽目錄...")
         btn_batch_models.clicked.connect(lambda: self.browse_dir(self.batch_models_dir))
