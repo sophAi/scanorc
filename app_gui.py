@@ -138,6 +138,140 @@ def safe_split_args(cmd_str: str) -> List[str]:
         return cmd_str.strip().split()
 
 
+# -------------------------------------------------------------
+# 終端機色彩主題與語法高亮定義
+# -------------------------------------------------------------
+TERMINAL_THEMES = {
+    "dark": {
+        "name": "🌌 現代深灰 (Tokyo Night)",
+        "bg": "#18181b",
+        "fg": "#e4e4e7",
+        "selection_bg": "#27272a",
+        "info": "#38bdf8",     # [*] 天藍
+        "success": "#4ade80",  # [+] 嫩綠
+        "warning": "#fbbf24",  # [!] 金黃
+        "error": "#f87171",    # [-] 珊瑚紅
+        "dim": "#71717a",      # === 灰暗
+    },
+    "matrix": {
+        "name": "📟 經典駭客綠 (Matrix Green)",
+        "bg": "#0c100c",
+        "fg": "#00ff66",
+        "selection_bg": "#143a14",
+        "info": "#66ffcc",
+        "success": "#00ff66",
+        "warning": "#ffff66",
+        "error": "#ff3333",
+        "dim": "#008833",
+    },
+    "solarized": {
+        "name": "🌊 經典深藍 (Solarized Dark)",
+        "bg": "#002b36",
+        "fg": "#93a1a1",
+        "selection_bg": "#073642",
+        "info": "#268bd2",
+        "success": "#859900",
+        "warning": "#b58900",
+        "error": "#dc322f",
+        "dim": "#586e75",
+    },
+    "amber": {
+        "name": "📻 復古琥珀橘 (Amber CRT)",
+        "bg": "#140c00",
+        "fg": "#ffb000",
+        "selection_bg": "#331a00",
+        "info": "#ffd24d",
+        "success": "#ffb000",
+        "warning": "#ffe066",
+        "error": "#ff4d4d",
+        "dim": "#805800",
+    },
+    "light": {
+        "name": "📜 柔和白底 (Paper Light)",
+        "bg": "#fafafa",
+        "fg": "#24292f",
+        "selection_bg": "#c8e1ff",
+        "info": "#0969da",
+        "success": "#1a7f37",
+        "warning": "#9a6700",
+        "error": "#cf222e",
+        "dim": "#8c959f",
+    },
+}
+
+
+class TerminalTextEdit(QTextEdit):
+    """支援 Ctrl + 滑鼠滾輪即時縮放字型的終端機文字元件"""
+    zoom_requested = Signal(int)  # +1: 放大, -1: 縮小
+
+    def wheelEvent(self, event: QtGui.QWheelEvent):
+        if bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.zoom_requested.emit(1)
+            elif delta < 0:
+                self.zoom_requested.emit(-1)
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+
+class TerminalLogHighlighter(QtGui.QSyntaxHighlighter):
+    """終端機日誌即時語法與狀態高亮著色器"""
+    def __init__(self, parent_document, theme_key="dark"):
+        super().__init__(parent_document)
+        self.theme_key = theme_key
+        self.rules = []
+        self.init_rules()
+
+    def set_theme(self, theme_key: str):
+        self.theme_key = theme_key
+        self.init_rules()
+        self.rehighlight()
+
+    def init_rules(self):
+        theme = TERMINAL_THEMES.get(self.theme_key, TERMINAL_THEMES["dark"])
+        self.rules = []
+
+        # 1. 成功完成標記 [+]
+        fmt_success = QtGui.QTextCharFormat()
+        fmt_success.setForeground(QtGui.QColor(theme["success"]))
+        fmt_success.setFontWeight(QtGui.QFont.Weight.Bold)
+        self.rules.append((re.compile(r"\[\+\].*$"), fmt_success))
+
+        # 2. 步驟與進度標記 [*]
+        fmt_info = QtGui.QTextCharFormat()
+        fmt_info.setForeground(QtGui.QColor(theme["info"]))
+        fmt_info.setFontWeight(QtGui.QFont.Weight.Bold)
+        self.rules.append((re.compile(r"\[\*(?:[^\n\]]*)\](?:\s*.*)?$"), fmt_info))
+
+        # 3. 錯誤與例外標記 [-] 或 Error / Traceback
+        fmt_error = QtGui.QTextCharFormat()
+        fmt_error.setForeground(QtGui.QColor(theme["error"]))
+        fmt_error.setFontWeight(QtGui.QFont.Weight.Bold)
+        self.rules.append((re.compile(r"\[-\].*$"), fmt_error))
+        self.rules.append((re.compile(r"(?i)\b(error|exception|traceback|failed|fatal)\b"), fmt_error))
+
+        # 4. 警示與慶祝完成標記 [!] 或 [🎉]
+        fmt_warn = QtGui.QTextCharFormat()
+        fmt_warn.setForeground(QtGui.QColor(theme["warning"]))
+        fmt_warn.setFontWeight(QtGui.QFont.Weight.Bold)
+        self.rules.append((re.compile(r"\[🎉\].*$"), fmt_warn))
+        self.rules.append((re.compile(r"\[!\].*$"), fmt_warn))
+
+        # 5. 分隔線 (===, ---, ###)
+        fmt_dim = QtGui.QTextCharFormat()
+        fmt_dim.setForeground(QtGui.QColor(theme["dim"]))
+        self.rules.append((re.compile(r"^[\s=\-#*]{4,}$"), fmt_dim))
+
+    def highlightBlock(self, text: str):
+        for pattern, fmt in self.rules:
+            for match in pattern.finditer(text):
+                start = match.start()
+                length = match.end() - start
+                self.setFormat(start, length, fmt)
+
+
 class FileManagerWidget(QWidget):
     """左側：檔案清單與 Import 管理元件"""
     files_updated = Signal()
@@ -467,6 +601,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("ScanORC - 掃描書本轉語意結構化 HTML/EPUB 控制台")
         self.resize(1280, 850)
 
+        # 終端機色彩與字體狀態
+        self.current_theme_key = "dark"
+        self.current_font_size = 14
+        self.available_font_sizes = [11, 12, 13, 14, 15, 16, 18, 20, 22, 24]
+
         # QProcess 實例
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.MergedChannels)
@@ -530,12 +669,11 @@ class MainWindow(QMainWindow):
         c_layout.addLayout(cmd_layout)
 
         # 終端輸出視窗
-        self.log_text = QTextEdit()
+        self.log_text = TerminalTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setStyleSheet(
-            "background-color: #1e1e1e; color: #00ff66; "
-            "font-family: 'Consolas', 'Courier New', monospace; font-size: 12px;"
-        )
+        self.log_text.zoom_requested.connect(self.on_terminal_zoom)
+        self.highlighter = TerminalLogHighlighter(self.log_text.document(), self.current_theme_key)
+        self.apply_terminal_style()
         c_layout.addWidget(self.log_text)
 
         # 底部狀態與操作列
@@ -549,6 +687,44 @@ class MainWindow(QMainWindow):
         self.lbl_status.setStyleSheet("font-weight: bold; color: #333;")
         bottom_bar.addWidget(self.lbl_status)
         bottom_bar.addStretch()
+
+        # 終端機色彩與字級控制項
+        bottom_bar.addWidget(QLabel("🎨 主題:"))
+        self.combo_theme = QComboBox()
+        self.combo_theme.setToolTip("切換終端機配色主題風格")
+        for key, data in TERMINAL_THEMES.items():
+            self.combo_theme.addItem(data["name"], userData=key)
+        self.combo_theme.setCurrentIndex(list(TERMINAL_THEMES.keys()).index(self.current_theme_key))
+        self.combo_theme.currentIndexChanged.connect(self.on_terminal_theme_changed)
+        bottom_bar.addWidget(self.combo_theme)
+
+        bottom_bar.addWidget(QLabel("🔤 字級:"))
+        self.combo_font_size = QComboBox()
+        self.combo_font_size.setToolTip("選擇終端機字體大小")
+        for sz in self.available_font_sizes:
+            self.combo_font_size.addItem(f"{sz} px", userData=sz)
+        self.combo_font_size.setCurrentIndex(self.available_font_sizes.index(self.current_font_size))
+        self.combo_font_size.currentIndexChanged.connect(self.on_terminal_font_size_changed)
+        bottom_bar.addWidget(self.combo_font_size)
+
+        self.btn_font_dec = QPushButton("A-")
+        self.btn_font_dec.setToolTip("縮小終端機字體 (或按 Ctrl + 滾輪往下)")
+        self.btn_font_dec.setFixedWidth(32)
+        self.btn_font_dec.setStyleSheet("font-weight: bold; padding: 2px 4px;")
+        self.btn_font_dec.clicked.connect(lambda: self.on_terminal_zoom(-1))
+        bottom_bar.addWidget(self.btn_font_dec)
+
+        self.btn_font_inc = QPushButton("A+")
+        self.btn_font_inc.setToolTip("放大終端機字體 (或按 Ctrl + 滾輪往上)")
+        self.btn_font_inc.setFixedWidth(32)
+        self.btn_font_inc.setStyleSheet("font-weight: bold; padding: 2px 4px;")
+        self.btn_font_inc.clicked.connect(lambda: self.on_terminal_zoom(1))
+        bottom_bar.addWidget(self.btn_font_inc)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        bottom_bar.addWidget(sep)
 
         self.btn_run = QPushButton("▶ 執行當前步驟")
         self.btn_run.setStyleSheet("background-color: #007acc; color: white; font-weight: bold; padding: 6px 16px;")
@@ -1475,6 +1651,51 @@ class MainWindow(QMainWindow):
                 background: white;
             }
         """)
+
+    def apply_terminal_style(self):
+        """套用終端機視窗背景、前景顏色與字體大小"""
+        theme = TERMINAL_THEMES.get(self.current_theme_key, TERMINAL_THEMES["dark"])
+        bg = theme["bg"]
+        fg = theme["fg"]
+        sel_bg = theme["selection_bg"]
+        fs = self.current_font_size
+
+        font_stack = "'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', 'Ubuntu Mono', 'Consolas', 'Courier New', monospace"
+        self.log_text.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {bg};
+                color: {fg};
+                selection-background-color: {sel_bg};
+                selection-color: {fg};
+                font-family: {font_stack};
+                font-size: {fs}px;
+                line-height: 1.4;
+                border: 1px solid #333333;
+                border-radius: 4px;
+                padding: 6px;
+            }}
+        """)
+        if hasattr(self, "highlighter") and self.highlighter:
+            self.highlighter.set_theme(self.current_theme_key)
+
+    def on_terminal_theme_changed(self, index: int):
+        theme_key = self.combo_theme.itemData(index)
+        if theme_key and theme_key != self.current_theme_key:
+            self.current_theme_key = theme_key
+            self.apply_terminal_style()
+
+    def on_terminal_font_size_changed(self, index: int):
+        size = self.combo_font_size.itemData(index)
+        if size and size != self.current_font_size:
+            self.current_font_size = size
+            self.apply_terminal_style()
+
+    def on_terminal_zoom(self, delta_step: int):
+        """響應 Ctrl + 滾輪或按鈕縮放"""
+        idx = self.combo_font_size.currentIndex()
+        new_idx = max(0, min(self.combo_font_size.count() - 1, idx + delta_step))
+        if new_idx != idx:
+            self.combo_font_size.setCurrentIndex(new_idx)
 
 
 def main():
