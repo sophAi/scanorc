@@ -154,9 +154,10 @@ python app_gui.py
   * **🤖 步驟 3**：AI 版面與 EPUB 生成（快捷工具採 2x2 緊湊網格，支援即時開啟成果 HTML/EPUB 或直接重編）。
   * **📁 步驟 4**：章節目錄歸檔（支援圖檔移動或複製）。
   * **🩹 步驟 5**：頁面微創替換（支援 `--list` 狀態檢視與一鍵 `--revert` 還原）。
+  * **📚 批次多書處理**：支援母目錄自動掃描 (`--input-dir`) 或自選多目錄 (`--dirs`)，提供斷點續傳 (`--skip-existing`)、TOC 自動優先沿用、Dry-run 排程模擬預覽與批次執行報告 (`batch_report.json`) 一鍵檢視。
 * **各分頁 JSON 偏好設定載入與範本匯出（雙向繫結）**：
   * **主選單列快捷鍵**：上方提供 `檔案(&F)` 選單，支援 `Ctrl+O` 載入設定 (`-p`) 與 `Ctrl+S` 匯出範本 (`-t`)，完全不佔用任何水平版面寬度。
-  * **分頁面板緊湊動作條**：每個 Tab 頂部皆內建 `[ 📂 載入設定 (-p) ] [ 💾 匯出設定 (-t) ]` 快捷按鈕，直觀標示對應之預設檔案（如 `book_config.json`, `step1_config.json`, `step3_config.json` 等）。
+  * **分頁面板緊湊動作條**：每個 Tab 頂部皆內建 `[ 📂 載入設定 (-p) ] [ 💾 匯出設定 (-t) ]` 快捷按鈕，直觀標示對應之預設檔案（如 `book_config.json`, `batch_config.json`, `step1_config.json`, `step3_config.json` 等）。
   * **數值回填與指令同步**：支援解析包含 `//` 或 `/* */` 註解的 JSON，載入後自動將數值批次回填至該分頁的所有 UI 控制項，並同步刷新即時 CLI 指令預覽。
   * **完整參數反射匯出**：可隨時將當前 UI 調整的完整設定狀態另存為標準 JSON，可直接無縫供 CLI 腳本或 `batch_process.py` 批次處理讀取。
 * **即時 CLI 指令預覽**：調整任何參數時，介面即時產生對應之終端機指令並支援一鍵複製到剪貼簿。
@@ -515,7 +516,9 @@ scanorc/
 ├── README.md                # 專案詳細說明文件
 ├── requirements.txt         # Python 套件清單
 ├── download_models.py       # 自動下載 HuggingFace 模型權重
-├── app_gui.py               # [GUI 控制台] 視覺化 5 步驟+一鍵總控操作介面 (PySide6)
+├── app_gui.py               # [GUI 控制台] 視覺化 5 步驟 + 2 大總控操作介面 (PyQt6 / PySide6)
+├── batch_process.py          # [批次總控] 多目錄/多書籍循序批次數位化調度器
+├── config_utils.py           # [通用設定] 統一 JSON 參數範本反射與帶註解偏好設定核心模組
 ├── process_book.py          # [一鍵總控] 端到端全流程自動化腳本 (轉正->TOC->EPUB->分章)
 ├── patch_pages.py           # [微創修復] 異常頁面原圖替換與秒級重編工具
 ├── html_to_epub.py          # [獨立打包] 由 book.html 與 images 直接秒級生成 EPUB 工具

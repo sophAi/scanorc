@@ -895,6 +895,7 @@ class MainWindow(QMainWindow):
         self.tab_step3 = QWidget()
         self.tab_step4 = QWidget()
         self.tab_step5 = QWidget()
+        self.tab_batch = QWidget()
 
         self.tabs.addTab(self.tab_oneclick, "🚀 一鍵端到端總控")
         self.tabs.addTab(self.tab_step1, "📐 步驟 1: 幾何轉正裁切")
@@ -902,6 +903,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_step3, "🤖 步驟 3: AI 版面與 EPUB")
         self.tabs.addTab(self.tab_step4, "📁 步驟 4: 章節目錄歸檔")
         self.tabs.addTab(self.tab_step5, "🩹 步驟 5: 異常頁微創修復")
+        self.tabs.addTab(self.tab_batch, "📚 批次多書處理")
 
         self.init_tab_oneclick()
         self.init_tab_step1()
@@ -909,6 +911,7 @@ class MainWindow(QMainWindow):
         self.init_tab_step3()
         self.init_tab_step4()
         self.init_tab_step5()
+        self.init_tab_batch()
 
     # -------------------------------------------------------------
     # Tab 0: 一鍵端到端總控 (process_book.py)
@@ -1485,6 +1488,201 @@ class MainWindow(QMainWindow):
             self.execute_cmd_list(cmd)
 
     # -------------------------------------------------------------
+    # Tab 6: 批次多書處理 (batch_process.py)
+    # -------------------------------------------------------------
+    def init_tab_batch(self):
+        layout = QVBoxLayout(self.tab_batch)
+        layout.addWidget(self.create_pref_toolbar(6))
+        form = QFormLayout()
+
+        # 1. 書籍母目錄
+        self.batch_input_dir = QLineEdit("")
+        self.batch_input_dir.setPlaceholderText("指定包含多本書籍子目錄之母目錄 (例如: /data/books/)")
+        self.batch_input_dir.textChanged.connect(self.update_command_preview)
+        btn_b_in = QPushButton("瀏覽母目錄...")
+        btn_b_in.clicked.connect(lambda: self.browse_dir(self.batch_input_dir))
+        h_b_in = QHBoxLayout()
+        h_b_in.addWidget(self.batch_input_dir)
+        h_b_in.addWidget(btn_b_in)
+        form.addRow("書籍母目錄 (--input-dir):", h_b_in)
+
+        # 2. 自選多目錄清單
+        self.batch_dirs = QLineEdit("")
+        self.batch_dirs.setPlaceholderText("明確指定多個書籍目錄 (以空白分隔；若已指定母目錄則可留空)")
+        self.batch_dirs.textChanged.connect(self.update_command_preview)
+        btn_b_dirs = QPushButton("選取目錄...")
+        btn_b_dirs.clicked.connect(self.browse_batch_dirs)
+        h_b_dirs = QHBoxLayout()
+        h_b_dirs.addWidget(self.batch_dirs)
+        h_b_dirs.addWidget(btn_b_dirs)
+        form.addRow("自選多目錄 (--dirs):", h_b_dirs)
+
+        # 3. 掃描過濾與目錄偏好設定檔名
+        h_pat_cfg = QHBoxLayout()
+        self.batch_pattern = QLineEdit("*")
+        self.batch_pattern.setPlaceholderText("子目錄過濾規則 (預設: *)")
+        self.batch_pattern.textChanged.connect(self.update_command_preview)
+        h_pat_cfg.addWidget(QLabel("過濾 Pattern:"))
+        h_pat_cfg.addWidget(self.batch_pattern)
+
+        self.batch_config_name = QLineEdit("book_config.json")
+        self.batch_config_name.setPlaceholderText("各書專屬設定檔名 (預設: book_config.json)")
+        self.batch_config_name.textChanged.connect(self.update_command_preview)
+        h_pat_cfg.addWidget(QLabel("各書設定檔名:"))
+        h_pat_cfg.addWidget(self.batch_config_name)
+        form.addRow("掃描過濾與設定檔:", h_pat_cfg)
+
+        # 4. 批次成果總輸出目錄
+        self.batch_output_root = QLineEdit("output_batch")
+        self.batch_output_root.textChanged.connect(self.update_command_preview)
+        btn_b_out = QPushButton("瀏覽...")
+        btn_b_out.clicked.connect(lambda: self.browse_dir(self.batch_output_root))
+        h_b_out = QHBoxLayout()
+        h_b_out.addWidget(self.batch_output_root)
+        h_b_out.addWidget(btn_b_out)
+        form.addRow("總成果輸出目錄 (--output-root):", h_b_out)
+
+        # 5. 排程與容錯控制開關
+        grid_batch_ops = QGridLayout()
+        self.batch_skip_existing = QCheckBox("斷點續傳：已有成果則跳過 (--skip-existing)")
+        self.batch_skip_existing.setChecked(True)
+        self.batch_skip_existing.stateChanged.connect(self.update_command_preview)
+        grid_batch_ops.addWidget(self.batch_skip_existing, 0, 0)
+
+        self.batch_use_existing_toc = QCheckBox("沿用書籍目錄中既有 toc.json (--use-existing-toc)")
+        self.batch_use_existing_toc.setChecked(True)
+        self.batch_use_existing_toc.stateChanged.connect(self.update_command_preview)
+        grid_batch_ops.addWidget(self.batch_use_existing_toc, 0, 1)
+
+        self.batch_force_toc = QCheckBox("強制重新以 AI 抽取目錄 (--force-toc)")
+        self.batch_force_toc.stateChanged.connect(self.update_command_preview)
+        grid_batch_ops.addWidget(self.batch_force_toc, 1, 0)
+
+        self.batch_continue_on_error = QCheckBox("單書失敗時繼續下一本 (--continue-on-error)")
+        self.batch_continue_on_error.setChecked(True)
+        self.batch_continue_on_error.stateChanged.connect(self.update_command_preview)
+        grid_batch_ops.addWidget(self.batch_continue_on_error, 1, 1)
+
+        self.batch_dry_run = QCheckBox("排程預覽：不實際執行運算 (--dry-run)")
+        self.batch_dry_run.stateChanged.connect(self.update_command_preview)
+        grid_batch_ops.addWidget(self.batch_dry_run, 2, 0)
+
+        form.addRow("排程與容錯策略:", grid_batch_ops)
+
+        # 6. 全書預設通用參數群組
+        box_common = QGroupBox("全書預設通用參數 (書籍若無專屬設定則套用此處)")
+        form_common = QFormLayout(box_common)
+
+        h_b_perf = QHBoxLayout()
+        self.batch_workers = QSpinBox()
+        self.batch_workers.setRange(1, 16)
+        self.batch_workers.setValue(1)
+        self.batch_workers.valueChanged.connect(self.update_command_preview)
+        h_b_perf.addWidget(QLabel("單書 Workers:"))
+        h_b_perf.addWidget(self.batch_workers)
+
+        self.batch_batch_size = QSpinBox()
+        self.batch_batch_size.setRange(1, 8)
+        self.batch_batch_size.setValue(2)
+        self.batch_batch_size.valueChanged.connect(self.update_command_preview)
+        h_b_perf.addWidget(QLabel("單頁 Batch:"))
+        h_b_perf.addWidget(self.batch_batch_size)
+
+        self.batch_dpi = QLineEdit("")
+        self.batch_dpi.setPlaceholderText("留空表示 1:1 原生尺寸")
+        self.batch_dpi.textChanged.connect(self.update_command_preview)
+        h_b_perf.addWidget(QLabel("DPI:"))
+        h_b_perf.addWidget(self.batch_dpi)
+        form_common.addRow("效能與尺寸:", h_b_perf)
+
+        grid_common_chk = QGridLayout()
+        self.batch_compress_images = QCheckBox("壓縮 images 插圖")
+        self.batch_compress_images.setChecked(True)
+        self.batch_compress_images.stateChanged.connect(self.update_command_preview)
+        grid_common_chk.addWidget(self.batch_compress_images, 0, 0)
+
+        self.batch_epub = QCheckBox("編譯 EPUB3")
+        self.batch_epub.setChecked(True)
+        self.batch_epub.stateChanged.connect(self.update_command_preview)
+        grid_common_chk.addWidget(self.batch_epub, 0, 1)
+
+        self.batch_organize = QCheckBox("依章節歸檔圖檔")
+        self.batch_organize.setChecked(True)
+        self.batch_organize.stateChanged.connect(self.update_command_preview)
+        grid_common_chk.addWidget(self.batch_organize, 1, 0)
+
+        self.batch_copy = QCheckBox("歸檔複製代替移動")
+        self.batch_copy.stateChanged.connect(self.update_command_preview)
+        grid_common_chk.addWidget(self.batch_copy, 1, 1)
+        form_common.addRow("功能開關:", grid_common_chk)
+
+        layout.addLayout(form)
+        layout.addWidget(box_common)
+
+        # 7. 批次輔助動作與成果檢視
+        box_b_act = QGroupBox("批次輔助動作與成果檢視")
+        h_b_act = QHBoxLayout(box_b_act)
+
+        btn_run_dry = QPushButton("🔍 執行排程預覽 (--dry-run)")
+        btn_run_dry.setToolTip("以當前設定進行 Dry-run 模擬掃描，於終端機顯示待處理書籍清單與各書設定來源")
+        btn_run_dry.clicked.connect(self.run_batch_dry_run)
+        h_b_act.addWidget(btn_run_dry)
+
+        btn_view_report = QPushButton("📊 檢視批次報告 (batch_report.json)")
+        btn_view_report.clicked.connect(self.view_batch_report)
+        h_b_act.addWidget(btn_view_report)
+
+        btn_open_batch_dir = QPushButton("📂 開啟成果目錄")
+        btn_open_batch_dir.clicked.connect(lambda: self.open_folder(self.batch_output_root.text()))
+        h_b_act.addWidget(btn_open_batch_dir)
+
+        layout.addWidget(box_b_act)
+
+        desc = QLabel(
+            "<b>說明：</b> 依序佇列批次處理多個書籍目錄。優先讀取各書目錄內之 <code>book_config.json</code>，"
+            "若無則套用全書通用預設值；自動優先沿用目錄中現成之 <code>toc.json</code>，支援斷點續傳。"
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #444; margin-top: 6px;")
+        layout.addWidget(desc)
+        layout.addStretch()
+
+    def browse_batch_dirs(self):
+        """開啟資料夾選擇框，將使用者選取之路徑加入自選目錄清單"""
+        d = QFileDialog.getExistingDirectory(self, "選取書籍目錄", str(Path.cwd()))
+        if d:
+            rel = format_rel_path(d)
+            current = self.batch_dirs.text().strip()
+            if current:
+                self.batch_dirs.setText(f"{current} {rel}")
+            else:
+                self.batch_dirs.setText(rel)
+
+    def run_batch_dry_run(self):
+        """以目前設定執行 Dry-run 模擬排程"""
+        cmd = self.get_current_cmd_list()
+        if "--dry-run" not in cmd:
+            cmd.append("--dry-run")
+        self.execute_cmd_list(cmd)
+
+    def view_batch_report(self):
+        """檢視批次執行產出之 batch_report.json"""
+        out_root = Path(self.batch_output_root.text().strip() or "output_batch")
+        rpt_file = out_root / "batch_report.json"
+        if not rpt_file.exists():
+            QMessageBox.information(self, "提示", f"尚未產生批次報告檔案：\n{rpt_file}\n請先執行批次處理任務。")
+            return
+        try:
+            content = rpt_file.read_text(encoding="utf-8")
+            self.log_text.append(f"\n==================================================")
+            self.log_text.append(f"📊 批次執行報告: {rpt_file}")
+            self.log_text.append(f"==================================================")
+            self.log_text.append(content)
+            self.lbl_status.setText(f"已於終端機顯示批次報告: {rpt_file.name}")
+        except Exception as e:
+            QMessageBox.warning(self, "讀取失敗", f"無法讀取批次報告:\n{e}")
+
+    # -------------------------------------------------------------
     # 輔助與事件處理
     # -------------------------------------------------------------
     def get_python_bin(self) -> str:
@@ -1821,6 +2019,48 @@ class MainWindow(QMainWindow):
                 cmd.append("--no-backup")
             return cmd
 
+        elif idx == 6:  # 批次多書處理 (batch_process.py)
+            cmd = [py_bin, "batch_process.py"]
+            in_dir = self.batch_input_dir.text().strip()
+            if in_dir:
+                cmd.extend(["--input-dir", in_dir])
+            dirs = safe_split_args(self.batch_dirs.text())
+            if dirs:
+                cmd.extend(["--dirs"] + dirs)
+            pat = self.batch_pattern.text().strip()
+            if pat and pat != "*":
+                cmd.extend(["--pattern", pat])
+            cfg_name = self.batch_config_name.text().strip()
+            if cfg_name and cfg_name != "book_config.json":
+                cmd.extend(["--config-name", cfg_name])
+            out_root = self.batch_output_root.text().strip() or "output_batch"
+            cmd.extend(["--output-root", out_root])
+
+            if self.batch_skip_existing.isChecked():
+                cmd.append("--skip-existing")
+            if not self.batch_use_existing_toc.isChecked():
+                cmd.append("--no-use-existing-toc")
+            if self.batch_force_toc.isChecked():
+                cmd.append("--force-toc")
+            if not self.batch_continue_on_error.isChecked():
+                cmd.append("--stop-on-error")
+            if self.batch_dry_run.isChecked():
+                cmd.append("--dry-run")
+
+            cmd.extend(["--workers", str(self.batch_workers.value())])
+            cmd.extend(["--batch-size", str(self.batch_batch_size.value())])
+            if self.batch_dpi.text().strip():
+                cmd.extend(["--dpi", self.batch_dpi.text().strip()])
+            if not self.batch_compress_images.isChecked():
+                cmd.append("--no-compress-images")
+            if not self.batch_epub.isChecked():
+                cmd.append("--no-epub")
+            if not self.batch_organize.isChecked():
+                cmd.append("--no-organize-pages")
+            if self.batch_copy.isChecked():
+                cmd.append("--copy")
+            return cmd
+
         return [py_bin]
 
     def update_command_preview(self):
@@ -1850,6 +2090,7 @@ class MainWindow(QMainWindow):
         3: {"name": "步驟 3: AI 版面與 EPUB", "default_file": "step3_config.json", "tool": "pipeline.py"},
         4: {"name": "步驟 4: 章節目錄歸檔", "default_file": "organize_config.json", "tool": "extract_toc.py"},
         5: {"name": "步驟 5: 異常頁微創修復", "default_file": "patch_config.json", "tool": "patch_pages.py"},
+        6: {"name": "批次多書處理", "default_file": "batch_config.json", "tool": "batch_process.py"},
     }
 
     def setup_menu_bar(self):
@@ -2023,6 +2264,47 @@ class MainWindow(QMainWindow):
                 "list": False
             }
 
+        elif tab_idx == 6:
+            dpi_val = None
+            dpi_text = self.batch_dpi.text().strip()
+            if dpi_text.isdigit():
+                dpi_val = int(dpi_text)
+
+            dirs = safe_split_args(self.batch_dirs.text())
+            in_dir = self.batch_input_dir.text().strip() or None
+
+            return {
+                "input_dir": in_dir,
+                "dirs": dirs,
+                "pattern": self.batch_pattern.text().strip() or "*",
+                "config_name": self.batch_config_name.text().strip() or "book_config.json",
+                "output_root": self.batch_output_root.text().strip() or "output_batch",
+                "report": None,
+                "skip_existing": self.batch_skip_existing.isChecked(),
+                "use_existing_toc": self.batch_use_existing_toc.isChecked(),
+                "force_toc": self.batch_force_toc.isChecked(),
+                "continue_on_error": self.batch_continue_on_error.isChecked(),
+                "stop_on_error": not self.batch_continue_on_error.isChecked(),
+                "dry_run": self.batch_dry_run.isChecked(),
+                "title": "",
+                "cover": None,
+                "dpi": dpi_val,
+                "margins": 1,
+                "quality": 85,
+                "color_mode": "color_grayscale",
+                "batch_size": self.batch_batch_size.value(),
+                "workers": self.batch_workers.value(),
+                "skip_ocr": [],
+                "epub": self.batch_epub.isChecked(),
+                "compress_images": self.batch_compress_images.isChecked(),
+                "image_quality": 75,
+                "image_scale": 0.75,
+                "image_max_dim": None,
+                "organize_pages": self.batch_organize.isChecked(),
+                "copy": self.batch_copy.isChecked(),
+                "organize_target": "preprocessed"
+            }
+
         return {}
 
     def import_tab_config(self, tab_idx: int, data: dict):
@@ -2161,6 +2443,45 @@ class MainWindow(QMainWindow):
                 self.s5_epub.setChecked(bool(data["epub"]))
             if "backup" in data and data["backup"] is not None:
                 self.s5_backup.setChecked(bool(data["backup"]))
+
+        elif tab_idx == 6:
+            if "input_dir" in data:
+                self.batch_input_dir.setText(str(data["input_dir"]) if data["input_dir"] is not None else "")
+            if "dirs" in data and data["dirs"] is not None:
+                val = data["dirs"]
+                self.batch_dirs.setText(" ".join(str(x) for x in val) if isinstance(val, list) else str(val))
+            if "pattern" in data and data["pattern"] is not None:
+                self.batch_pattern.setText(str(data["pattern"]))
+            if "config_name" in data and data["config_name"] is not None:
+                self.batch_config_name.setText(str(data["config_name"]))
+            if "output_root" in data and data["output_root"] is not None:
+                self.batch_output_root.setText(str(data["output_root"]))
+            if "skip_existing" in data and data["skip_existing"] is not None:
+                self.batch_skip_existing.setChecked(bool(data["skip_existing"]))
+            if "use_existing_toc" in data and data["use_existing_toc"] is not None:
+                self.batch_use_existing_toc.setChecked(bool(data["use_existing_toc"]))
+            if "force_toc" in data and data["force_toc"] is not None:
+                self.batch_force_toc.setChecked(bool(data["force_toc"]))
+            if "continue_on_error" in data and data["continue_on_error"] is not None:
+                self.batch_continue_on_error.setChecked(bool(data["continue_on_error"]))
+            elif "stop_on_error" in data and data["stop_on_error"] is not None:
+                self.batch_continue_on_error.setChecked(not bool(data["stop_on_error"]))
+            if "dry_run" in data and data["dry_run"] is not None:
+                self.batch_dry_run.setChecked(bool(data["dry_run"]))
+            if "workers" in data and data["workers"] is not None:
+                self.batch_workers.setValue(int(data["workers"]))
+            if "batch_size" in data and data["batch_size"] is not None:
+                self.batch_batch_size.setValue(int(data["batch_size"]))
+            if "dpi" in data:
+                self.batch_dpi.setText(str(data["dpi"]) if data["dpi"] is not None else "")
+            if "compress_images" in data and data["compress_images"] is not None:
+                self.batch_compress_images.setChecked(bool(data["compress_images"]))
+            if "epub" in data and data["epub"] is not None:
+                self.batch_epub.setChecked(bool(data["epub"]))
+            if "organize_pages" in data and data["organize_pages"] is not None:
+                self.batch_organize.setChecked(bool(data["organize_pages"]))
+            if "copy" in data and data["copy"] is not None:
+                self.batch_copy.setChecked(bool(data["copy"]))
 
         self.update_command_preview()
 
