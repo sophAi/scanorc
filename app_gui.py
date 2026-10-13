@@ -80,6 +80,35 @@ try:
                     shutil.copy2(src, dst)
                 except Exception:
                     pass
+
+    # 3. Linux 中文輸入法 (Fcitx5 / IBus) 自動適配引導
+    # 原因說明：
+    # 系統雖然安裝了 fcitx5-frontend-qt6，但它是針對系統 Qt6 (Qt 6.4) 編譯的。
+    # pip 安裝的 PySide6 自帶獨立 Qt6 函式庫，由於 Qt Private API 符號不相容，
+    # 無法載入系統的 libfcitx5platforminputcontextplugin.so。
+    # 幸好 Fcitx5 原生啟動了標準 IBus 服務 (org.freedesktop.IBus)，
+    # 且 PySide6 原生內建完全相容的 libibusplatforminputcontextplugin.so。
+    # 將 QT_IM_MODULE 自動橋接為 ibus 並載入 IBUS_ADDRESS，
+    # 即可讓 PySide6 完美呼出 Fcitx5 進行 Ctrl+Space 中文輸入與選字！
+    if sys.platform.startswith("linux"):
+        cur_im = os.environ.get("QT_IM_MODULE", "")
+        if cur_im in ("fcitx", "fcitx5", ""):
+            os.environ["QT_IM_MODULE"] = "ibus"
+
+        if "IBUS_ADDRESS" not in os.environ:
+            bus_dir = Path.home() / ".config" / "ibus" / "bus"
+            if bus_dir.exists():
+                for f in bus_dir.iterdir():
+                    if f.is_file() and not f.name.endswith(".bak"):
+                        try:
+                            for line in f.read_text().splitlines():
+                                if line.startswith("IBUS_ADDRESS="):
+                                    os.environ["IBUS_ADDRESS"] = line.split("=", 1)[1].strip()
+                                    break
+                        except Exception:
+                            pass
+                        if "IBUS_ADDRESS" in os.environ:
+                            break
 except ImportError:
     pass
 
