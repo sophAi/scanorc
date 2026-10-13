@@ -268,6 +268,54 @@ python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossle
 
 ---
 
+### 方式 F：多書籍目錄批次排程處理 (`batch_process.py`)
+
+當有大量書籍目錄需要批次轉換時，使用 `batch_process.py` 進行循序佇列排程處理（避免多書同時佔用 GPU 顯存），支援各書專屬 `book_config.json` 與現成 `toc.json` 智慧沿用：
+
+```bash
+# 1. 自動掃描母目錄下的所有書籍子目錄並批次建置 (成果存放於 output_batch/書名/)：
+python batch_process.py --input-dir /data/library --output-root /data/output_batch --workers 4
+
+# 2. 中斷續傳 (若該書成果目錄已存在 book.epub 則自動略過)：
+python batch_process.py --input-dir /data/library --skip-existing
+
+# 3. 執行前先預覽排程與各目錄 TOC 狀態 (不實際執行運算)：
+python batch_process.py --input-dir /data/library --dry-run
+```
+
+---
+
+### 方式 G：統一 JSON 偏好設定與參數範本機制 (全工具程式支援)
+
+ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`, `preprocess_scantailor.py`, `extract_toc.py`, `pipeline.py`, `patch_pages.py`, `html_to_epub.py`）皆全面支援統一的 JSON 參數驅動：
+
+1. **匯出完整參數範本檔 (`-t` / `--template`)**：
+   輸出包含該工具**所有可用參數與預設值**的標準 JSON 範本檔（包含 `margins`, `quality`, `workers`, `skip_ocr` 等全部參數）：
+   ```bash
+   # 匯出至檔案
+   python process_book.py -t book_config.json
+   python batch_process.py -t batch_config.json
+   # 若未指定檔名，則直接印出至終端機 stdout
+   python pipeline.py -t
+   ```
+
+2. **單一 JSON 檔案直接執行（最簡體驗）**：
+   若工具程式僅傳入一個 `.json` 檔案作為唯一參數，預設自動讀取該 JSON 套用所有參數：
+   ```bash
+   python process_book.py book_config.json
+   python batch_process.py batch_config.json
+   ```
+
+3. **套用設定檔並以命令列參數覆蓋 (`-p` / `--preference`)**：
+   ```bash
+   # 套用 JSON 設定，但臨時以 --workers 4 覆蓋該項參數
+   python process_book.py -p book_config.json --workers 4
+   # 亦支援別名 --config
+   python process_book.py --config book_config.json
+   ```
+
+---
+
 ## ⚙️ 詳細指令參數說明
 
 ### 1. `preprocess_scantailor.py`（前置處理引擎）
@@ -328,7 +376,9 @@ python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossle
 | :--- | :---: | :---: | :--- |
 | `--input` | `-i` | `samples` | 輸入書籍原始圖檔目錄（包含 `Cover-xx.jpg` 與 `Page-xxx.jpg`） |
 | `--output` | `-o` | `output` | 輸出成果目錄（產出 HTML、EPUB、images/ 與 preprocessed/） |
-| `--title` | `-t` | `""` | 書名 / 文件標題（若未指定則自動從目錄名或 toc.json 讀取） |
+| `--title` | `-T` | `""` | 書名 / 文件標題（若未指定則自動從目錄名或 toc.json 讀取） |
+| `--toc` | - | `None` | 指定現有目錄結構 JSON 檔案路徑（若未指定且目錄中存在 `toc.json`，將自動優先沿用） |
+| `--force-toc` | - | `False` | 強制忽略既有 `toc.json`，一律重新以 AI 抽取目錄 |
 | `--cover` | `--cover-image` | `None` | 指定 EPUB 封面圖檔路徑（未指定則自動在輸入或轉正目錄中偵測 Cover-*.jpg） |
 | `--compress-images` | `--no-compress-images` | `True` | 是否在打包 EPUB 前將 `images/` 目錄圖檔重新壓縮與縮放（**預設啟用**，大幅瘦身 EPUB） |
 | `--image-quality` | - | `75` | images 圖檔壓縮品質（1~100，預設: 75） |
@@ -345,6 +395,8 @@ python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossle
 | `--organize-pages` | `--no-organize-pages` | `True` | 是否自動執行章節目錄結構建立與 Page-xxx.jpg 歸檔（**預設啟用**） |
 | `--copy` | - | `False` | 章節歸檔時改為複製而非移動圖檔（預設: 移動圖檔） |
 | `--organize-target` | - | `preprocessed` | 建立章節目錄並歸檔之目標：`preprocessed` 或 `input` |
+| `--preference` | `-p`, `--config`, `-c` | `None` | 載入 JSON 偏好設定檔並套用所有參數（命令列傳入者具最高優先覆蓋權） |
+| `--template` | `-t`, `--dump-config` | `None` | 匯出包含此腳本全部參數預設值之標準 JSON 範本檔（可指定檔名，留空印至終端機） |
 
 ---
 
@@ -352,13 +404,15 @@ python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossle
 
 | 參數 | 簡寫 | 預設值 | 說明 |
 | :--- | :---: | :---: | :--- |
-| `--pages` | `-p` | `[]` | 欲替換為原圖的檔案名稱、頁碼或清單文字檔 (如: `Page-048.jpg`、`48` 或 `bad.txt`) |
+| `--pages` | `-P` | `[]` | 欲替換為原圖的檔案名稱、頁碼或清單文字檔 (如: `Page-048.jpg`、`48` 或 `bad.txt`) |
 | `--html` | - | `output/book.html` | 待修改的 HTML 檔案路徑 |
 | `--source` | `-s` | `output/preprocessed` 等 | 原始圖檔搜尋來源目錄 (可指定多個目錄，自動遞迴搜尋) |
 | `--epub` | `--no-epub` | `True` | 替換完成後是否自動呼叫 Pandoc 重新編譯 MathML EPUB |
 | `--backup` | `--no-backup` | `True` | 是否在修改前自動生成 `.bak` 備份檔案 |
 | `--revert` | - | `False` | 一鍵還原至先前的備份檔案 (`book.html.bak`) 並重編 EPUB |
 | `--list` | `-l` | `False` | 檢視 HTML 檔案中所有頁面目前之狀態清單與原圖/OCR 統計 |
+| `--preference` | `-p`, `--config`, `-c` | `None` | 載入 JSON 偏好設定檔並套用所有參數 |
+| `--template` | `-t`, `--dump-config` | `None` | 匯出包含此腳本全部參數預設值之標準 JSON 範本檔 |
 
 ---
 
@@ -370,10 +424,10 @@ python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossle
 | `--output` | `-o` | `<html_dir>/<stem>.epub` | 輸出 EPUB 檔案路徑 |
 | `--images` | `--images-dir` | `images/` | 圖片資源目錄（預設自動搜尋 HTML 旁的 images/ 資料夾） |
 | `--toc` | - | `None` | 目錄結構 JSON 檔案路徑（未指定則自動在同目錄搜尋 `toc.json`，自動注入 `<h1>` 章節標題至 EPUB Outline 大綱） |
-| `--title` | `-t` | 自動提取 | 書籍標題（預設自動自 HTML `<title>` 標籤中抽取） |
+| `--title` | `-T` | 自動提取 | 書籍標題（預設自動自 HTML `<title>` 標籤中抽取） |
 | `--author` | `-a` | `None` | 書籍作者名稱（選填） |
 | `--lang` | `-l` | 自動提取 | 語系代碼（預設自動自 HTML `<html lang>` 讀取，若無則為 zh-TW） |
-| `--cover` | `-c` | 自動偵測 | 封面圖片路徑（選填，未指定則自動偵測 Cover-*.jpg 或 cover.* 圖檔） |
+| `--cover` | `-C` | 自動偵測 | 封面圖片路徑（選填，未指定則自動偵測 Cover-*.jpg 或 cover.* 圖檔） |
 | `--compress-images` | - | `False` | 編譯 EPUB 前是否自動重新壓縮 images/ 中的 JPG 與 PNG 圖檔 |
 | `--image-quality` | - | `75` | images 圖檔壓縮品質（1~100，預設: 75） |
 | `--image-scale` | - | `1.0` | images 圖檔尺寸縮放比例（例如 0.8 或 1.0） |
@@ -383,6 +437,29 @@ python images_compressed.py samples -o output_lossless -q 75 -s 0.8 --png-lossle
 | `--no-toc` | - | `False` | 不生成 EPUB 目錄導覽 |
 | `--no-mathml` | - | `False` | 停用 LaTeX 數學公式轉譯為 MathML 向量公式 |
 | `--chapter-level` | - | `1` | EPUB 章節切分標題層級（預設依 h1 章節切分獨立 XHTML） |
+| `--preference` | `-p`, `--config`, `-c` | `None` | 載入 JSON 偏好設定檔並套用所有參數 |
+| `--template` | `-t`, `--dump-config` | `None` | 匯出包含此腳本全部參數預設值之標準 JSON 範本檔 |
+
+---
+
+### 7. `batch_process.py`（多書籍目錄批次數位化調度器）
+
+| 參數 | 簡寫 | 預設值 | 說明 |
+| :--- | :---: | :---: | :--- |
+| `--input-dir` | `-i` | `None` | 母目錄路徑：自動掃描其第一層子目錄作為各書籍來源（例如: `library/`） |
+| `--dirs` | `-d` | `[]` | 明確指定一個或多個書籍圖檔目錄（例如: `-d /path/book1 /path/book2`） |
+| `--output-root` | `-o` | `output_batch` | 批次成果總輸出目錄，每本書獨立存於 `<output-root>/<書名>/` |
+| `--pattern` | - | `*` | 子目錄過濾萬用字元（搭配 `--input-dir` 使用，例如: `Vol-*`） |
+| `--config-name` | - | `book_config.json` | 各書籍目錄內專屬偏好設定檔檔名（預設自動搜尋 `book_config.json`、`preference.json` 等） |
+| `--skip-existing` | - | `False` | 斷點續傳：若該書輸出目錄已存在 `book.epub`（或 `book.html`）則自動略過 |
+| `--use-existing-toc` | `--no-use-existing-toc` | `True` | 若目錄中存在 `toc.json`，是否優先沿用並跳過 AI 抽取 |
+| `--force-toc` | - | `False` | 強制忽略既有 `toc.json`，一律重新以 AI 抽取目錄 |
+| `--continue-on-error` | `--no-continue-on-error` | `True` | 單本書籍處理失敗時記錄錯誤並繼續處理下一本 |
+| `--stop-on-error` | - | `False` | 任一本書籍處理失敗時立即中止整個批次佇列 |
+| `--dry-run` | - | `False` | 僅解析掃描各目錄設定與 TOC 狀態並輸出預覽清單，不實際執行運算 |
+| `--report` | - | `<output-root>/batch_report.json` | 批次彙整報告輸出路徑（同時自動產出 Markdown 格式日誌） |
+| `--preference` | `-p`, `--config`, `-c` | `None` | 載入批次全域偏好設定檔 |
+| `--template` | `-t`, `--dump-config` | `None` | 匯出批次調度器全參數預設值之標準 JSON 範本檔 |
 
 ---
 

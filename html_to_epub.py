@@ -21,6 +21,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple, Union
 
+from config_utils import attach_preference_and_template_support
+
 try:
     from recompress_images import recompress_directory
 except ImportError:
@@ -572,7 +574,7 @@ def main():
         help="目錄結構 JSON 檔案路徑 (例如 toc.json，未指定時自動尋找同目錄 toc.json)"
     )
     parser.add_argument(
-        "--title", "-t",
+        "--title", "-T",
         default=None,
         help="書籍標題 (預設: 自動從 HTML <title> 標籤中抽取)"
     )
@@ -587,7 +589,7 @@ def main():
         help="語系代碼 (預設: 自動從 HTML 讀取，若無則為 zh-TW)"
     )
     parser.add_argument(
-        "--cover", "-c",
+        "--cover", "-C",
         default=None,
         help="封面圖片路徑 (選填，未指定則自動偵測 Cover-*.jpg 或 cover.* 圖檔)"
     )
@@ -652,7 +654,7 @@ def main():
         help="精簡輸出，僅顯示必要資訊與錯誤"
     )
 
-    args = parser.parse_args()
+    args = attach_preference_and_template_support(parser, "html_to_epub")
 
     # 判定 HTML 輸入目標
     target_html = args.html or args.input

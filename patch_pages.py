@@ -20,6 +20,8 @@ import subprocess
 from pathlib import Path
 from typing import List, Set, Dict, Optional, Tuple
 
+from config_utils import attach_preference_and_template_support
+
 VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 
 
@@ -197,7 +199,7 @@ def main():
         description="ScanORC 頁面微創替換與快速重編工具 (patch_pages.py)：將異常頁面無縫替換為原始圖檔"
     )
     parser.add_argument(
-        "--pages", "-p",
+        "--pages", "-P",
         nargs="*",
         default=[],
         help="欲替換為原圖的檔案名稱、頁碼或清單文字檔 (例如: --pages Page-048.jpg Page-060.jpg 或 --pages 48 60 或 --pages bad.txt)"
@@ -235,7 +237,7 @@ def main():
         action="store_true",
         help="檢視 HTML 檔案中所有頁面之狀態清單"
     )
-    args = parser.parse_args()
+    args = attach_preference_and_template_support(parser, "patch_pages")
 
     html_path = Path(args.html).resolve()
 

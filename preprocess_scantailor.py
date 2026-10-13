@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 from PIL import Image
 
+from config_utils import attach_preference_and_template_support
+
 VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 
 
@@ -416,7 +418,7 @@ def main():
         dest="skip_ocr",
         help="略過 ScanTailor 幾何轉正與裁切處理的檔案清單 (可指定檔名、頁碼、路徑或 .txt 清單，直接將原始圖檔導出至輸出目錄)"
     )
-    args = parser.parse_args()
+    args = attach_preference_and_template_support(parser, "preprocess_scantailor")
 
     scantailor_cmd = check_scantailor_cmd()
     if not scantailor_cmd:
@@ -426,7 +428,8 @@ def main():
 
     cmd_type = "專案內置免安裝 Portable 版" if "bin/scantailor-cli" in scantailor_cmd[0] else ("Flatpak 沙盒版" if "flatpak" in scantailor_cmd[0] else "系統原生版")
 
-    input_paths = [Path(p).resolve() for p in args.input]
+    input_list = args.input if isinstance(args.input, list) else [args.input]
+    input_paths = [Path(p).resolve() for p in input_list]
     output_base_dir = Path(args.output).resolve()
     output_base_dir.mkdir(parents=True, exist_ok=True)
 

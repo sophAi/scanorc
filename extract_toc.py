@@ -22,6 +22,8 @@ import torch
 from PIL import Image
 from transformers import AutoProcessor, GlmOcrForConditionalGeneration
 
+from config_utils import attach_preference_and_template_support
+
 VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 
 
@@ -307,9 +309,10 @@ def main():
         action="store_true",
         help="配合 --organize-pages 使用：複製檔案而非移動檔案 (預設為移動)"
     )
-    args = parser.parse_args()
+    args = attach_preference_and_template_support(parser, "extract_toc")
 
-    json_candidates = [Path(a).resolve() for a in args.input if Path(a).is_file() and Path(a).suffix.lower() == ".json"]
+    input_list = args.input if isinstance(args.input, list) else [args.input]
+    json_candidates = [Path(a).resolve() for a in input_list if Path(a).is_file() and Path(a).suffix.lower() == ".json"]
     if json_candidates:
         json_file = json_candidates[0]
         print("==================================================")
@@ -329,7 +332,7 @@ def main():
             print(f"[-] 讀取 JSON 檔案失敗: {e}", file=sys.stderr)
             sys.exit(1)
     else:
-        sorted_images = collect_toc_images(args.input)
+        sorted_images = collect_toc_images(input_list)
         if not sorted_images:
             print(f"[-] 錯誤：未在指定的輸入路徑找到任何有效的圖片檔案！{args.input}", file=sys.stderr)
             sys.exit(1)

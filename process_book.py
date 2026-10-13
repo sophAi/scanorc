@@ -18,6 +18,8 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional
 
+from config_utils import attach_preference_and_template_support
+
 VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 
 
@@ -62,9 +64,19 @@ def main():
         help="輸出成果目錄 (預設: output)"
     )
     parser.add_argument(
-        "--title", "-t",
+        "--title", "-T",
         default="",
         help="書名 / 文檔標題 (若未指定則自動從輸入目錄名稱或 toc.json 讀取)"
+    )
+    parser.add_argument(
+        "--toc",
+        default=None,
+        help="指定現有目錄結構 JSON 檔案路徑 (若未指定且輸入目錄中存在 toc.json，將自動優先沿用)"
+    )
+    parser.add_argument(
+        "--force-toc",
+        action="store_true",
+        help="強制忽略既有 toc.json，一律重新以 AI 抽取目錄"
     )
     parser.add_argument(
         "--dpi",
@@ -162,7 +174,7 @@ def main():
         default="preprocessed",
         help="執行章節資料夾建立與 Page-xxx.jpg 歸檔之目標 (預設: preprocessed 轉正後圖檔目錄)"
     )
-    args = parser.parse_args()
+    args = attach_preference_and_template_support(parser, "process_book")
 
     script_dir = Path(__file__).parent.resolve()
     input_dir = Path(args.input).resolve()
@@ -218,31 +230,47 @@ def main():
     # [步驟 2/4] 跨頁目錄識別與抽取 (extract_toc.py)
     # -------------------------------------------------------------------------
     print_banner(2, TOTAL_STEPS, "目錄頁次結構化抽取 (GLM-OCR -> toc.json)")
-    # 優先從轉正後的目錄中尋找 Cover-*.jpg 圖檔
-    cover_images = find_cover_images(preprocessed_dir)
-    if not cover_images:
-        # 若轉正目錄無 cover，嘗試在原始目錄尋找
-        cover_images = find_cover_images(input_dir)
-
     has_toc = False
-    if cover_images:
-        print(f"[*] 發現 {len(cover_images)} 個目錄頁圖檔：{[p.name for p in cover_images]}")
-        step2_cmd = [
-            sys.executable, str(script_dir / "extract_toc.py"),
-            "--input", *[str(p) for p in cover_images],
-            "--output", str(toc_json_path),
-            "--book-title", book_title,
-        ]
-        print(f"[*] 執行指令: {' '.join(step2_cmd)}")
-        try:
-            subprocess.run(step2_cmd, check=True)
-            has_toc = toc_json_path.exists()
-            if has_toc:
-                print(f"[+] 成功生成目錄結構索引 JSON: {toc_json_path}")
-        except subprocess.CalledProcessError as e:
-            print(f"[-] 警告：目錄結構抽取過程異常 ({e})，後續將以無目錄索引模式繼續執行", file=sys.stderr)
+    existing_toc = None
+    if not args.force_toc:
+        if args.toc and Path(args.toc).exists():
+            existing_toc = Path(args.toc).resolve()
+        elif (input_dir / "toc.json").exists():
+            existing_toc = (input_dir / "toc.json").resolve()
+        elif toc_json_path.exists():
+            existing_toc = toc_json_path.resolve()
+
+    if existing_toc:
+        print(f"[+] 發現現有目錄結構索引: {existing_toc} (跳過 AI 抽取步驟)")
+        if existing_toc != toc_json_path:
+            shutil.copy2(existing_toc, toc_json_path)
+            print(f"    已複製至成果目錄: {toc_json_path}")
+        has_toc = True
     else:
-        print("[-] 未在輸入目錄中發現 Cover-*.jpg 目錄頁圖檔，跳過目錄抽取步驟")
+        # 優先從轉正後的目錄中尋找 Cover-*.jpg 圖檔
+        cover_images = find_cover_images(preprocessed_dir)
+        if not cover_images:
+            # 若轉正目錄無 cover，嘗試在原始目錄尋找
+            cover_images = find_cover_images(input_dir)
+
+        if cover_images:
+            print(f"[*] 發現 {len(cover_images)} 個目錄頁圖檔：{[p.name for p in cover_images]}")
+            step2_cmd = [
+                sys.executable, str(script_dir / "extract_toc.py"),
+                "--input", *[str(p) for p in cover_images],
+                "--output", str(toc_json_path),
+                "--book-title", book_title,
+            ]
+            print(f"[*] 執行指令: {' '.join(step2_cmd)}")
+            try:
+                subprocess.run(step2_cmd, check=True)
+                has_toc = toc_json_path.exists()
+                if has_toc:
+                    print(f"[+] 成功生成目錄結構索引 JSON: {toc_json_path}")
+            except subprocess.CalledProcessError as e:
+                print(f"[-] 警告：目錄結構抽取過程異常 ({e})，後續將以無目錄索引模式繼續執行", file=sys.stderr)
+        else:
+            print("[-] 未在輸入目錄中發現 Cover-*.jpg 目錄頁圖檔，跳過目錄抽取步驟")
 
     # -------------------------------------------------------------------------
     # [步驟 3/4] 語意 HTML 與 EPUB 生成 (pipeline.py)

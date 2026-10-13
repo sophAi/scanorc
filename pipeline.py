@@ -23,6 +23,8 @@ from PIL import Image
 from doclayout_yolo import YOLOv10
 from transformers import AutoProcessor, GlmOcrForConditionalGeneration
 
+from config_utils import attach_preference_and_template_support
+
 try:
     from recompress_images import recompress_directory
 except ImportError:
@@ -1019,7 +1021,7 @@ def main():
         dest="skip_ocr",
         help="不作 OCR 的檔案清單 (可指定檔名、頁碼或包含清單的純文字檔路徑，直接以原始圖檔嵌入 HTML/EPUB)"
     )
-    args = parser.parse_args()
+    args = attach_preference_and_template_support(parser, "pipeline")
 
     os.makedirs(args.output, exist_ok=True)
 
