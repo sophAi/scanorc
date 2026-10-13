@@ -97,7 +97,7 @@ flowchart TD
 
 ```bash
 # 複製專案
-git clone https://github.com/your-username/scanorc.git
+git clone https://github.com/sophAi/scanorc.git
 cd scanorc
 
 # 建立並啟用虛擬環境
@@ -136,16 +136,20 @@ python download_models.py
 python app_gui.py
 ```
 
-* **左側檔案清單**：支援一鍵匯入目錄或圖檔，勾選標記 `[TOC 目錄頁]`、`[略過 OCR]` 與 `[Patch 修復目標]`，自動連動到各步驟參數。
+* **智慧檔案清單管理**：
+  * **匯入與篩選**：支援一鍵匯入整目錄或個別圖檔，依自然檔名順序排列並支援關鍵字即時過濾。
+  * **右鍵捷徑選單**：支援 `🗑️ 從清單移除選取的檔案 (Delete / Backspace)`、`📑 標記為目錄頁 (TOC)`、`🚫 標記為略過 OCR`、`🩹 標記為 Patch 修復頁` 與 `📂 開啟所在資料夾`。
+  * **雙向選擇與參數傳遞**：在左側表格選取單張或多張圖檔時，自動將選取路徑即時填入**步驟 1 (`--input`)**；勾選「略過 OCR」時同步傳入**步驟 1 (`--skip-orc`)**、**總控**與**步驟 3**；歸檔目錄則同步至**步驟 4 (`--organize-pages` 與 `--input`)**，亦可隨時點擊各步驟旁的「🔄 同步」按鈕手動同步。
 * **分頁工作區**：
   * **🚀 一鍵端到端總控**：自動執行轉正 $\rightarrow$ 目錄抽取 $\rightarrow$ AI 辨識 $\rightarrow$ 章節歸檔全流程。
-  * **📐 步驟 1**：幾何轉正與裁切設定。
-  * **📑 步驟 2**：目錄抽取（內建 JSON 檢視與即時編輯儲存）。
-  * **🤖 步驟 3**：AI 版面與 EPUB 生成（支援即時開啟成果）。
-  * **📁 步驟 4**：章節目錄歸檔（移動或複製）。
+  * **📐 步驟 1**：幾何轉正與裁切設定（支援多檔/多目錄輸入與 `--skip-orc` 略過處理設定）。
+  * **📑 步驟 2**：目錄抽取（內建 JSON 樹狀檢視與即時編輯儲存）。
+  * **🤖 步驟 3**：AI 版面與 EPUB 生成（支援即時開啟成果 HTML/EPUB）。
+  * **📁 步驟 4**：章節目錄歸檔（支援圖檔移動或複製）。
   * **🩹 步驟 5**：頁面微創替換（支援 `--list` 狀態檢視與一鍵 `--revert` 還原）。
-* **即時 CLI 指令預覽**：調整任何參數時，介面即時產生對應之終端機指令並支援一鍵複製。
-* **即時終端輸出**：非同步串流顯示日誌，支援進度條與隨時中斷任務。
+* **即時 CLI 指令預覽**：調整任何參數時，介面即時產生對應之終端機指令並支援一鍵複製到剪貼簿。
+* **非同步日誌與進程控制**：即時串流顯示子進程日誌（自動去除終端色彩跳脫碼），支援進度條提示與安全強制中斷。
+* **環境相容性自動引導**：針對 Conda 舊版動態庫與 Linux Mint 22 等環境，內建自適應 bootstrap，自動配置 `QT_PLUGIN_PATH` 與 `LD_PRELOAD`，開箱即用徹底杜絕 Qt 插件衝突與段錯誤（Segmentation fault）。
 
 ---
 
@@ -218,7 +222,7 @@ python patch_pages.py --revert
 
 | 參數 | 簡寫 | 預設值 | 說明 |
 | :--- | :---: | :---: | :--- |
-| `--input` | `-i` | `samples` | 輸入來源路徑（單張圖檔或包含掃描檔的目錄，支援遞迴子目錄） |
+| `--input` | `-i` | `samples` | 輸入來源路徑（支援單個/多個圖檔路徑、萬用字元或目錄，自動分組並遞迴掃描） |
 | `--output` | `-o` | `preprocessed_samples` | 輸出目錄（自動鏡像建立相同的子目錄結構） |
 | `--format` | `-f` | `jpg` | 最終圖檔格式，可選：`jpg`、`png`、`tif` |
 | `--dpi` | - | `None` | 輸出解析度 DPI（**預設 None 不縮放，保持 1:1 原生像素**；指定時才執行重新取樣） |
@@ -227,6 +231,7 @@ python patch_pages.py --revert
 | `--despeckle` | - | `normal` | 去雜點強度：`normal`、`cautious`、`aggressive`、`off` |
 | `--quality` | - | `95` | JPG 輸出壓縮品質 (1~100) |
 | `--batch-size` | - | `0` | 單一目錄分批大小 (預設 0 表示整章節一次性處理以維持版心尺寸統一) |
+| `--skip-orc` | `--skip-ocr`, `--no-ocr` | `[]` | 略過 ScanTailor 幾何轉正與裁切處理的檔案清單（可指定檔名、頁碼、路徑或 .txt 清單，直接將原始圖檔導出至輸出目錄） |
 
 ---
 
@@ -256,7 +261,7 @@ python patch_pages.py --revert
 | `--epub` | - | `False` | 是否在生成 HTML 後自動調用 Pandoc 編譯 MathML EPUB |
 | `--batch-size` | - | `2` | 單頁內 OCR 區塊批次大小（建議：4GB 顯卡設 2；16GB 顯卡可設 4~8） |
 | `--workers` | - | `1` | 並行處理 Worker 進程數（建議：4GB 顯卡設 1；16GB 顯卡設 3~4） |
-| `--skip-ocr` | `--no-ocr` | `[]` | 不作 OCR 的檔案清單（支援檔名、頁碼或 txt 清單，直接以原始圖檔嵌入 HTML/EPUB） |
+| `--skip-ocr` | `--skip-orc`, `--no-ocr` | `[]` | 不作 OCR 的檔案清單（支援檔名、頁碼或 txt 清單，直接以原始圖檔嵌入 HTML/EPUB） |
 
 ---
 
@@ -272,7 +277,7 @@ python patch_pages.py --revert
 | `--color-mode` | - | `color_grayscale` | 轉正色彩模式：`color_grayscale`、`mixed`、`black_and_white` |
 | `--workers` | - | `1` | 多進程並行 Worker 數（建議：16GB 顯卡設 3~4） |
 | `--batch-size` | - | `2` | 單頁內 OCR 區塊批次大小（建議：16GB 顯卡設 4） |
-| `--skip-ocr` | `--no-ocr` | `[]` | 不作 OCR 的檔案清單（直接以全頁原圖嵌入） |
+| `--skip-ocr` | `--skip-orc`, `--no-ocr` | `[]` | 不作 OCR / 轉正處理的檔案清單（自動於步驟 1 傳入 `--skip-orc`，於步驟 3 傳入 `--skip-ocr`） |
 | `--epub` | - | `True` | 是否自動編譯 MathML EPUB3 |
 | `--copy` | - | `False` | 章節歸檔時改為複製而非移動圖檔 |
 | `--organize-target` | - | `preprocessed` | 建立章節目錄並歸檔之目標：`preprocessed` 或 `input` |
