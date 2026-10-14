@@ -15,6 +15,7 @@ import sys
 import re
 import time
 import shutil
+import fnmatch
 import argparse
 import subprocess
 from pathlib import Path
@@ -134,6 +135,7 @@ def parse_skip_ocr_targets(skip_args: List[str]) -> set:
     """
     解析不作 ScanTailor 處理 / 略過 OCR 的頁面目標清單：
     支援檔名 (Page-050.jpg, page-050)、純頁碼 (50)、純文字清單檔案 (skip.txt)
+    以及萬用字元樣式 (wildcards, 例如 Cover-*.jpg, Content-*.jpg, Page-0[1-5]*)
     傳回標準化之小寫字串集合
     """
     targets = set()
@@ -149,26 +151,32 @@ def parse_skip_ocr_targets(skip_args: List[str]) -> set:
                     for line in f:
                         line = line.strip()
                         if line and not line.startswith("#"):
-                            targets.add(line.lower())
-                            targets.add(Path(line).stem.lower())
-                            nums = re.findall(r"\d+", line)
-                            if nums:
-                                targets.add(nums[-1])
-                                targets.add(str(int(nums[-1])))
-                                targets.add(f"page-{int(nums[-1]):03d}.jpg".lower())
-                                targets.add(f"page-{int(nums[-1]):03d}".lower())
+                            line_p = Path(line)
+                            line_lower = line.lower()
+                            targets.add(line_lower)
+                            targets.add(line_p.name.lower())
+                            targets.add(line_p.stem.lower())
+                            if not any(c in line for c in ("*", "?", "[")):
+                                nums = re.findall(r"\d+", line)
+                                if nums:
+                                    targets.add(nums[-1])
+                                    targets.add(str(int(nums[-1])))
+                                    targets.add(f"page-{int(nums[-1]):03d}.jpg".lower())
+                                    targets.add(f"page-{int(nums[-1]):03d}".lower())
             except Exception as e:
                 print(f"[-] 讀取略過清單檔案失敗 '{item_str}': {e}", file=sys.stderr)
             continue
 
         targets.add(item_str.lower())
-        targets.add(Path(item_str).stem.lower())
-        nums = re.findall(r"\d+", item_str)
-        if nums:
-            targets.add(nums[-1])
-            targets.add(str(int(nums[-1])))
-            targets.add(f"page-{int(nums[-1]):03d}.jpg".lower())
-            targets.add(f"page-{int(nums[-1]):03d}".lower())
+        targets.add(p.name.lower())
+        targets.add(p.stem.lower())
+        if not any(c in item_str for c in ("*", "?", "[")):
+            nums = re.findall(r"\d+", item_str)
+            if nums:
+                targets.add(nums[-1])
+                targets.add(str(int(nums[-1])))
+                targets.add(f"page-{int(nums[-1]):03d}.jpg".lower())
+                targets.add(f"page-{int(nums[-1]):03d}".lower())
 
     return targets
 
@@ -176,17 +184,28 @@ def parse_skip_ocr_targets(skip_args: List[str]) -> set:
 def should_skip_ocr(img_path: Path, skip_targets: set) -> bool:
     """
     判斷特定圖檔是否應略過 ScanTailor 處理：
-    比對完整檔名、stem 或結尾數字頁碼
+    比對完整檔名、stem、結尾數字頁碼或萬用字元樣式 (wildcards, 如 Cover-*.jpg, Content-*)
     """
     if not skip_targets:
         return False
     name_lower = img_path.name.lower()
     stem_lower = img_path.stem.lower()
+
+    # 1. 精確比對檔名或 stem
     if name_lower in skip_targets or stem_lower in skip_targets:
         return True
+
+    # 2. 比對結尾數字頁碼
     nums = re.findall(r"\d+", stem_lower)
     if nums and (nums[-1] in skip_targets or str(int(nums[-1])) in skip_targets):
         return True
+
+    # 3. 萬用字元樣式比對 (支援 * 與 ? 等 glob pattern)
+    for target in skip_targets:
+        if any(c in target for c in ("*", "?", "[")):
+            if fnmatch.fnmatch(name_lower, target) or fnmatch.fnmatch(stem_lower, target):
+                return True
+
     return False
 
 
@@ -416,7 +435,7 @@ def main():
         nargs="*",
         default=[],
         dest="skip_ocr",
-        help="略過 ScanTailor 幾何轉正與裁切處理的檔案清單 (可指定檔名、頁碼、路徑或 .txt 清單，直接將原始圖檔導出至輸出目錄)"
+        help="略過 ScanTailor 幾何轉正與裁切處理的檔案清單 (支援萬用字元如 Cover-*.jpg、Content-*、檔名、頁碼或 txt 清單，直接將原始圖檔導出至輸出目錄)"
     )
     args = attach_preference_and_template_support(parser, "preprocess_scantailor")
 

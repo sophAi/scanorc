@@ -206,8 +206,8 @@ python app_gui.py
 # 一鍵全流程執行 (自動完成全套處理，生成 HTML 與 EPUB，並將圖檔分章歸檔)
 python process_book.py --input samples --output output --workers 4
 
-# 若有部分純圖片頁或難以辨識的頁面，可指定跳過 OCR 直接嵌入原圖：
-python process_book.py --input samples --output output --skip-ocr Page-050.jpg Page-060.jpg
+# 若有部分純圖片頁或難以辨識的頁面，可指定跳過 OCR 直接嵌入原圖（支援萬用字元如 'Cover-*.jpg' 'Content-*.jpg' 或單頁檔名）：
+python process_book.py --input samples --output output --skip-ocr "Cover-*.jpg" "Content-*.jpg" Page-050.jpg
 ```
 
 ---
@@ -368,7 +368,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--despeckle` | - | `normal` | 去雜點強度：`normal`、`cautious`、`aggressive`、`off` |
 | `--quality` | - | `85` | JPG 輸出壓縮品質 (1~100，預設 85) |
 | `--batch-size` | - | `0` | 單一目錄分批大小 (預設 0 表示整章節一次性處理以維持版心尺寸統一) |
-| `--skip-orc` | `--skip-ocr`, `--no-ocr` | `[]` | 略過 ScanTailor 幾何轉正與裁切處理的檔案清單（可指定檔名、頁碼、路徑或 .txt 清單，直接將原始圖檔導出至輸出目錄） |
+| `--skip-orc` | `--skip-ocr`, `--no-ocr` | `[]` | 略過 ScanTailor 幾何轉正與裁切處理的檔案清單（支援萬用字元如 `Cover-*.jpg`、`Content-*`、檔名、頁碼或 txt 清單，直接將原始圖檔導出至輸出目錄） |
 
 ---
 
@@ -404,7 +404,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--epub` | - | `False` | 是否在生成 HTML 後自動調用 Pandoc 編譯 MathML EPUB |
 | `--batch-size` | - | `2` | 單頁內 OCR 區塊批次大小（建議：4GB 顯卡設 2；16GB 顯卡可設 4~8） |
 | `--workers` | - | `1` | 並行處理 Worker 進程數（建議：4GB 顯卡設 1；16GB 顯卡設 3~4） |
-| `--skip-ocr` | `--skip-orc`, `--no-ocr` | `[]` | 不作 OCR 的檔案清單（支援檔名、頁碼或 txt 清單，直接以原始圖檔嵌入 HTML/EPUB） |
+| `--skip-ocr` | `--skip-orc`, `--no-ocr` | `[]` | 不作 OCR 的檔案清單（支援萬用字元如 `Cover-*.jpg`、`Content-*`、檔名、頁碼或 txt 清單，直接以原始圖檔嵌入 HTML/EPUB） |
 | `--models-dir` | - | `None` | AI 模型權重母目錄（自動解析子目錄內 YOLO 權重與 GLM 模型；亦可透過 `SCANORC_MODELS_DIR` 環境變數指定） |
 | `--yolo-weights` | - | `None` | 明確指定 DocLayout-YOLO 權重檔案 (.pt) 路徑（優先級高於 `--models-dir`） |
 | `--glm-model-dir` | - | `None` | 明確指定 GLM-OCR 模型目錄路徑（優先級高於 `--models-dir`） |
@@ -431,7 +431,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--color-mode` | - | `color_grayscale` | 轉正色彩模式：`color_grayscale`、`mixed`、`black_and_white` |
 | `--workers` | - | `1` | 多進程並行 Worker 數（預設 1；16GB 顯卡可設 3~4） |
 | `--batch-size` | - | `2` | 單頁內 OCR 區塊批次大小（預設 2；16GB 顯卡可設 4） |
-| `--skip-ocr` | `--skip-orc`, `--no-ocr` | `[]` | 不作 OCR / 轉正處理的檔案清單（自動於步驟 1 傳入 `--skip-orc`，於步驟 3 傳入 `--skip-ocr`） |
+| `--skip-ocr` | `--skip-orc`, `--no-ocr` | `[]` | 不作 OCR / 轉正處理的檔案清單（支援萬用字元如 `Cover-*.jpg`、`Content-*`、檔名、頁碼或 txt 清單；自動於步驟 1 傳入 `--skip-orc`，於步驟 3 傳入 `--skip-ocr`） |
 | `--epub` | `--no-epub` | `True` | 是否自動編譯 MathML EPUB3（預設: True） |
 | `--organize-pages` | `--no-organize-pages` | `True` | 是否自動執行章節目錄結構建立與 Page-xxx.jpg 歸檔（**預設啟用**） |
 | `--copy` | - | `False` | 章節歸檔時改為複製而非移動圖檔（預設: 移動圖檔） |

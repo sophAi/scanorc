@@ -147,7 +147,7 @@ def main():
         nargs="*",
         default=[],
         dest="skip_ocr",
-        help="略過 OCR / ScanTailor 處理的檔案清單 (可指定檔名、頁碼或包含清單的純文字檔路徑，直接以原始圖檔導出並嵌入 HTML/EPUB)"
+        help="略過 OCR / ScanTailor 處理的檔案清單 (支援萬用字元如 Cover-*.jpg、Content-*、檔名、頁碼或 txt 清單，直接以原始圖檔導出並嵌入 HTML/EPUB)"
     )
     parser.add_argument(
         "--epub",
