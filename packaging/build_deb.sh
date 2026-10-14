@@ -66,6 +66,8 @@ cp -a "$SCRIPT_DIR/wrappers/scanorc" "$STAGING_DIR/usr/bin/"
 cp -a "$SCRIPT_DIR/wrappers/scanorc-gui" "$STAGING_DIR/usr/bin/"
 cp -a "$SCRIPT_DIR/wrappers/scanorc-models" "$STAGING_DIR/usr/bin/"
 cp -a "$SCRIPT_DIR/wrappers/scanorc-batch" "$STAGING_DIR/usr/bin/"
+cp -a "$SCRIPT_DIR/wrappers/scanorc-toc" "$STAGING_DIR/usr/bin/"
+cp -a "$SCRIPT_DIR/wrappers/scanorc-pipeline" "$STAGING_DIR/usr/bin/"
 cp -a "$SCRIPT_DIR/wrappers/scanorc-setup" "$STAGING_DIR/usr/bin/"
 
 # 3. 複製桌面整合檔案 (.desktop 與圖示)

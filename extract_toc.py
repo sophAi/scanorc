@@ -20,7 +20,14 @@ from typing import List, Dict, Any, Optional
 
 import torch
 from PIL import Image
-from transformers import AutoProcessor, GlmOcrForConditionalGeneration
+from transformers import AutoProcessor
+try:
+    from transformers import GlmOcrForConditionalGeneration
+except ImportError:
+    try:
+        from transformers import AutoModelForCausalLM as GlmOcrForConditionalGeneration
+    except ImportError:
+        GlmOcrForConditionalGeneration = None
 
 from config_utils import attach_preference_and_template_support
 
@@ -65,6 +72,50 @@ def collect_toc_images(input_args: List[str]) -> List[Path]:
     unique_images = list({img.resolve(): img for img in collected}.values())
     unique_images.sort(key=natural_sort_key)
     return unique_images
+
+
+def find_default_content_images(search_dirs: Optional[List[Path]] = None) -> List[Path]:
+    """
+    預設自動搜尋檔名為 Content-xx.jpg 或 content-xx.jpg 的檔案群，並依照自然編號排序。
+    搜尋範圍包含當前目錄、preprocessed、preprocessed_samples、samples、output/preprocessed 等。
+    """
+    if not search_dirs:
+        search_dirs = [Path.cwd()]
+        for d_name in ["preprocessed", "preprocessed_samples", "samples", "output/preprocessed", "output"]:
+            d = Path.cwd() / d_name
+            if d.exists() and d.is_dir():
+                search_dirs.append(d)
+
+    content_pattern = re.compile(r"^[Cc]ontent[-_]?\d+\.(jpg|jpeg|png|webp|tif|tiff)$", re.IGNORECASE)
+
+    # 1. 優先在該目錄本層直接尋找 (避免混合多個子目錄)
+    for d in search_dirs:
+        if not d.exists() or not d.is_dir():
+            continue
+        direct_matches = [
+            f for f in d.iterdir()
+            if f.is_file() and content_pattern.match(f.name)
+        ]
+        if direct_matches:
+            direct_matches.sort(key=natural_sort_key)
+            return direct_matches
+
+    # 2. 若當前層無匹配，搜尋子目錄 (排除隱藏與建置目錄)
+    for d in search_dirs:
+        if not d.exists() or not d.is_dir():
+            continue
+        for root, dirs, files in os.walk(d):
+            dirs[:] = [dn for dn in dirs if not dn.startswith(".") and dn not in ("deb_dist", "node_modules", "dist", "build", "__pycache__")]
+            sub_matches = [
+                Path(root) / f for f in files
+                if content_pattern.match(f)
+            ]
+            if sub_matches:
+                sub_matches.sort(key=natural_sort_key)
+                return sub_matches
+
+    return []
+
 
 
 def extract_toc_from_image(
@@ -277,9 +328,9 @@ def main():
     )
     parser.add_argument(
         "--input", "-i",
-        nargs="+",
-        default=["samples/Cover-06.jpg"],
-        help="輸入目錄頁圖片路徑 (支援傳入多個檔案或目錄，自動按檔名順序讀取；預設: samples/Cover-06.jpg)"
+        nargs="*",
+        default=None,
+        help="輸入目錄頁圖片路徑 (選填；預設自動搜尋 Content-xx.jpg 或 content-xx.jpg 檔案群並依編號排序，指定此參數則覆蓋預設搜尋)"
     )
     parser.add_argument(
         "--output", "-o",
@@ -316,7 +367,19 @@ def main():
     )
     args = attach_preference_and_template_support(parser, "extract_toc")
 
-    input_list = args.input if isinstance(args.input, list) else [args.input]
+    # 判定輸入來源：若使用者未傳入 -i / --input，預設自動搜尋 Content-xx.jpg 或 content-xx.jpg
+    if args.input:
+        input_list = args.input if isinstance(args.input, list) else [args.input]
+        is_auto_search = False
+    else:
+        auto_found = find_default_content_images()
+        if not auto_found:
+            print("[-] 錯誤：未在目錄中找到任何預設目錄圖檔 (Content-xx.jpg 或 content-xx.jpg)！", file=sys.stderr)
+            print("    請確認目錄是否有 Content-01.jpg 等檔案，或透過 -i / --input 明確指定圖檔路徑。", file=sys.stderr)
+            sys.exit(1)
+        input_list = [str(p) for p in auto_found]
+        is_auto_search = True
+
     json_candidates = [Path(a).resolve() for a in input_list if Path(a).is_file() and Path(a).suffix.lower() == ".json"]
     if json_candidates:
         json_file = json_candidates[0]
@@ -339,7 +402,7 @@ def main():
     else:
         sorted_images = collect_toc_images(input_list)
         if not sorted_images:
-            print(f"[-] 錯誤：未在指定的輸入路徑找到任何有效的圖片檔案！{args.input}", file=sys.stderr)
+            print(f"[-] 錯誤：未在指定的輸入路徑找到任何有效的圖片檔案！{input_list}", file=sys.stderr)
             sys.exit(1)
 
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -348,7 +411,10 @@ def main():
         print("==================================================")
         print(" ScanORC 書本目錄結構化抽取工具 (方案 A: GLM-OCR)")
         print("==================================================")
-        print(f"[*] 發現 {len(sorted_images)} 個目錄圖檔，依檔名順序排列：")
+        if is_auto_search:
+            print(f"[*] 預設自動搜尋並鎖定 {len(sorted_images)} 個目錄頁 (Content-xx/content-xx)，已依編號自然排序：")
+        else:
+            print(f"[*] 自訂輸入覆蓋：發現 {len(sorted_images)} 個目錄圖檔，依檔名順序排列：")
         for idx, p in enumerate(sorted_images, 1):
             print(f"    ({idx}/{len(sorted_images)}) {p}")
         print(f"[*] 輸出位置: {args.output}")
@@ -415,7 +481,16 @@ def main():
         validate_toc(all_entries)
 
         # 封裝標準 JSON
-        book_title = args.book_title or sorted_images[0].parent.name or "Unknown"
+        book_title = args.book_title
+        if not book_title and sorted_images:
+            p_dir = sorted_images[0].parent
+            if p_dir.name.lower() in ("preprocessed", "preprocessed_samples", "output") and p_dir.parent.name:
+                book_title = p_dir.parent.name
+            else:
+                book_title = p_dir.name or "Unknown"
+        if not book_title:
+            book_title = "Unknown"
+
         result_data = {
             "book_title": book_title,
             "source_images": [str(p) for p in sorted_images],

@@ -954,7 +954,7 @@ class MainWindow(QMainWindow):
 
         # 封面圖檔設定
         self.oc_cover = QLineEdit("")
-        self.oc_cover.setPlaceholderText("留空則自動偵測 Cover-*.jpg 或 cover.*")
+        self.oc_cover.setPlaceholderText("留空則預設自動使用 Cover-01.jpg (亦相容 cover.*)")
         self.oc_cover.textChanged.connect(self.update_command_preview)
         btn_cov_browse = QPushButton("瀏覽圖檔...")
         btn_cov_browse.clicked.connect(lambda: self.browse_image_file(self.oc_cover))
@@ -1169,8 +1169,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.create_pref_toolbar(2))
         form = QFormLayout()
 
-        self.s2_input = QLineEdit("preprocessed_samples/Cover-06.jpg")
-        self.s2_input.setPlaceholderText("輸入目錄圖檔，可指定多個檔案 (如 Cover-06.jpg Cover-07.jpg)")
+        self.s2_input = QLineEdit("")
+        self.s2_input.setPlaceholderText("留空則自動搜尋 Content-xx.jpg，亦可自訂輸入")
         self.s2_input.textChanged.connect(self.update_command_preview)
         btn_in = QPushButton("選取圖檔...")
         btn_in.clicked.connect(self.browse_toc_input_files)
@@ -1288,7 +1288,7 @@ class MainWindow(QMainWindow):
 
         # 封面圖檔設定
         self.s3_cover = QLineEdit("")
-        self.s3_cover.setPlaceholderText("留空則自動偵測 Cover-*.jpg 或 cover.*")
+        self.s3_cover.setPlaceholderText("留空則預設自動使用 Cover-01.jpg (亦相容 cover.*)")
         self.s3_cover.textChanged.connect(self.update_command_preview)
         btn_s3_cov_browse = QPushButton("瀏覽圖檔...")
         btn_s3_cov_browse.clicked.connect(lambda: self.browse_image_file(self.s3_cover))
@@ -1420,8 +1420,8 @@ class MainWindow(QMainWindow):
         h_t.addWidget(btn_sync_t)
         form.addRow("待歸檔圖檔目錄 (--organize-pages):", h_t)
 
-        self.s4_input = QLineEdit("preprocessed_samples/Cover-06.jpg")
-        self.s4_input.setPlaceholderText("目錄圖檔 (Cover-xx.jpg) 或 toc.json")
+        self.s4_input = QLineEdit("")
+        self.s4_input.setPlaceholderText("留空自動搜尋 Content-xx.jpg 或指定 toc.json")
         self.s4_input.textChanged.connect(self.update_command_preview)
         btn_sync_toc = QPushButton("🔄 同步清單 TOC")
         btn_sync_toc.setToolTip("自動同步左側檔案清單中已勾選為『TOC』的目錄圖檔")
@@ -2319,7 +2319,7 @@ class MainWindow(QMainWindow):
         elif tab_idx == 2:
             in_args = safe_split_args(self.s2_input.text())
             return {
-                "input": in_args if in_args else ["preprocessed_samples/Cover-06.jpg"],
+                "input": in_args if in_args else [],
                 "output": self.s2_output.text().strip() or "toc.json",
                 "models_dir": self.s2_models_dir.text().strip() or None,
                 "model_dir": "models/glm-ocr",
@@ -2356,7 +2356,7 @@ class MainWindow(QMainWindow):
         elif tab_idx == 4:
             in_args = safe_split_args(self.s4_input.text())
             return {
-                "input": in_args if in_args else ["preprocessed_samples/Cover-06.jpg"],
+                "input": in_args if in_args else [],
                 "output": "toc.json",
                 "model_dir": "models/glm-ocr",
                 "book_title": "",

@@ -16,12 +16,23 @@ import shutil
 import argparse
 import subprocess
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Union
 
 import torch
 from PIL import Image
-from doclayout_yolo import YOLOv10
-from transformers import AutoProcessor, GlmOcrForConditionalGeneration
+try:
+    from doclayout_yolo import YOLOv10
+except ImportError:
+    YOLOv10 = None
+
+from transformers import AutoProcessor
+try:
+    from transformers import GlmOcrForConditionalGeneration
+except ImportError:
+    try:
+        from transformers import AutoModelForCausalLM as GlmOcrForConditionalGeneration
+    except ImportError:
+        GlmOcrForConditionalGeneration = None
 
 from config_utils import attach_preference_and_template_support
 
@@ -90,7 +101,7 @@ def classify_book_image(p: Path) -> int:
         return 3
 
     # 封面/目錄判斷
-    if re.search(r"(^cover|^封面|^front[-_]?cover)", stem):
+    if re.search(r"(^cover|^封面|^front[-_]?cover|^content)", stem):
         return 0
 
     # 正文頁碼判斷 (Page-xxx, p-xxx, p0xx, 純數字檔名等)
@@ -98,6 +109,71 @@ def classify_book_image(p: Path) -> int:
         return 1
 
     return 2
+
+
+def find_default_cover_image(search_dirs: List[Path]) -> Optional[Path]:
+    """
+    自動搜尋預設封面圖檔 Cover-01.jpg (相容 cover-01.jpg, Cover-01.png, Cover-01.webp 等)
+    若無 Cover-01.jpg 則嘗試尋找通用 cover.* 圖檔
+    """
+    cover01_pattern = re.compile(r"^[Cc]over[-_]?0*1\.(jpg|jpeg|png|webp|tif|tiff)$", re.IGNORECASE)
+    fallback_pattern = re.compile(r"^[Cc]over\.(jpg|jpeg|png|webp|tif|tiff)$", re.IGNORECASE)
+
+    # 第一階段：嚴格優先比對 Cover-01.jpg
+    for d in search_dirs:
+        if not d.exists():
+            continue
+        if d.is_file():
+            if cover01_pattern.match(d.name):
+                return d.resolve()
+            continue
+        # 目錄本層優先
+        try:
+            for f in sorted(d.iterdir()):
+                if f.is_file() and cover01_pattern.match(f.name):
+                    return f.resolve()
+        except OSError:
+            pass
+        # 子目錄遞迴
+        for root, _, files in os.walk(d):
+            for f in sorted(files):
+                if cover01_pattern.match(f):
+                    return (Path(root) / f).resolve()
+
+    # 第二階段：退而求其次比對 cover.jpg
+    for d in search_dirs:
+        if not d.exists():
+            continue
+        if d.is_file():
+            if fallback_pattern.match(d.name):
+                return d.resolve()
+            continue
+        try:
+            for f in sorted(d.iterdir()):
+                if f.is_file() and fallback_pattern.match(f.name):
+                    return f.resolve()
+        except OSError:
+            pass
+        for root, _, files in os.walk(d):
+            for f in sorted(files):
+                if fallback_pattern.match(f):
+                    return (Path(root) / f).resolve()
+
+    return None
+
+
+def derive_title_from_cover(cover_path: Path) -> str:
+    """
+    以 Cover-01.jpg 所在的目錄名稱作為 title。
+    若目錄為 preprocessed、preprocessed_samples 等中間處理資料夾，向上取上一層真實書籍目錄名稱。
+    """
+    cover_dir = cover_path.resolve().parent
+    if cover_dir.name.lower() in ("preprocessed", "preprocessed_samples") and cover_dir.parent.name:
+        if cover_dir.parent.name.lower() != "output":
+            return cover_dir.parent.name
+        elif cover_dir.parent.parent.name:
+            return cover_dir.parent.parent.name
+    return cover_dir.name or "數位化掃描書本"
 
 
 def natural_sort_key(p: Path) -> List[Any]:
@@ -126,18 +202,28 @@ def book_image_sort_key(p: Path, cover_first: bool = True) -> Tuple[int, List[An
 def collect_book_images(
     inputs: List[str],
     recursive: bool = True,
-    cover_first: bool = True
+    cover_first: bool = True,
+    exclude_dirs: Optional[List[Path]] = None
 ) -> List[Path]:
     """
     收集並編排所有輸入圖檔：
     1. 支援單一檔案、多個檔案、目錄路徑或萬用字元
     2. 支援遞迴 (recursive) 讀取所有子目錄
     3. 依據 Cover-xx.jpg 與 Page-xxx.jpg 規則排序 (預設 Cover 在前)
+    4. 自動排除輸出目錄與建置暫存目錄
     """
     import glob
 
     collected: List[Path] = []
     seen = set()
+    norm_exclude = [ed.resolve() for ed in exclude_dirs] if exclude_dirs else []
+
+    def is_excluded(path: Path) -> bool:
+        r_p = path.resolve()
+        for ed in norm_exclude:
+            if r_p == ed or ed in r_p.parents:
+                return True
+        return False
 
     for arg in inputs:
         # 萬用字元支援
@@ -145,12 +231,16 @@ def collect_book_images(
             matched = glob.glob(arg, recursive=recursive)
             for m in matched:
                 mp = Path(m).resolve()
+                if is_excluded(mp):
+                    continue
                 if mp.is_file() and mp.suffix.lower() in VALID_IMAGE_EXTS and str(mp) not in seen:
                     seen.add(str(mp))
                     collected.append(mp)
             continue
 
         p = Path(arg).resolve()
+        if is_excluded(p):
+            continue
         if p.is_file():
             if p.suffix.lower() in VALID_IMAGE_EXTS and str(p) not in seen:
                 seen.add(str(p))
@@ -159,24 +249,37 @@ def collect_book_images(
                 print(f"[-] 略過非支援之圖片檔案: {p.name}", file=sys.stderr)
         elif p.is_dir():
             if recursive:
-                for root, _, files in os.walk(p):
+                for root, dirs, files in os.walk(p):
+                    dirs[:] = [
+                        dn for dn in dirs
+                        if not dn.startswith(".")
+                        and dn not in ("images_opt_tmp", "deb_dist", "build", "dist", "__pycache__")
+                        and not is_excluded(Path(root) / dn)
+                    ]
+                    if is_excluded(Path(root)):
+                        continue
                     for f in files:
                         fp = Path(root) / f
+                        if is_excluded(fp):
+                            continue
                         if fp.suffix.lower() in VALID_IMAGE_EXTS and str(fp) not in seen:
                             seen.add(str(fp))
                             collected.append(fp)
             else:
                 for fp in p.iterdir():
+                    if is_excluded(fp):
+                        continue
                     if fp.is_file() and fp.suffix.lower() in VALID_IMAGE_EXTS and str(fp) not in seen:
                         seen.add(str(fp))
                         collected.append(fp)
         else:
-            # 嘗試檢查父目錄的 glob 匹配
             parent = p.parent
             pattern = p.name
-            if parent.exists():
+            if parent.exists() and not is_excluded(parent):
                 matches = list(parent.glob(pattern))
                 for m in matches:
+                    if is_excluded(m):
+                        continue
                     if m.is_file() and m.suffix.lower() in VALID_IMAGE_EXTS and str(m) not in seen:
                         seen.add(str(m))
                         collected.append(m)
@@ -288,27 +391,39 @@ class DocumentConverter:
         max_ocr_dim: int = 1024,
         batch_size: int = 2,
     ):
-        resolved_yolo, resolved_glm = resolve_model_paths(models_dir, yolo_weights, glm_model_dir)
+        self.resolved_yolo, self.resolved_glm = resolve_model_paths(models_dir, yolo_weights, glm_model_dir)
         self.device = device if torch.cuda.is_available() else "cpu"
         self.dtype = dtype
         self.max_ocr_dim = max_ocr_dim
         self.batch_size = max(1, batch_size)
+        self.yolo = None
+        self.glm = None
+        self.processor = None
 
-        print(f"[*] 載入 DocLayout-YOLO 模型 ({resolved_yolo}) ({self.device})...")
-        self.yolo = YOLOv10(resolved_yolo)
-
-        print(f"[*] 載入 GLM-OCR 0.9B 模型與處理器 ({resolved_glm}) ({self.device}, {dtype}, batch_size={self.batch_size})...")
-        self.processor = AutoProcessor.from_pretrained(resolved_glm, trust_remote_code=True)
-        self.glm = GlmOcrForConditionalGeneration.from_pretrained(
-            resolved_glm,
-            dtype=self.dtype,
-            device_map=self.device,
-            trust_remote_code=True
-        )
-        self.glm.eval()
-        print(f"[+] 所有模型就緒！目前 VRAM 佔用: {round(torch.cuda.memory_allocated() / (1024**2), 1)} MB")
+    def _ensure_models_loaded(self):
+        if self.yolo is not None and self.glm is not None:
+            return
+        if YOLOv10 is None:
+            raise RuntimeError("未安裝 doclayout_yolo 套件，請先執行 'scanorc-setup' 或 'pip install doclayout_yolo'！")
+        if GlmOcrForConditionalGeneration is None:
+            raise RuntimeError("未安裝支援 GLM-OCR 的 transformers 套件，請先執行 'scanorc-setup'！")
+        if self.yolo is None:
+            print(f"[*] 載入 DocLayout-YOLO 模型 ({self.resolved_yolo}) ({self.device})...")
+            self.yolo = YOLOv10(self.resolved_yolo)
+        if self.glm is None:
+            print(f"[*] 載入 GLM-OCR 0.9B 模型與處理器 ({self.resolved_glm}) ({self.device}, {self.dtype}, batch_size={self.batch_size})...")
+            self.processor = AutoProcessor.from_pretrained(self.resolved_glm, trust_remote_code=True)
+            self.glm = GlmOcrForConditionalGeneration.from_pretrained(
+                self.resolved_glm,
+                dtype=self.dtype,
+                device_map=self.device,
+                trust_remote_code=True
+            )
+            self.glm.eval()
+            print(f"[+] 所有模型就緒！目前 VRAM 佔用: {round(torch.cuda.memory_allocated() / (1024**2), 1)} MB")
 
     def run_layout_analysis(self, image_path: str, conf: float = 0.25) -> List[Dict[str, Any]]:
+        self._ensure_models_loaded()
         results = self.yolo.predict(image_path, imgsz=1024, conf=conf, device=self.device)
         boxes_info = []
 
@@ -378,6 +493,8 @@ class DocumentConverter:
         """
         if not crop_items:
             return []
+
+        self._ensure_models_loaded()
 
         task_prompts = {
             "text": "Text Recognition:",
@@ -634,11 +751,21 @@ class DocumentConverter:
         self,
         page_results: List[Dict[str, Any]],
         title: str = "Scanned Book",
-        toc_data: Optional[Dict[str, Any]] = None
+        toc_data: Optional[Dict[str, Any]] = None,
+        cover_image: Optional[Union[str, Path]] = None
     ) -> str:
         body_content = []
 
         available_page_files = [p["page_id"] for p in page_results]
+
+        # 插入封面區塊 (Cover)
+        cover_filename = Path(cover_image).name if cover_image else None
+        if cover_filename:
+            body_content.append('<section class="book-cover-page" id="book-cover">')
+            body_content.append('  <figure class="book-figure fullpage-figure cover-figure">')
+            body_content.append(f'    <img src="images/{cover_filename}" alt="封面: {title}" class="cover-image">')
+            body_content.append('  </figure>')
+            body_content.append('</section>\n<hr class="page-divider">\n')
 
         # 建立章節對應至起始頁面的映射 (EPUB outline 核心)
         page_chapter_map: Dict[str, List[Dict[str, Any]]] = {}
@@ -703,6 +830,9 @@ class DocumentConverter:
 
         for p_res in page_results:
             page_id = p_res["page_id"]
+            if cover_filename and Path(page_id).name.lower() == cover_filename.lower():
+                # 封面已於文檔開頭作為獨立封面展示，略過在內文中重複輸出
+                continue
             page_stem = p_res.get("page_stem", Path(page_id).stem)
 
             # 若此頁為章節起始頁，先插入 <h1> 章節標題 (Pandoc EPUB Outline 自動識別)
@@ -868,6 +998,24 @@ class DocumentConverter:
       font-size: 0.95em;
       white-space: nowrap;
     }}
+    .book-cover-page {{
+      margin: 0 auto 3em auto;
+      text-align: center;
+      page-break-after: always;
+      break-after: page;
+    }}
+    .cover-figure {{
+      margin: 0 auto;
+      max-width: 100%;
+    }}
+    .cover-image {{
+      max-height: 85vh;
+      max-width: 100%;
+      height: auto;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+      border-radius: 4px;
+      display: inline-block;
+    }}
     .book-figure {{
       margin: 2em auto;
       text-align: center;
@@ -1006,14 +1154,14 @@ def main():
         help="待處理圖檔目錄或圖片路徑 (支援單檔、多檔、目錄或萬用字元，預設: samples)"
     )
     parser.add_argument("--output", default="output", help="輸出目錄 (預設: output)")
-    parser.add_argument("--title", default="數位化掃描書本", help="書名 / 文檔標題")
+    parser.add_argument("--title", default="數位化掃描書本", help="書名 / 文檔標題 (預設自動以 Cover-01.jpg 所在目錄名稱命名)")
     parser.add_argument("--toc", default=None, help="目錄結構 JSON 檔案路徑 (例如 toc.json，將自動生成目錄索引並連結至各頁檔名)")
     parser.add_argument("--epub", action="store_true", help="是否自動生成 EPUB")
     parser.add_argument(
         "--cover", "--cover-image",
         default=None,
         dest="cover",
-        help="指定 EPUB 封面圖片檔案路徑 (若未指定將自動在待處理圖片中尋找 Cover-*.jpg)"
+        help="指定 EPUB/HTML 封面圖片檔案路徑 (若未指定將預設自動在待處理圖片中尋找 Cover-01.jpg)"
     )
     parser.add_argument(
         "--compress-images",
@@ -1102,16 +1250,60 @@ def main():
                 toc_data = json.load(f)
             total_ch = len(toc_data.get("toc", []))
             print(f"[*] 載入目錄索引檔案: {toc_file} (包含 {total_ch} 個章節索引)")
-            # 若使用者未特別自訂書名，自動套用 toc.json 中的書名
-            if args.title == "數位化掃描書本" and toc_data.get("book_title"):
-                args.title = toc_data["book_title"]
         except Exception as e:
             print(f"[-] 讀取目錄索引檔案失敗: {e}", file=sys.stderr)
+
+    # 封面圖檔自動解析與書名 (title) 自動推導：
+    # 預設以 Cover-01.jpg 作為 epub 與 html 的封面，Cover-01.jpg 所在的目錄名稱作為 title
+    cover_search_dirs: List[Path] = []
+    for s_arg in sample_inputs:
+        sp = Path(s_arg).resolve()
+        if sp.is_file():
+            cover_search_dirs.append(sp.parent)
+        elif sp.is_dir():
+            cover_search_dirs.append(sp)
+            if sp.parent != sp:
+                cover_search_dirs.append(sp.parent)
+    cover_search_dirs.append(Path.cwd())
+    if Path(args.output).exists():
+        cover_search_dirs.append(Path(args.output).resolve())
+
+    actual_cover: Optional[Path] = None
+    if args.cover:
+        cov_p = Path(args.cover).resolve()
+        if cov_p.exists():
+            actual_cover = cov_p
+        else:
+            print(f"[-] 警告：指定的封面圖檔不存在: {args.cover}", file=sys.stderr)
+
+    if not actual_cover:
+        actual_cover = find_default_cover_image(cover_search_dirs)
+
+    # 若未指定自訂書名（保持預設或空白），優先以 Cover-01.jpg 所在目錄名稱作為 title
+    if args.title in ("數位化掃描書本", "", None):
+        if actual_cover:
+            detected_title = derive_title_from_cover(actual_cover)
+            if detected_title:
+                args.title = detected_title
+                print(f"[*] 預設以 Cover-01.jpg 所在目錄自動推導書名: '{args.title}'")
+        elif toc_data and toc_data.get("book_title"):
+            args.title = toc_data["book_title"]
+            print(f"[*] 自動套用 toc.json 中的書名: '{args.title}'")
+
+    # 確保封面圖片複製至 output/images/ 目錄，供 HTML 與 EPUB 引用
+    if actual_cover and actual_cover.exists():
+        images_dir = Path(args.output) / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        dest_cover = images_dir / actual_cover.name
+        if not dest_cover.exists() or dest_cover.resolve() != actual_cover.resolve():
+            shutil.copy2(actual_cover, dest_cover)
+            print(f"[*] 複製封面圖檔至圖片目錄: {dest_cover}")
 
     image_files = collect_book_images(
         inputs=sample_inputs,
         recursive=args.recursive,
-        cover_first=args.cover_first
+        cover_first=args.cover_first,
+        exclude_dirs=[Path(args.output)]
     )
 
     if not image_files:
@@ -1119,6 +1311,9 @@ def main():
         sys.exit(1)
 
     skip_targets = parse_skip_ocr_targets(args.skip_ocr)
+    if actual_cover:
+        skip_targets.add(actual_cover.name.lower())
+        skip_targets.add(actual_cover.stem.lower())
     if skip_targets:
         print(f"[*] 設定不作 OCR 頁面清單 (共 {len(skip_targets)} 個目標比對標記)")
 
@@ -1183,7 +1378,12 @@ def main():
     html_out_path = os.path.join(args.output, "book.html")
     # 初始化一個臨時實例來 render HTML
     temp_conv = DocumentConverter.__new__(DocumentConverter)
-    full_html = temp_conv.render_html(all_page_results, title=args.title, toc_data=toc_data)
+    full_html = temp_conv.render_html(
+        all_page_results,
+        title=args.title,
+        toc_data=toc_data,
+        cover_image=actual_cover
+    )
     with open(html_out_path, "w", encoding="utf-8") as f:
         f.write(full_html)
     print(f"\n[+] 完整 HTML 檔案生成完畢 (含 TOC 目錄導覽索引與章節 Outline): {html_out_path}")
@@ -1217,18 +1417,7 @@ def main():
                     shutil.rmtree(tmp_opt_dir)
 
     if args.epub:
-        # 偵測或套用封面圖片
-        actual_cover = args.cover
-        if not actual_cover:
-            if cover_imgs:
-                actual_cover = str(cover_imgs[0])
-            else:
-                for cand in [Path(args.output) / "cover.jpg", Path(args.output) / "Cover.jpg"]:
-                    if cand.exists():
-                        actual_cover = str(cand)
-                        break
-
-        if actual_cover and os.path.exists(actual_cover):
+        if actual_cover and actual_cover.exists():
             print(f"[*] 套用 EPUB 封面圖檔: {actual_cover}")
 
         epub_out_path = os.path.join(args.output, "book.epub")
@@ -1236,7 +1425,7 @@ def main():
             html_out_path,
             epub_out_path,
             title=args.title,
-            cover_image=actual_cover,
+            cover_image=str(actual_cover) if actual_cover else None,
             split_level=1,
         )
 

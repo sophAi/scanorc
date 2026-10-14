@@ -27,6 +27,34 @@ def natural_sort_key(p: Path):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", p.name)]
 
 
+def find_content_images(directory: Path) -> List[Path]:
+    """
+    在目錄中搜尋所有目錄頁圖檔 (Content-xx.jpg 或 content-xx.jpg 等)
+    """
+    content_pattern = re.compile(r"^[Cc]ontent[-_]?\d+\.(jpg|jpeg|png|webp|tif|tiff)$", re.IGNORECASE)
+    contents = []
+    for root, _, files in os.walk(directory):
+        for f in files:
+            p = Path(root) / f
+            if p.suffix.lower() in VALID_IMAGE_EXTS and content_pattern.match(p.name):
+                contents.append(p)
+    contents.sort(key=natural_sort_key)
+    return contents
+
+
+def find_cover01_image(directory: Path) -> Optional[Path]:
+    """
+    在目錄中搜尋預設封面圖檔 Cover-01.jpg
+    """
+    cover01_pattern = re.compile(r"^[Cc]over[-_]?0*1\.(jpg|jpeg|png|webp|tif|tiff)$", re.IGNORECASE)
+    for root, _, files in os.walk(directory):
+        for f in sorted(files):
+            p = Path(root) / f
+            if p.suffix.lower() in VALID_IMAGE_EXTS and cover01_pattern.match(p.name):
+                return p
+    return None
+
+
 def find_cover_images(directory: Path) -> List[Path]:
     """
     在目錄中搜尋所有目錄/封面圖檔 (Cover-*.jpg 或包含 cover/封面 的圖檔)
@@ -189,7 +217,18 @@ def main():
         print(f"[-] 錯誤：找不到輸入目錄 '{input_dir}'！", file=sys.stderr)
         sys.exit(1)
 
-    book_title = args.title or input_dir.name or "數位化掃描書籍"
+    book_title = args.title
+    if not book_title:
+        cov01 = find_cover01_image(input_dir)
+        if cov01:
+            cov_dir = cov01.resolve().parent
+            if cov_dir.name.lower() in ("preprocessed", "preprocessed_samples", "output") and cov_dir.parent.name:
+                book_title = cov_dir.parent.name
+            else:
+                book_title = cov_dir.name
+    if not book_title:
+        book_title = input_dir.name or "數位化掃描書籍"
+
     preprocessed_dir = output_dir / "preprocessed"
     toc_json_path = output_dir / "toc.json"
 
@@ -245,6 +284,7 @@ def main():
         elif toc_json_path.exists():
             existing_toc = toc_json_path.resolve()
 
+    content_images: List[Path] = []
     if existing_toc:
         print(f"[+] 發現現有目錄結構索引: {existing_toc} (跳過 AI 抽取步驟)")
         if existing_toc != toc_json_path:
@@ -252,17 +292,23 @@ def main():
             print(f"    已複製至成果目錄: {toc_json_path}")
         has_toc = True
     else:
-        # 優先從轉正後的目錄中尋找 Cover-*.jpg 圖檔
-        cover_images = find_cover_images(preprocessed_dir)
-        if not cover_images:
-            # 若轉正目錄無 cover，嘗試在原始目錄尋找
-            cover_images = find_cover_images(input_dir)
+        # 優先從轉正後目錄與輸入目錄搜尋 Content-xx.jpg / content-xx.jpg 目錄頁圖檔
+        content_images = find_content_images(preprocessed_dir)
+        if not content_images:
+            content_images = find_content_images(input_dir)
 
-        if cover_images:
-            print(f"[*] 發現 {len(cover_images)} 個目錄頁圖檔：{[p.name for p in cover_images]}")
+        # 兼容性 fallback: 若無 Content-*.jpg，但有舊式多個 Cover-*.jpg 且非 Cover-01.jpg
+        if not content_images:
+            old_covers = find_cover_images(preprocessed_dir) or find_cover_images(input_dir)
+            filtered = [p for p in old_covers if not re.match(r"^[Cc]over[-_]?0*1\.", p.name)]
+            if filtered:
+                content_images = filtered
+
+        if content_images:
+            print(f"[*] 發現 {len(content_images)} 個目錄頁圖檔：{[p.name for p in content_images]}")
             step2_cmd = [
                 sys.executable, str(script_dir / "extract_toc.py"),
-                "--input", *[str(p) for p in cover_images],
+                "--input", *[str(p) for p in content_images],
                 "--output", str(toc_json_path),
                 "--book-title", book_title,
             ]
@@ -277,7 +323,7 @@ def main():
             except subprocess.CalledProcessError as e:
                 print(f"[-] 警告：目錄結構抽取過程異常 ({e})，後續將以無目錄索引模式繼續執行", file=sys.stderr)
         else:
-            print("[-] 未在輸入目錄中發現 Cover-*.jpg 目錄頁圖檔，跳過目錄抽取步驟")
+            print("[-] 未在輸入目錄中發現 Content-xx.jpg 目錄頁圖檔，跳過目錄抽取步驟")
 
     # -------------------------------------------------------------------------
     # [步驟 3/4] 語意 HTML 與 EPUB 生成 (pipeline.py)
@@ -300,11 +346,12 @@ def main():
     if args.skip_ocr:
         step3_cmd.extend(["--skip-ocr", *args.skip_ocr])
 
-    # 封面圖檔設定與自動偵測
+    # 封面圖檔設定與自動偵測 (優先尋找 Cover-01.jpg)
     actual_cover = args.cover
     if not actual_cover:
-        if cover_images:
-            actual_cover = str(cover_images[0])
+        actual_cover_path = find_cover01_image(preprocessed_dir) or find_cover01_image(input_dir)
+        if actual_cover_path:
+            actual_cover = str(actual_cover_path)
         else:
             for cand in [output_dir / "cover.jpg", input_dir / "cover.jpg", input_dir / "Cover.jpg"]:
                 if cand.exists():
@@ -312,7 +359,7 @@ def main():
                     break
     if actual_cover and os.path.exists(actual_cover):
         step3_cmd.extend(["--cover", str(actual_cover)])
-        print(f"[*] 設定 EPUB 封面圖檔: {actual_cover}")
+        print(f"[*] 設定 EPUB/HTML 封面圖檔: {actual_cover}")
 
     # images 圖檔重新壓縮與縮放設定
     if args.compress_images:
@@ -344,11 +391,11 @@ def main():
             print(f"[*] 執行指令: {' '.join(step4_cmd)}")
             subprocess.run(step4_cmd, check=True)
             print(f"[+] 章節資料夾建立與圖檔歸檔完成！")
-        elif cover_images:
+        elif content_images:
             print(f"[*] 準備對目錄進行章節歸檔: {target_dir} (使用目錄頁圖檔)")
             step4_cmd = [
                 sys.executable, str(script_dir / "extract_toc.py"),
-                "--input", *[str(p) for p in cover_images],
+                "--input", *[str(p) for p in content_images],
                 "--output", str(toc_json_path),
                 "--organize-pages", str(target_dir),
             ]

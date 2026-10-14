@@ -222,20 +222,20 @@ python preprocess_scantailor.py --input samples --output preprocessed_samples
 
 #### 步驟 2：抽取目錄索引
 ```bash
-# 識別目錄頁並輸出標準 JSON 索引
-python extract_toc.py -i preprocessed_samples/Cover-06.jpg -o toc.json
+# 自動搜尋 Content-xx.jpg/content-xx.jpg 檔案群，或明確指定 -i 覆蓋
+python extract_toc.py -o toc.json
 ```
 
 #### 步驟 3：執行 AI 版面分析、OCR 與 EPUB 生成
 ```bash
-# 多進程並行極速轉換 (支援 --skip-ocr 指定免 OCR 頁面)
+# 多進程並行極速轉換 (預設以 Cover-01.jpg 作為封面，所在目錄名作為 title)
 python pipeline.py --samples preprocessed_samples --output output --toc toc.json --batch-size 4 --workers 4 --epub
 ```
 
 產出結果位於 `output/`：
-* `output/book.html`：結構化 HTML5（內嵌 KaTeX 數學渲染、完整目錄導覽索引與響應式排版）。
-* `output/book.epub`：標準電子書（含章節目錄、內嵌圖片與原生向量 MathML 公式）。
-* `output/images/`：從版面中自動裁切出的高解析插圖與全頁原圖。
+* `output/book.html`：結構化 HTML5（內嵌 KaTeX 數學渲染、完整目錄導覽索引、頂部優雅封面展示與響應式排版）。
+* `output/book.epub`：標準電子書（含正式封面、章節目錄、內嵌圖片與原生向量 MathML 公式）。
+* `output/images/`：從版面中自動裁切出的高解析插圖、封面與全頁原圖。
 
 ---
 
@@ -376,11 +376,11 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 
 | 參數 | 簡寫 | 預設值 | 說明 |
 | :--- | :---: | :---: | :--- |
-| `--input` | `-i` | `samples/Cover-06.jpg` | 輸入目錄頁圖檔路徑或現有 `toc.json` 檔案（傳入 JSON 時可直接載入現有章節結構進行歸檔，免重複加載模型推論） |
+| `--input` | `-i` | `None` (自動搜尋) | 輸入目錄頁圖檔路徑或現有 `toc.json` 檔案（選填；**預設自動搜尋 `Content-xx.jpg` 或 `content-xx.jpg` 檔案群並依編號自然排序**，指定此參數則覆蓋預設搜尋） |
 | `--output` | `-o` | `toc.json` | 輸出結構化 JSON 檔案路徑 |
 | `--models-dir` | - | `None` | AI 模型權重母目錄（預設讀取 `<models-dir>/glm-ocr`；若未指定則依序檢查 `SCANORC_MODELS_DIR` 與專案內建 `models/`） |
 | `--model-dir` | - | `models/glm-ocr` | GLM-OCR 模型權重目錄（若指定則具最高優先權覆蓋 `--models-dir`） |
-| `--book-title` | - | `""` | 書名（選填，將記錄於 JSON metadata） |
+| `--book-title` | - | `""` | 書名（選填，若未指定則自動由圖檔所在目錄推測並記錄於 JSON metadata） |
 | `--organize-pages` | - | `None` | 自動建立對應目錄（如 `01-一切從此開始`），並將 `Page-xxx.jpg` 檔案移入對應章節目錄（可指定目錄；未指定則預設整理輸入圖檔所在目錄） |
 | `--copy` | - | `False` | 配合 `--organize-pages` 使用：改為複製圖檔而非移動圖檔 |
 
@@ -392,9 +392,9 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | :--- | :---: | :---: | :--- |
 | `--samples` | `-i`, `--input` | `samples` | 待處理圖檔來源（支援單圖檔、多圖檔、目錄或萬用字元，可傳入多個路徑） |
 | `--output` | `-o` | `output` | 成果儲存目錄（產出 HTML、EPUB 與裁切圖片） |
-| `--title` | - | `數位化掃描書本` | 書名 / 文件標題（若有 toc.json 且未指定書名，將自動套用其書名） |
+| `--title` | - | `數位化掃描書本` | 書名 / 文件標題（**預設以 `Cover-01.jpg` 所在的目錄名稱作為 title**；若無則自動套用 toc.json 或預設值） |
 | `--toc` | - | `None` | 目錄結構 JSON 檔案路徑（自動生成目錄索引，並於對應頁面注入章節標題寫入 EPUB Outline 大綱） |
-| `--cover` | `--cover-image` | `None` | 指定 EPUB 封面圖片路徑（未指定則自動在圖片中搜尋 Cover-*.jpg 或 cover.*） |
+| `--cover` | `--cover-image` | `None` (自動搜尋) | 指定封面圖片路徑（**預設以 `Cover-01.jpg` 作為 EPUB 與 HTML 的封面**，亦相容 cover.*） |
 | `--compress-images` | - | `False` | 是否在編譯 EPUB 前自動將 `output/images` 目錄中的 JPG 與 PNG 重新壓縮與縮放（大幅縮減 EPUB 體積） |
 | `--image-quality` | - | `75` | images 圖檔壓縮品質（1~100，預設: 75） |
 | `--image-scale` | - | `0.75` | images 圖檔尺寸縮放比例（例如 0.75 或 1.0，預設: 0.75） |
