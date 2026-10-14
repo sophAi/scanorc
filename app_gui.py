@@ -32,7 +32,7 @@ project_root = Path(__file__).resolve().parent
 bundled_lib_dir = project_root / "bin" / "lib"
 
 # 1. 在 Linux 環境下，優先檢查是否可切換至相容系統原生 Fcitx5 輸入法外掛的 Python3 (PyQt6)
-if sys.platform.startswith("linux") and not os.environ.get("_SCANORC_GUI_BOOTSTRAPPED"):
+if __name__ == "__main__" and sys.platform.startswith("linux") and not os.environ.get("_SCANORC_GUI_BOOTSTRAPPED"):
     can_use_current_pyqt6 = False
     try:
         import PyQt6
@@ -41,13 +41,14 @@ if sys.platform.startswith("linux") and not os.environ.get("_SCANORC_GUI_BOOTSTR
         pass
 
     sys_py = "/usr/bin/python3"
+    current_script = str(Path(__file__).resolve())
     if not can_use_current_pyqt6 and Path(sys_py).exists() and sys.executable != sys_py:
         try:
             chk = subprocess.run([sys_py, "-c", "import PyQt6.QtWidgets"], capture_output=True)
             if chk.returncode == 0:
                 os.environ["_SCANORC_GUI_BOOTSTRAPPED"] = "1"
                 os.environ["_SCANORC_ORIGINAL_PYTHON"] = sys.executable
-                os.execv(sys_py, [sys_py] + sys.argv)
+                os.execv(sys_py, [sys_py, current_script] + sys.argv[1:])
         except Exception:
             pass
 
@@ -76,7 +77,7 @@ if sys.platform.startswith("linux") and not os.environ.get("_SCANORC_GUI_BOOTSTR
             pass
 
         # 自身重啟以套用更新後的動態鏈接環境
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        os.execv(sys.executable, [sys.executable, current_script] + sys.argv[1:])
 
 # 2. 雙引擎 Qt 導入層 (PyQt6 優先，PySide6 作為 fallback)
 try:
@@ -1505,14 +1506,14 @@ class MainWindow(QMainWindow):
 
     def run_patch_list(self):
         html_file = self.s5_html.text().strip() or "output/book.html"
-        cmd = [self.get_python_bin(), "patch_pages.py", "--html", html_file, "--list"]
+        cmd = [self.get_python_bin(), self.get_script_path("patch_pages.py"), "--html", html_file, "--list"]
         self.execute_cmd_list(cmd)
 
     def run_patch_revert(self):
         html_file = self.s5_html.text().strip() or "output/book.html"
         ret = QMessageBox.question(self, "確認還原", f"確定要從備份檔還原 {html_file} 嗎？", QMessageBox.Yes | QMessageBox.No)
         if ret == QMessageBox.Yes:
-            cmd = [self.get_python_bin(), "patch_pages.py", "--html", html_file, "--revert"]
+            cmd = [self.get_python_bin(), self.get_script_path("patch_pages.py"), "--html", html_file, "--revert"]
             if not self.s5_epub.isChecked():
                 cmd.append("--no-epub")
             self.execute_cmd_list(cmd)
@@ -1725,14 +1726,47 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------
     # 輔助與事件處理
     # -------------------------------------------------------------
+    def get_script_path(self, script_name: str) -> str:
+        """取得目標腳本的正確絕對路徑，確保於非專案根目錄或透過 deb 安裝調用時不會遺失檔案"""
+        cand1 = project_root / script_name
+        if cand1.exists():
+            return str(cand1.resolve())
+        cand2 = Path("/opt/scanorc") / script_name
+        if cand2.exists():
+            return str(cand2.resolve())
+        cand3 = Path.cwd() / script_name
+        if cand3.exists():
+            return str(cand3.resolve())
+        return str(cand1)
+
     def get_python_bin(self) -> str:
-        """取得適當的 Python 直譯器 (優先使用包含依賴的專案內置 .venv，次選原始啟動環境)"""
-        venv_py = Path.cwd() / ".venv" / "bin" / "python"
-        if venv_py.exists():
-            return str(venv_py)
+        """取得適當的 Python 直譯器 (依序檢查專案內置 venv、全域/使用者安裝環境、原啟動環境與當前環境)"""
+        candidates = [
+            project_root / ".venv" / "bin" / "python",
+            Path("/opt/scanorc/.venv/bin/python"),
+            Path.home() / ".local/share/scanorc/venv" / "bin" / "python",
+        ]
+
+        # 若是透過 GUI bootstrap 切換環境，優先保留原始具有深度學習相依的 Python
         orig_py = os.environ.get("_SCANORC_ORIGINAL_PYTHON")
-        if orig_py and Path(orig_py).exists():
-            return orig_py
+        if orig_py:
+            candidates.append(Path(orig_py))
+
+        # 若目前已啟用虛擬環境
+        if "VIRTUAL_ENV" in os.environ:
+            candidates.append(Path(os.environ["VIRTUAL_ENV"]) / "bin" / "python")
+
+        # 若環境中有 CONDA_PREFIX
+        if "CONDA_PREFIX" in os.environ:
+            candidates.append(Path(os.environ["CONDA_PREFIX"]) / "bin" / "python")
+
+        # 當前工作目錄下的 .venv (開發備援)
+        candidates.append(Path.cwd() / ".venv" / "bin" / "python")
+
+        for c in candidates:
+            if c.is_file() and os.access(c, os.X_OK):
+                return str(c.resolve())
+
         return sys.executable
 
     def browse_dir(self, line_edit: QLineEdit):
@@ -1948,7 +1982,7 @@ class MainWindow(QMainWindow):
         py_bin = self.get_python_bin()
 
         if idx == 0:  # 一鍵端到端 (process_book.py)
-            cmd = [py_bin, "process_book.py"]
+            cmd = [py_bin, self.get_script_path("process_book.py")]
             in_dir = self.oc_input.text().strip() or "samples"
             out_dir = self.oc_output.text().strip() or "output"
             cmd.extend(["--input", in_dir, "--output", out_dir])
@@ -1980,7 +2014,7 @@ class MainWindow(QMainWindow):
             return cmd
 
         elif idx == 1:  # 步驟 1: preprocess_scantailor.py
-            cmd = [py_bin, "preprocess_scantailor.py"]
+            cmd = [py_bin, self.get_script_path("preprocess_scantailor.py")]
             in_args = safe_split_args(self.s1_input.text())
             cmd.extend(["--input"] + (in_args if in_args else ["samples"]))
             cmd.extend(["--output", self.s1_output.text().strip() or "preprocessed_samples"])
@@ -1997,7 +2031,7 @@ class MainWindow(QMainWindow):
             return cmd
 
         elif idx == 2:  # 步驟 2: extract_toc.py
-            cmd = [py_bin, "extract_toc.py"]
+            cmd = [py_bin, self.get_script_path("extract_toc.py")]
             in_files = safe_split_args(self.s2_input.text())
             if in_files:
                 cmd.extend(["--input"] + in_files)
@@ -2009,7 +2043,7 @@ class MainWindow(QMainWindow):
             return cmd
 
         elif idx == 3:  # 步驟 3: pipeline.py
-            cmd = [py_bin, "pipeline.py"]
+            cmd = [py_bin, self.get_script_path("pipeline.py")]
             cmd.extend(["--samples", self.s3_input.text().strip() or "preprocessed_samples"])
             cmd.extend(["--output", self.s3_output.text().strip() or "output"])
             if self.s3_title.text().strip():
@@ -2040,7 +2074,7 @@ class MainWindow(QMainWindow):
             return cmd
 
         elif idx == 4:  # 步驟 4: extract_toc.py --organize-pages
-            cmd = [py_bin, "extract_toc.py"]
+            cmd = [py_bin, self.get_script_path("extract_toc.py")]
             in_files = safe_split_args(self.s4_input.text())
             if in_files:
                 cmd.extend(["--input"] + in_files)
@@ -2051,7 +2085,7 @@ class MainWindow(QMainWindow):
             return cmd
 
         elif idx == 5:  # 步驟 5: patch_pages.py
-            cmd = [py_bin, "patch_pages.py"]
+            cmd = [py_bin, self.get_script_path("patch_pages.py")]
             cmd.extend(["--html", self.s5_html.text().strip() or "output/book.html"])
             pages = safe_split_args(self.s5_pages.text())
             if pages:
@@ -2066,7 +2100,7 @@ class MainWindow(QMainWindow):
             return cmd
 
         elif idx == 6:  # 批次多書處理 (batch_process.py)
-            cmd = [py_bin, "batch_process.py"]
+            cmd = [py_bin, self.get_script_path("batch_process.py")]
             in_dir = self.batch_input_dir.text().strip()
             if in_dir:
                 cmd.extend(["--input-dir", in_dir])
@@ -2113,8 +2147,21 @@ class MainWindow(QMainWindow):
 
     def update_command_preview(self):
         cmd = self.get_current_cmd_list()
-        # 友善呈現指令（將直譯器替換成 python）
-        display_cmd = ["python"] + cmd[1:]
+        if not cmd:
+            return
+        # 友善呈現指令（將直譯器替換成 python，若腳本在當前目錄則簡化為檔名）
+        script_arg = cmd[1] if len(cmd) > 1 else ""
+        if script_arg:
+            try:
+                p = Path(script_arg)
+                if p.parent == Path.cwd():
+                    script_arg = p.name
+            except Exception:
+                pass
+            display_cmd = ["python", script_arg] + cmd[2:]
+        else:
+            display_cmd = ["python"]
+
         formatted_args = []
         for arg in display_cmd:
             if " " in arg and not ((arg.startswith('"') and arg.endswith('"')) or (arg.startswith("'") and arg.endswith("'"))):
@@ -2619,7 +2666,8 @@ class MainWindow(QMainWindow):
         self.btn_run.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.progress_bar.setVisible(True)
-        self.lbl_status.setText(f"執行中: {cmd[1]} ...")
+        script_name = Path(cmd[1]).name if len(cmd) > 1 else "任務"
+        self.lbl_status.setText(f"執行中: {script_name} ...")
 
         self.process.setWorkingDirectory(str(Path.cwd()))
         self.process.start(cmd[0], cmd[1:])
@@ -2682,7 +2730,7 @@ class MainWindow(QMainWindow):
         if not html_p.exists():
             QMessageBox.warning(self, "提示", f"尚未生成 HTML 檔案: {html_p}\n請先確認該檔案存在或已執行步驟 3。")
             return
-        cmd = [sys.executable, "html_to_epub.py", str(html_p)]
+        cmd = [self.get_python_bin(), self.get_script_path("html_to_epub.py"), str(html_p)]
         if self.s3_title.text().strip():
             cmd.extend(["--title", self.s3_title.text().strip()])
         if self.s3_toc.text().strip():
