@@ -6,7 +6,9 @@ SCANORC_DIR="/opt/scanorc"
 
 # 依序尋找可用之 Python 虛擬環境直譯器
 find_python() {
-    if [ -f "$SCANORC_DIR/.venv/bin/python" ]; then
+    if [ -n "$SCANORC_PYTHON" ] && [ -x "$SCANORC_PYTHON" ]; then
+        echo "$SCANORC_PYTHON"
+    elif [ -f "$SCANORC_DIR/.venv/bin/python" ]; then
         echo "$SCANORC_DIR/.venv/bin/python"
     elif [ -f "$HOME/.local/share/scanorc/venv/bin/python" ]; then
         echo "$HOME/.local/share/scanorc/venv/bin/python"
@@ -14,6 +16,10 @@ find_python() {
         echo "$VIRTUAL_ENV/bin/python"
     elif [ -n "$CONDA_PREFIX" ] && [ -f "$CONDA_PREFIX/bin/python" ]; then
         echo "$CONDA_PREFIX/bin/python"
+    elif [ -x "/opt/anaconda3/bin/python" ]; then
+        echo "/opt/anaconda3/bin/python"
+    elif [ -x "$HOME/anaconda3/bin/python" ]; then
+        echo "$HOME/anaconda3/bin/python"
     elif python3 -c "import torch, transformers, doclayout_yolo" 2>/dev/null; then
         echo "python3"
     else

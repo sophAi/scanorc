@@ -1747,27 +1747,44 @@ class MainWindow(QMainWindow):
         return str(cand1)
 
     def get_python_bin(self) -> str:
-        """取得適當的 Python 直譯器 (依序檢查專案內置 venv、全域/使用者安裝環境、原啟動環境與當前環境)"""
-        candidates = [
+        """取得適當的 Python 直譯器 (依序檢查自訂環境變數、專案/系統 venv、Anaconda/Conda 環境、原啟動環境與當前環境)"""
+        candidates = []
+
+        # 0. 使用者明確指定的環境變數 (SCANORC_PYTHON 或 SCANORC_AI_PYTHON)
+        for env_key in ("SCANORC_PYTHON", "SCANORC_AI_PYTHON"):
+            val = os.environ.get(env_key)
+            if val and Path(val).is_file():
+                candidates.append(Path(val))
+
+        # 1. 專案或系統專屬虛擬環境
+        candidates.extend([
             project_root / ".venv" / "bin" / "python",
             Path("/opt/scanorc/.venv/bin/python"),
             Path.home() / ".local/share/scanorc/venv" / "bin" / "python",
-        ]
+        ])
 
-        # 若是透過 GUI bootstrap 切換環境，優先保留原始具有深度學習相依的 Python
+        # 2. 常用 Anaconda / Miniconda 深度學習環境
+        candidates.extend([
+            Path("/opt/anaconda3/bin/python"),
+            Path.home() / "anaconda3/bin/python",
+            Path("/opt/miniconda3/bin/python"),
+            Path.home() / "miniconda3/bin/python",
+        ])
+
+        # 3. 若是透過 GUI bootstrap 切換環境，優先保留原始具有深度學習相依的 Python
         orig_py = os.environ.get("_SCANORC_ORIGINAL_PYTHON")
         if orig_py:
             candidates.append(Path(orig_py))
 
-        # 若目前已啟用虛擬環境
+        # 4. 若目前已啟用虛擬環境
         if "VIRTUAL_ENV" in os.environ:
             candidates.append(Path(os.environ["VIRTUAL_ENV"]) / "bin" / "python")
 
-        # 若環境中有 CONDA_PREFIX
+        # 5. 若環境中有 CONDA_PREFIX
         if "CONDA_PREFIX" in os.environ:
             candidates.append(Path(os.environ["CONDA_PREFIX"]) / "bin" / "python")
 
-        # 當前工作目錄下的 .venv (開發備援)
+        # 6. 當前工作目錄下的 .venv (開發備援)
         candidates.append(Path.cwd() / ".venv" / "bin" / "python")
 
         for c in candidates:
@@ -2691,6 +2708,7 @@ class MainWindow(QMainWindow):
         start_banner = (
             f"\n{'=' * 60}\n"
             f"[*] ScanORC 任務啟動時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"[*] 執行直譯器: {cmd[0]}\n"
             f"[*] 調度指令: {cmd_display}\n"
             f"[*] 工作目錄: {Path.cwd()}\n"
             f"[*] 詳細日誌: scanorc_task.log\n"
@@ -2713,6 +2731,12 @@ class MainWindow(QMainWindow):
 
         env = QtCore.QProcessEnvironment.systemEnvironment()
         env.insert("PYTHONUNBUFFERED", "1")
+        py_bin_path = Path(real_cmd[0])
+        if py_bin_path.is_file() and py_bin_path.parent.is_dir():
+            curr_path = env.value("PATH", "")
+            bin_dir = str(py_bin_path.parent)
+            if bin_dir not in curr_path:
+                env.insert("PATH", f"{bin_dir}:{curr_path}")
         self.process.setProcessEnvironment(env)
 
         self.process.setWorkingDirectory(str(Path.cwd()))
