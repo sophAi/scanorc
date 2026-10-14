@@ -1352,9 +1352,9 @@ def main():
     )
     parser.add_argument(
         "--layout-direction",
-        choices=["auto", "horizontal", "vertical"],
+        choices=["auto", "horizontal", "vertical", "horizon"],
         default="auto",
-        help="書籍排版方向 (auto: 自動抽樣檢測, horizontal: 橫排由左至右, vertical: 直排豎排由右至左，預設: auto)"
+        help="書籍排版方向 (auto: 自動抽樣檢測, horizontal/horizon: 橫排, vertical: 直排, 預設: auto)"
     )
     args = attach_preference_and_template_support(parser, "pipeline")
 
@@ -1479,17 +1479,19 @@ def main():
     print(f"[*] 頁面編排順序前 10 頁: {[p.name for p in image_files[:10]]}")
     print(f"[*] 運算設定: batch_size={args.batch_size}, workers={args.workers}, 書名='{args.title}'")
 
-    # 自動辨識書籍排版方向 (直排 / 橫排)
+    # 自動辨識書籍排版方向 (直排 / 橫排，抽樣優先以 Page-*.jpg 為主)
     if args.layout_direction == "auto" and detect_book_orientation is not None:
         book_ori_res = detect_book_orientation(image_files, sample_count=5)
-        resolved_layout_direction = book_ori_res["orientation"]
+        raw_direction = book_ori_res["orientation"]
+        resolved_layout_direction = "horizontal" if raw_direction in ("horizon", "horizontal") else "vertical"
         v_votes = book_ori_res["votes"]["vertical"]
         h_votes = book_ori_res["votes"]["horizontal"]
         conf_pct = book_ori_res["confidence"] * 100
         ori_text = "直排 (豎排 / vertical-rl)" if resolved_layout_direction == "vertical" else "橫排 (horizontal)"
-        print(f"[*] 自動辨識書籍版面排版方向: {ori_text} [多數決共識度: {conf_pct:.1f}%, 直排: {v_votes} 頁, 橫排: {h_votes} 頁]")
+        pool_desc = book_ori_res.get("pool_desc", "正文頁面")
+        print(f"[*] 自動辨識書籍版面排版方向 (抽樣來源: {pool_desc}): {ori_text} [多數決共識度: {conf_pct:.1f}%, 直排: {v_votes} 頁, 橫排: {h_votes} 頁]")
     else:
-        resolved_layout_direction = args.layout_direction
+        resolved_layout_direction = "horizontal" if args.layout_direction in ("horizon", "horizontal") else "vertical"
         ori_text = "直排 (豎排 / vertical-rl)" if resolved_layout_direction == "vertical" else "橫排 (horizontal)"
         print(f"[*] 設定書籍版面排版方向: {ori_text}")
 

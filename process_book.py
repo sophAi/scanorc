@@ -209,9 +209,9 @@ def main():
     )
     parser.add_argument(
         "--layout-direction",
-        choices=["auto", "horizontal", "vertical"],
+        choices=["auto", "horizontal", "vertical", "horizon"],
         default="auto",
-        help="書籍排版方向 (auto: 自動抽樣檢測, horizontal: 橫排由左至右, vertical: 直排豎排由右至左，預設: auto)"
+        help="書籍排版方向 (auto: 自動抽樣檢測, horizontal/horizon: 橫排, vertical: 直排, 預設: auto)"
     )
     args = attach_preference_and_template_support(parser, "process_book")
 
@@ -351,8 +351,22 @@ def main():
         step3_cmd.extend(["--models-dir", str(args.models_dir)])
     if args.skip_ocr:
         step3_cmd.extend(["--skip-ocr", *args.skip_ocr])
-    if args.layout_direction:
-        step3_cmd.extend(["--layout-direction", str(args.layout_direction)])
+
+    # 自動偵測書籍版面排版方向 (優先抽樣 Page-*.jpg)
+    layout_dir = args.layout_direction
+    if layout_dir == "auto":
+        try:
+            from orientation_detector import detect_orientation
+            detect_target = preprocessed_dir if preprocessed_dir.exists() and any(preprocessed_dir.iterdir()) else input_dir
+            detected_dir = detect_orientation(detect_target, sample_count=5, short_label=True)
+            print(f"[*] 執行排版方向自動偵測 (抽樣 Page-*.jpg): 判定為 '{detected_dir}'")
+            layout_dir = detected_dir
+        except Exception as e:
+            print(f"[-] 自動排版方向偵測異常 ({e})，交由 pipeline 自動處理", file=sys.stderr)
+            layout_dir = "auto"
+
+    if layout_dir:
+        step3_cmd.extend(["--layout-direction", str(layout_dir)])
 
     # 封面圖檔設定與自動偵測 (優先尋找 Cover-01.jpg)
     actual_cover = args.cover

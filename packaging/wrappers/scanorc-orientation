@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# ScanORC Layout Orientation Detection CLI Wrapper (scanorc-orientation)
+set -e
+
+SCANORC_DIR="/opt/scanorc"
+
+find_python() {
+    if [ -n "$SCANORC_PYTHON" ] && [ -x "$SCANORC_PYTHON" ]; then
+        echo "$SCANORC_PYTHON"
+    elif [ -f "$SCANORC_DIR/.venv/bin/python" ]; then
+        echo "$SCANORC_DIR/.venv/bin/python"
+    elif [ -f "$HOME/.local/share/scanorc/venv/bin/python" ]; then
+        echo "$HOME/.local/share/scanorc/venv/bin/python"
+    elif [ -n "$VIRTUAL_ENV" ] && [ -f "$VIRTUAL_ENV/bin/python" ]; then
+        echo "$VIRTUAL_ENV/bin/python"
+    elif [ -n "$CONDA_PREFIX" ] && [ -f "$CONDA_PREFIX/bin/python" ]; then
+        echo "$CONDA_PREFIX/bin/python"
+    elif [ -x "/opt/anaconda3/bin/python" ]; then
+        echo "/opt/anaconda3/bin/python"
+    elif [ -x "$HOME/anaconda3/bin/python" ]; then
+        echo "$HOME/anaconda3/bin/python"
+    else
+        echo "python3"
+    fi
+}
+
+PY_BIN="$(find_python)"
+
+exec "$PY_BIN" "$SCANORC_DIR/orientation_detector.py" "$@"

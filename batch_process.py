@@ -185,9 +185,9 @@ def main():
     )
     parser.add_argument(
         "--layout-direction",
-        choices=["auto", "horizontal", "vertical"],
+        choices=["auto", "horizontal", "vertical", "horizon"],
         default="auto",
-        help="書籍排版方向 (auto: 自動抽樣檢測, horizontal: 橫排由左至右, vertical: 直排豎排由右至左，預設: auto)"
+        help="書籍排版方向 (auto: 自動抽樣檢測, horizontal/horizon: 橫排, vertical: 直排, 預設: auto)"
     )
 
     args = attach_preference_and_template_support(parser, "batch_process")
