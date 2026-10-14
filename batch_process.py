@@ -147,8 +147,8 @@ def main():
     parser.add_argument(
         "--skip-ocr",
         nargs="*",
-        default=[],
-        help="預設免 OCR 頁面清單"
+        default=["Cover-*.jpg", "Content-*.jpg"],
+        help="預設免 OCR 頁面清單 (預設: ['Cover-*.jpg', 'Content-*.jpg'])"
     )
     parser.add_argument(
         "--epub",
@@ -360,7 +360,7 @@ def main():
             cmd.append("--force-toc")
 
         # 免 OCR 頁面
-        skip_ocr = cfg_data.get("skip_ocr") or args.skip_ocr
+        skip_ocr = cfg_data.get("skip_ocr") if "skip_ocr" in cfg_data else args.skip_ocr
         if skip_ocr:
             if isinstance(skip_ocr, list):
                 cmd.extend(["--skip-ocr", *[str(s) for s in skip_ocr]])

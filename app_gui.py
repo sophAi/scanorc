@@ -2407,7 +2407,7 @@ class MainWindow(QMainWindow):
                 "color_mode": "color_grayscale",
                 "batch_size": self.batch_batch_size.value(),
                 "workers": self.batch_workers.value(),
-                "skip_ocr": [],
+                "skip_ocr": ["Cover-*.jpg", "Content-*.jpg"],
                 "epub": self.batch_epub.isChecked(),
                 "compress_images": self.batch_compress_images.isChecked(),
                 "image_quality": 75,

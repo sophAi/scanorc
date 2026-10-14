@@ -501,6 +501,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--dry-run` | - | `False` | 僅解析掃描各目錄設定與 TOC 狀態並輸出預覽清單，不實際執行運算 |
 | `--report` | - | `<output-root>/batch_report.json` | 批次彙整報告輸出路徑（同時自動產出 Markdown 格式日誌） |
 | `--models-dir` | - | `None` | AI 模型權重母目錄（若指定則透傳至各書籍之 `process_book.py`；亦可透過 `SCANORC_MODELS_DIR` 設定，支援各書目錄內 `book_config.json` 獨立覆蓋） |
+| `--skip-ocr` | - | `['Cover-*.jpg', 'Content-*.jpg']` | 預設免 OCR / 轉正處理之頁面萬用字元清單（自動透傳至各書籍之 `process_book.py`，支援各書目錄 `book_config.json` 獨立覆蓋） |
 | `--preference` | `-p`, `--config`, `-c` | `None` | 載入批次全域偏好設定檔 |
 | `--template` | `-t`, `--dump-config` | `None` | 匯出批次調度器全參數預設值之標準 JSON 範本檔 |
 
