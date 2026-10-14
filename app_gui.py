@@ -22,6 +22,7 @@ import subprocess
 import shlex
 from pathlib import Path
 from typing import List, Dict, Optional, Union
+from datetime import datetime
 
 from config_utils import load_json_with_comments
 
@@ -744,8 +745,14 @@ class MainWindow(QMainWindow):
 
         # QProcess 實例
         self.process = QProcess(self)
-        self.process.setProcessChannelMode(QProcess.MergedChannels)
+        mode = getattr(getattr(QProcess, 'ProcessChannelMode', None), 'MergedChannels', None)
+        if mode is not None:
+            self.process.setProcessChannelMode(mode)
+        elif hasattr(QProcess, 'MergedChannels'):
+            self.process.setProcessChannelMode(QProcess.MergedChannels)
         self.process.readyReadStandardOutput.connect(self.on_process_output)
+        self.process.readyReadStandardError.connect(self.on_process_error_output)
+        self.process.errorOccurred.connect(self.on_process_error)
         self.process.finished.connect(self.on_process_finished)
 
         self.setup_ui()
@@ -2205,6 +2212,13 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        act_view_log = file_menu.addAction("📄 檢視任務詳細日誌 (scanorc_task.log)...")
+        act_view_log.setShortcut(QtGui.QKeySequence("Ctrl+L"))
+        act_view_log.setStatusTip("開啟當前工作目錄的 scanorc_task.log 完整日誌紀錄")
+        act_view_log.triggered.connect(self.open_task_log)
+
+        file_menu.addSeparator()
+
         act_exit = file_menu.addAction("離開(&X)")
         act_exit.setShortcut(QtGui.QKeySequence("Ctrl+Q"))
         act_exit.triggered.connect(self.close)
@@ -2653,15 +2667,37 @@ class MainWindow(QMainWindow):
         cmd = self.get_current_cmd_list()
         self.execute_cmd_list(cmd)
 
+    def open_task_log(self):
+        log_path = Path.cwd() / "scanorc_task.log"
+        if log_path.exists():
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(log_path.resolve())))
+        else:
+            QMessageBox.information(self, "提示", f"目前尚未產生任務日誌檔案：\n{log_path}\n請先執行任一步驟或批次任務。")
+
+    def append_task_log(self, text: str):
+        try:
+            log_file = Path.cwd() / "scanorc_task.log"
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(text)
+        except Exception:
+            pass
+
     def execute_cmd_list(self, cmd: List[str]):
         if self.process.state() != QProcess.NotRunning:
             QMessageBox.warning(self, "忙碌中", "目前已有處理任務正在執行，請等待其完成或點擊中斷！")
             return
 
         cmd_display = " ".join(["python"] + cmd[1:])
-        self.log_text.append(f"\n==================================================")
-        self.log_text.append(f"[*] 啟動任務: {cmd_display}")
-        self.log_text.append(f"==================================================")
+        start_banner = (
+            f"\n{'=' * 60}\n"
+            f"[*] ScanORC 任務啟動時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"[*] 調度指令: {cmd_display}\n"
+            f"[*] 工作目錄: {Path.cwd()}\n"
+            f"[*] 詳細日誌: scanorc_task.log\n"
+            f"{'=' * 60}\n"
+        )
+        self.log_text.append(start_banner)
+        self.append_task_log(start_banner)
 
         self.btn_run.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -2669,37 +2705,101 @@ class MainWindow(QMainWindow):
         script_name = Path(cmd[1]).name if len(cmd) > 1 else "任務"
         self.lbl_status.setText(f"執行中: {script_name} ...")
 
-        self.process.setWorkingDirectory(str(Path.cwd()))
-        self.process.start(cmd[0], cmd[1:])
+        # 為 Python 直譯器注入 -u 參數與環境變數 PYTHONUNBUFFERED=1，確保所有 stdout/stderr 毫秒級無緩衝刷新
+        real_cmd = list(cmd)
+        if len(real_cmd) >= 2 and ("python" in Path(real_cmd[0]).name):
+            if "-u" not in real_cmd[1:2]:
+                real_cmd.insert(1, "-u")
 
-    def on_process_output(self):
-        data = self.process.readAllStandardOutput()
+        env = QtCore.QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONUNBUFFERED", "1")
+        self.process.setProcessEnvironment(env)
+
+        self.process.setWorkingDirectory(str(Path.cwd()))
+        self.process.start(real_cmd[0], real_cmd[1:])
+
+    def _read_process_stream(self, data):
+        if not data:
+            return
         text = bytes(data).decode("utf-8", errors="replace")
         clean_text = strip_ansi(text)
         self.log_text.insertPlainText(clean_text)
-        # 自動捲動到底部
+        self.append_task_log(clean_text)
         cursor = self.log_text.textCursor()
         cursor.movePosition(QtGui.QTextCursor.End)
         self.log_text.setTextCursor(cursor)
 
+    def on_process_output(self):
+        self._read_process_stream(self.process.readAllStandardOutput())
+
+    def on_process_error_output(self):
+        self._read_process_stream(self.process.readAllStandardError())
+
+    def on_process_error(self, err):
+        err_names = {
+            getattr(getattr(QProcess, 'ProcessError', None), 'FailedToStart', 0): "無法啟動進程 (直譯器或檔案不存在，或權限不足)",
+            getattr(getattr(QProcess, 'ProcessError', None), 'Crashed', 1): "進程異常崩潰或被系統信號強制終止",
+            getattr(getattr(QProcess, 'ProcessError', None), 'Timedout', 2): "進程執行超時",
+            getattr(getattr(QProcess, 'ProcessError', None), 'WriteError', 3): "寫入進程失敗",
+            getattr(getattr(QProcess, 'ProcessError', None), 'ReadError', 4): "讀取進程輸出失敗",
+            getattr(getattr(QProcess, 'ProcessError', None), 'UnknownError', 5): "未知進程錯誤",
+        }
+        name = err_names.get(err, f"錯誤代碼 {err}")
+        err_msg = f"\n[-] QProcess 系統層事件: {name}\n"
+        self.log_text.append(err_msg)
+        self.append_task_log(err_msg)
+
     def on_process_finished(self, exit_code, exit_status):
+        # 1. 確保剩餘緩衝區全數刷新輸出至終端機與日誌
+        self._read_process_stream(self.process.readAllStandardOutput())
+        self._read_process_stream(self.process.readAllStandardError())
+
         self.btn_run.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.progress_bar.setVisible(False)
 
-        if exit_code == 0:
+        # 2. 判讀 Exit Status 與 Signal
+        crash_enum = getattr(getattr(QProcess, 'ExitStatus', None), 'CrashExit', None)
+        is_crash = (exit_status == crash_enum) if crash_enum is not None else False
+
+        signal_hints = {
+            15: "SIGTERM: 進程接收到終止信號 (可能為點擊「中斷執行」按鈕，或系統顯存/記憶體不足被守護行程/OOM 終止)",
+            9: "SIGKILL: 進程被強制終止 (常見於系統記憶體嚴重不足被 Linux OOM-Killer 強制殺除)",
+            11: "SIGSEGV: 記憶體段錯誤 (Segmentation Fault，常見於底層 C/C++ 函式庫或 GPU 驅動異常)",
+            6: "SIGABRT: 進程異常中止 (Aborted)",
+            2: "SIGINT: 中斷信號 (Ctrl+C 中斷)",
+            1: "通用錯誤 (請向上捲動終端機檢視詳細 Python 例外與 Traceback，或檢視 scanorc_task.log)",
+            2: "命令列參數無效或引數錯誤",
+        }
+        detail_msg = signal_hints.get(exit_code, f"狀態代碼: {exit_code}")
+
+        if exit_code == 0 and not is_crash:
             self.lbl_status.setText("✅ 執行成功完成！")
-            self.log_text.append(f"\n[+] 任務順利完成 (結束碼: 0)")
-            # 若為步驟 2 完成，自動載入 toc.json 內容
+            msg = "\n[+] 任務順利完成 (結束碼: 0)"
+            self.log_text.append(msg)
+            self.append_task_log(msg + "\n")
             if self.tabs.currentIndex() == 2:
                 self.load_toc_json()
         else:
-            self.lbl_status.setText(f"❌ 執行中斷或異常 (退出碼: {exit_code})")
-            self.log_text.append(f"\n[-] 任務異常結束 (退出碼: {exit_code})")
+            self.lbl_status.setText(f"❌ 執行中斷或異常 (代碼: {exit_code})")
+            err_log = (
+                f"\n==================================================\n"
+                f"[-] 任務異常結束！\n"
+                f"    - 退出代碼: {exit_code}\n"
+                f"    - 診斷提示: {detail_msg}\n"
+                f"    - 崩潰狀態: {'是 (CrashExit)' if is_crash else '否 (NormalExit)'}\n"
+                f"    - 完整日誌已同步儲存於: scanorc_task.log\n"
+                f"=================================================="
+            )
+            self.log_text.append(err_log)
+            self.append_task_log(err_log + "\n")
 
     def stop_current_process(self):
         if self.process.state() != QProcess.NotRunning:
             self.lbl_status.setText("正在終止進程...")
+            stop_msg = "\n[*] 使用者發起中斷執行請求 (發送 SIGTERM 終止信號)...\n"
+            self.log_text.append(stop_msg)
+            self.append_task_log(stop_msg)
             self.process.terminate()
             QtCore.QTimer.singleShot(2500, self.force_kill_process_if_alive)
 
