@@ -30,8 +30,40 @@ except ImportError:
         GlmOcrForConditionalGeneration = None
 
 from config_utils import attach_preference_and_template_support
+try:
+    from orientation_detector import detect_orientation, detect_book_orientation
+except ImportError:
+    detect_orientation = None
+    detect_book_orientation = None
 
 VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
+
+CN_NUM_MAP = {
+    '零': 0, '一': 1, '二': 2, '兩': 2, '三': 3, '四': 4,
+    '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10
+}
+
+
+def parse_chinese_number(cn_str: str) -> Optional[int]:
+    """將簡單中文數字 (一至九十九) 轉為整數"""
+    cn_str = cn_str.strip()
+    if not cn_str:
+        return None
+    if cn_str.isdigit():
+        return int(cn_str)
+
+    if cn_str == "十":
+        return 10
+    if cn_str.startswith("十"):
+        return 10 + CN_NUM_MAP.get(cn_str[1:], 0)
+    if "十" in cn_str:
+        parts = cn_str.split("十")
+        ten = CN_NUM_MAP.get(parts[0], 1) * 10
+        one = CN_NUM_MAP.get(parts[1], 0) if len(parts) > 1 and parts[1] else 0
+        return ten + one
+    if len(cn_str) == 1 and cn_str in CN_NUM_MAP:
+        return CN_NUM_MAP[cn_str]
+    return None
 
 
 def natural_sort_key(p: Path) -> List[Any]:
@@ -158,10 +190,10 @@ def extract_toc_from_image(
 
 def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[str, Any]]:
     """
-    從 OCR 原始文本中抽取單行章節與頁碼項目
+    從 OCR 原始文本中抽取單行章節與頁碼項目 (相容橫排與直排常見點線、引導線及中文數字)
     """
-    line_pattern = re.compile(r"^(?P<raw_title>.+?)\s*[·.．…\s\-]{2,}\s*(?P<page>\d+)\s*$")
-    chapter_pattern = re.compile(r"^(第\s*\d+\s*[章節回卷部篇])\s*(.*)$")
+    line_pattern = re.compile(r"^(?P<raw_title>.+?)\s*[·.．…・\s\-_|]{2,}\s*(?P<page>\d+)\s*$")
+    chapter_pattern = re.compile(r"^(第\s*([0-9]+|[一二三四五六七八九十百千兩]+)\s*[章節回卷部篇])\s*(.*)$")
 
     entries = []
     lines = raw_text.strip().splitlines()
@@ -171,7 +203,7 @@ def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[st
         if not line:
             continue
 
-        if line in ("目錄", "Contents", "目 錄", "CONTENTS"):
+        if line in ("目錄", "Contents", "目 錄", "CONTENTS", "目　錄"):
             continue
 
         match = line_pattern.match(line)
@@ -182,7 +214,7 @@ def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[st
             ch_match = chapter_pattern.match(raw_title)
             if ch_match:
                 ch_num = re.sub(r"\s+", "", ch_match.group(1))
-                ch_name = ch_match.group(2).strip()
+                ch_name = ch_match.group(3).strip() if ch_match.group(3) else ch_num
             else:
                 ch_num = re.sub(r"\s+", "", raw_title)
                 ch_name = re.sub(r"\s+", "", raw_title)
@@ -224,10 +256,10 @@ def format_chapter_dirname(entry: Dict[str, Any], total_entries: int) -> str:
     ch_title = entry.get("title", "").strip()
     index = entry.get("index", 1)
 
-    match = re.search(r"第\s*(\d+)\s*[章節回卷部篇]", ch_num)
+    match = re.search(r"第\s*([0-9]+|[一二三四五六七八九十兩]+)\s*[章節回卷部篇]", ch_num)
     if match:
-        num = int(match.group(1))
-        prefix = f"{num:02d}"
+        num = parse_chinese_number(match.group(1))
+        prefix = f"{num:02d}" if num is not None else f"{(index - 1):02d}"
     else:
         prefix = f"{(index - 1):02d}"
 
@@ -353,6 +385,12 @@ def main():
         help="書籍名稱 (選填，將記錄於 JSON metadata 中)"
     )
     parser.add_argument(
+        "--layout-direction",
+        choices=["auto", "horizontal", "vertical", "horizon"],
+        default="auto",
+        help="指定目錄排版方向 (auto: 依 Content-*.jpg 目錄圖檔自動判斷, horizontal: 橫排, vertical: 直排；預設 auto)"
+    )
+    parser.add_argument(
         "--organize-pages",
         metavar="DIR",
         nargs="?",
@@ -395,6 +433,11 @@ def main():
                 print(f"[-] 錯誤：'{json_file.name}' 中未找到任何目錄條目 (toc)！", file=sys.stderr)
                 sys.exit(1)
             print(f"[+] 成功讀取 {len(all_entries)} 個章節目錄條目，無需加載模型推論！")
+            resolved_layout_direction = data.get("layout_direction", "horizontal")
+            if args.layout_direction != "auto":
+                resolved_layout_direction = "horizontal" if args.layout_direction in ("horizon", "horizontal") else "vertical"
+            ori_text = "直排 (豎排 / vertical-rl)" if resolved_layout_direction == "vertical" else "橫排 (horizontal)"
+            print(f"[*] 目錄排版方向: {ori_text}")
             sorted_images = []
         except Exception as e:
             print(f"[-] 讀取 JSON 檔案失敗: {e}", file=sys.stderr)
@@ -417,6 +460,24 @@ def main():
             print(f"[*] 自訂輸入覆蓋：發現 {len(sorted_images)} 個目錄圖檔，依檔名順序排列：")
         for idx, p in enumerate(sorted_images, 1):
             print(f"    ({idx}/{len(sorted_images)}) {p}")
+
+        # ---------------------------------------------------------------------
+        # 排版方向判斷：若為 auto 且有目錄圖檔，以 Content-*.jpg 判定
+        # ---------------------------------------------------------------------
+        if args.layout_direction == "auto":
+            if detect_orientation is not None and sorted_images:
+                detected_direction = detect_orientation(sorted_images, sample_count=len(sorted_images), short_label=True)
+                resolved_layout_direction = "horizontal" if detected_direction in ("horizon", "horizontal") else "vertical"
+                ori_text = "直排 (豎排 / vertical-rl)" if resolved_layout_direction == "vertical" else "橫排 (horizontal)"
+                print(f"[*] 依據目錄圖檔 (Content-*.jpg) 自動判定排版方向: {ori_text}")
+            else:
+                resolved_layout_direction = "horizontal"
+                print("[*] 目錄預設為橫排 (horizontal)")
+        else:
+            resolved_layout_direction = "horizontal" if args.layout_direction in ("horizon", "horizontal") else "vertical"
+            ori_text = "直排 (豎排 / vertical-rl)" if resolved_layout_direction == "vertical" else "橫排 (horizontal)"
+            print(f"[*] 指定目錄排版方向: {ori_text}")
+
         print(f"[*] 輸出位置: {args.output}")
         print(f"[*] 推論裝置: {device} ({dtype})")
         # 解析 GLM-OCR 模型路徑 (優先級: --model-dir > --models-dir/glm-ocr > SCANORC_MODELS_DIR > 專案內置 models)
@@ -466,6 +527,18 @@ def main():
             print("[-] 警告：未能在所有目錄圖片中解析出任何有效目錄條目！", file=sys.stderr)
             sys.exit(1)
 
+        # 直排目錄條目閱讀順序校驗：
+        # 直式中文目錄通常由右向左 (RTL) 排列；若 OCR 引擎以左到右 (LTR) 掃描輸出，會導致章節起始頁碼呈現單調遞減。
+        # 此時自動反轉列表為正確的由右至左 (RTL) 順序。
+        if resolved_layout_direction == "vertical" and len(all_entries) >= 2:
+            descending_count = sum(
+                1 for i in range(len(all_entries) - 1)
+                if all_entries[i]["start_page"] > all_entries[i + 1]["start_page"]
+            )
+            if descending_count > (len(all_entries) - 1) * 0.7:
+                print(f"[*] 偵測到直排目錄條目以從左至右 (LTR) 逆序排列 (倒序比例: {descending_count}/{len(all_entries)-1})，自動反轉修正為由右至左 (RTL) 正確閱讀順序！")
+                all_entries.reverse()
+
         # 全域計算結束頁碼與總頁數
         for i in range(len(all_entries)):
             all_entries[i]["index"] = i + 1
@@ -493,6 +566,7 @@ def main():
 
         result_data = {
             "book_title": book_title,
+            "layout_direction": resolved_layout_direction,
             "source_images": [str(p) for p in sorted_images],
             "extracted_at": datetime.now().isoformat(),
             "model": model_dir_str,
@@ -514,10 +588,14 @@ def main():
     print("\n" + "=" * 68)
     print(f"{'索引':<4} {'章節編號':<8} {'章節標題':<28} {'起始頁':<8} {'結束頁':<8} {'總頁數'}")
     print("-" * 68)
-    for item in all_entries:
-        end_str = str(item['end_page']) if item['end_page'] is not None else "-"
-        count_str = str(item['page_count']) if item['page_count'] is not None else "-"
-        print(f"{item['index']:<4} {item['chapter']:<8} {item['title']:<28} {item['start_page']:<8} {end_str:<8} {count_str}")
+    for idx, item in enumerate(all_entries, 1):
+        item_idx = item.get("index", idx)
+        end_str = str(item.get('end_page')) if item.get('end_page') is not None else "-"
+        count_str = str(item.get('page_count')) if item.get('page_count') is not None else "-"
+        ch_str = str(item.get('chapter', ''))
+        title_str = str(item.get('title', ''))
+        start_str = str(item.get('start_page', '-'))
+        print(f"{item_idx:<4} {ch_str:<8} {title_str:<28} {start_str:<8} {end_str:<8} {count_str}")
     print("=" * 68 + "\n")
 
     # 執行自動建立目錄與移動 Page-xxx.jpg 歸檔
