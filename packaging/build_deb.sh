@@ -49,6 +49,7 @@ cp -a html_to_epub.py "$STAGING_DIR/opt/scanorc/"
 cp -a recompress_images.py "$STAGING_DIR/opt/scanorc/"
 cp -a download_models.py "$STAGING_DIR/opt/scanorc/"
 cp -a config_utils.py "$STAGING_DIR/opt/scanorc/"
+cp -a orientation_detector.py "$STAGING_DIR/opt/scanorc/"
 cp -a requirements.txt "$STAGING_DIR/opt/scanorc/"
 cp -a LICENSE "$STAGING_DIR/opt/scanorc/"
 

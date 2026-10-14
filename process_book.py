@@ -207,6 +207,12 @@ def main():
         default=None,
         help="AI 模型權重母目錄 (若指定則傳遞至 extract_toc 與 pipeline；亦可透過 SCANORC_MODELS_DIR 設定)"
     )
+    parser.add_argument(
+        "--layout-direction",
+        choices=["auto", "horizontal", "vertical"],
+        default="auto",
+        help="書籍排版方向 (auto: 自動抽樣檢測, horizontal: 橫排由左至右, vertical: 直排豎排由右至左，預設: auto)"
+    )
     args = attach_preference_and_template_support(parser, "process_book")
 
     script_dir = Path(__file__).parent.resolve()
@@ -345,6 +351,8 @@ def main():
         step3_cmd.extend(["--models-dir", str(args.models_dir)])
     if args.skip_ocr:
         step3_cmd.extend(["--skip-ocr", *args.skip_ocr])
+    if args.layout_direction:
+        step3_cmd.extend(["--layout-direction", str(args.layout_direction)])
 
     # 封面圖檔設定與自動偵測 (優先尋找 Cover-01.jpg)
     actual_cover = args.cover

@@ -42,6 +42,12 @@ try:
 except ImportError:
     recompress_directory = None
 
+try:
+    from orientation_detector import detect_book_orientation, detect_page_orientation
+except ImportError:
+    detect_book_orientation = None
+    detect_page_orientation = None
+
 
 def clean_math_syntax(text: str) -> str:
     """
@@ -217,7 +223,27 @@ def collect_book_images(
 
     collected: List[Path] = []
     seen = set()
-    norm_exclude = [ed.resolve() for ed in exclude_dirs] if exclude_dirs else []
+
+    # 解析所有明確給定的輸入路徑 (不含萬用字元)
+    resolved_inputs = [
+        Path(inp).resolve()
+        for inp in inputs
+        if not any(char in inp for char in ["*", "?", "["])
+    ]
+
+    norm_exclude: List[Path] = []
+    if exclude_dirs:
+        for ed in exclude_dirs:
+            ed_r = ed.resolve()
+            # 若排除目錄剛好是某些輸入目錄的本身或祖先 (例如 --output 是 --samples 的父目錄)，
+            # 絕不能直接排除該祖先，否則會把輸入目錄的所有檔案全部略過。
+            # 此時僅排除該目錄底下的輸出子目錄 (如 images, images_opt_tmp, pipeline_temp)
+            is_ancestor_or_same = any(inp == ed_r or ed_r in inp.parents for inp in resolved_inputs)
+            if not is_ancestor_or_same:
+                norm_exclude.append(ed_r)
+            else:
+                for sub in ["images", "images_opt_tmp", "pipeline_temp", "html"]:
+                    norm_exclude.append(ed_r / sub)
 
     def is_excluded(path: Path) -> bool:
         r_p = path.resolve()
@@ -409,12 +435,14 @@ class DocumentConverter:
         dtype: torch.dtype = torch.float16,
         max_ocr_dim: int = 1024,
         batch_size: int = 2,
+        layout_direction: str = "auto",
     ):
         self.resolved_yolo, self.resolved_glm = resolve_model_paths(models_dir, yolo_weights, glm_model_dir)
         self.device = device if torch.cuda.is_available() else "cpu"
         self.dtype = dtype
         self.max_ocr_dim = max_ocr_dim
         self.batch_size = max(1, batch_size)
+        self.layout_direction = layout_direction
         self.yolo = None
         self.glm = None
         self.processor = None
@@ -441,7 +469,12 @@ class DocumentConverter:
             self.glm.eval()
             print(f"[+] 所有模型就緒！目前 VRAM 佔用: {round(torch.cuda.memory_allocated() / (1024**2), 1)} MB")
 
-    def run_layout_analysis(self, image_path: str, conf: float = 0.25) -> List[Dict[str, Any]]:
+    def run_layout_analysis(
+        self,
+        image_path: str,
+        conf: float = 0.25,
+        layout_direction: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         self._ensure_models_loaded()
         results = self.yolo.predict(image_path, imgsz=1024, conf=conf, device=self.device)
         boxes_info = []
@@ -468,8 +501,16 @@ class DocumentConverter:
                     "bbox": xyxy,
                 })
 
+        effective_direction = layout_direction or self.layout_direction
+        if effective_direction == "auto" and detect_page_orientation is not None:
+            try:
+                page_res = detect_page_orientation(image_path, boxes=boxes_info)
+                effective_direction = page_res["orientation"]
+            except Exception:
+                effective_direction = "horizontal"
+
         filtered_boxes = self._filter_contained_boxes(boxes_info)
-        sorted_boxes = self._sort_reading_order(filtered_boxes)
+        sorted_boxes = self._sort_reading_order(filtered_boxes, layout_direction=effective_direction)
         return sorted_boxes
 
     def _filter_contained_boxes(self, boxes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -500,10 +541,22 @@ class DocumentConverter:
             return (inter_area / area1) > 0.90
         return False
 
-    def _sort_reading_order(self, boxes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _sort_reading_order(
+        self,
+        boxes: List[Dict[str, Any]],
+        layout_direction: Optional[str] = None,
+        col_bin: int = 40,
+        row_bin: int = 30,
+    ) -> List[Dict[str, Any]]:
         if not boxes:
             return []
-        return sorted(boxes, key=lambda b: (b["bbox"][1] // 30, b["bbox"][0]))
+        effective_direction = layout_direction or self.layout_direction
+        if effective_direction == "vertical":
+            # 直排 (豎排) 閱讀順序：由右至左分欄 (以右邊界 x2 負值排序)，同欄內由上而下 (y1 排序)
+            return sorted(boxes, key=lambda b: (-(b["bbox"][2] // col_bin), b["bbox"][1]))
+        else:
+            # 橫排閱讀順序：由上而下分列 (y1 // row_bin)，同列內由左至右 (x1 排序)
+            return sorted(boxes, key=lambda b: (b["bbox"][1] // row_bin, b["bbox"][0]))
 
     def recognize_crops_batch(self, crop_items: List[Tuple[Image.Image, str]]) -> List[str]:
         """
@@ -771,7 +824,8 @@ class DocumentConverter:
         page_results: List[Dict[str, Any]],
         title: str = "Scanned Book",
         toc_data: Optional[Dict[str, Any]] = None,
-        cover_image: Optional[Union[str, Path]] = None
+        cover_image: Optional[Union[str, Path]] = None,
+        layout_direction: str = "horizontal",
     ) -> str:
         body_content = []
 
@@ -891,9 +945,56 @@ class DocumentConverter:
                 elif b_type == "formula":
                     body_content.append(f'  <div class="math-block">\n    {b["content"]}\n  </div>')
 
-            body_content.append('</section>\n<hr class="page-divider">\n')
-
         body_html_str = "\n".join(body_content)
+
+        body_class = ' class="layout-vertical"' if layout_direction == "vertical" else ''
+        vertical_css = """
+    body.layout-vertical {
+      writing-mode: vertical-rl;
+      -webkit-writing-mode: vertical-rl;
+      -epub-writing-mode: vertical-rl;
+      text-orientation: upright;
+      -webkit-text-orientation: upright;
+      max-width: none;
+      height: 90vh;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 30px 40px;
+    }
+    body.layout-vertical .book-page {
+      display: inline-block;
+      vertical-align: top;
+      height: 85vh;
+      margin: 0 1.5em;
+      writing-mode: vertical-rl;
+      -webkit-writing-mode: vertical-rl;
+      -epub-writing-mode: vertical-rl;
+    }
+    body.layout-vertical p {
+      margin: 0 0.8em;
+      text-indent: 2em;
+      line-height: 2.0;
+    }
+    body.layout-vertical h1,
+    body.layout-vertical h2,
+    body.layout-vertical h3 {
+      margin: 0 1.2em;
+      line-height: 1.4;
+    }
+    body.layout-vertical .book-cover-page {
+      display: inline-block;
+      vertical-align: top;
+      height: 85vh;
+      margin: 0 2em;
+    }
+    body.layout-vertical .book-toc {
+      display: inline-block;
+      vertical-align: top;
+      height: 85vh;
+      margin: 0 2em;
+      overflow-y: auto;
+    }
+""" if layout_direction == "vertical" else ""
 
         full_html = f"""<!DOCTYPE html>
 <html lang="zh-Hant">
@@ -1100,9 +1201,10 @@ class DocumentConverter:
       background: var(--border-color);
       margin: 40px 0;
     }}
+    {vertical_css}
   </style>
 </head>
-<body>
+<body{body_class}>
 {body_html_str}
 </body>
 </html>
@@ -1116,6 +1218,7 @@ def build_epub_with_pandoc(
     title: str = "Scanned Book",
     cover_image: Optional[str] = None,
     split_level: int = 1,
+    layout_direction: str = "horizontal",
 ):
     pandoc_bin = "/opt/anaconda3/bin/pandoc"
     if not os.path.exists(pandoc_bin):
@@ -1138,6 +1241,11 @@ def build_epub_with_pandoc(
         "--metadata", f"title={title}",
         "--metadata", "language=zh-TW",
     ]
+    if layout_direction == "vertical":
+        cmd.extend([
+            "--metadata", "page-progression-direction=rtl",
+            "--metadata", "dir=rtl",
+        ])
     if cover_image and os.path.exists(cover_image):
         cmd.append(f"--epub-cover-image={os.path.abspath(cover_image)}")
 
@@ -1148,13 +1256,14 @@ def build_epub_with_pandoc(
 
 def _worker_process_page(args_tuple):
     """多進程 Worker 任務函數"""
-    task_idx, img_path, output_dir, batch_size, skip_ocr, models_dir, yolo_weights, glm_model_dir = args_tuple
-    # 每個子進程獨立初始化 Converter (套用傳入之模型目錄)
+    task_idx, img_path, output_dir, batch_size, skip_ocr, models_dir, yolo_weights, glm_model_dir, layout_direction = args_tuple
+    # 每個子進程獨立初始化 Converter (套用傳入之模型目錄與版面排版方向)
     converter = DocumentConverter(
         models_dir=models_dir,
         yolo_weights=yolo_weights,
         glm_model_dir=glm_model_dir,
-        batch_size=batch_size
+        batch_size=batch_size,
+        layout_direction=layout_direction,
     )
     res = converter.process_page(img_path, output_dir, skip_ocr=skip_ocr)
     res["_task_idx"] = task_idx
@@ -1241,6 +1350,12 @@ def main():
         default=None,
         help="自訂 GLM-OCR 模型權重目錄 (選填，若未指定則自動從 --models-dir 解析)"
     )
+    parser.add_argument(
+        "--layout-direction",
+        choices=["auto", "horizontal", "vertical"],
+        default="auto",
+        help="書籍排版方向 (auto: 自動抽樣檢測, horizontal: 橫排由左至右, vertical: 直排豎排由右至左，預設: auto)"
+    )
     args = attach_preference_and_template_support(parser, "pipeline")
 
     os.makedirs(args.output, exist_ok=True)
@@ -1318,11 +1433,25 @@ def main():
             shutil.copy2(actual_cover, dest_cover)
             print(f"[*] 複製封面圖檔至圖片目錄: {dest_cover}")
 
+    out_path = Path(args.output).resolve()
+    exclude_targets = [
+        out_path / "images",
+        out_path / "images_opt_tmp",
+        out_path / "pipeline_temp",
+    ]
+    resolved_samples = [
+        Path(s).resolve()
+        for s in sample_inputs
+        if not any(c in s for c in ["*", "?", "["])
+    ]
+    if not any(sp == out_path or out_path in sp.parents for sp in resolved_samples):
+        exclude_targets.append(out_path)
+
     image_files = collect_book_images(
         inputs=sample_inputs,
         recursive=args.recursive,
         cover_first=args.cover_first,
-        exclude_dirs=[Path(args.output)]
+        exclude_dirs=exclude_targets
     )
 
     if not image_files:
@@ -1350,6 +1479,20 @@ def main():
     print(f"[*] 頁面編排順序前 10 頁: {[p.name for p in image_files[:10]]}")
     print(f"[*] 運算設定: batch_size={args.batch_size}, workers={args.workers}, 書名='{args.title}'")
 
+    # 自動辨識書籍排版方向 (直排 / 橫排)
+    if args.layout_direction == "auto" and detect_book_orientation is not None:
+        book_ori_res = detect_book_orientation(image_files, sample_count=5)
+        resolved_layout_direction = book_ori_res["orientation"]
+        v_votes = book_ori_res["votes"]["vertical"]
+        h_votes = book_ori_res["votes"]["horizontal"]
+        conf_pct = book_ori_res["confidence"] * 100
+        ori_text = "直排 (豎排 / vertical-rl)" if resolved_layout_direction == "vertical" else "橫排 (horizontal)"
+        print(f"[*] 自動辨識書籍版面排版方向: {ori_text} [多數決共識度: {conf_pct:.1f}%, 直排: {v_votes} 頁, 橫排: {h_votes} 頁]")
+    else:
+        resolved_layout_direction = args.layout_direction
+        ori_text = "直排 (豎排 / vertical-rl)" if resolved_layout_direction == "vertical" else "橫排 (horizontal)"
+        print(f"[*] 設定書籍版面排版方向: {ori_text}")
+
     all_page_results = []
 
     if args.workers > 1:
@@ -1371,6 +1514,7 @@ def main():
                 args.models_dir,
                 args.yolo_weights,
                 args.glm_model_dir,
+                resolved_layout_direction,
             )
             for idx, img_path in enumerate(image_files)
         ]
@@ -1383,7 +1527,8 @@ def main():
             models_dir=args.models_dir,
             yolo_weights=args.yolo_weights,
             glm_model_dir=args.glm_model_dir,
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            layout_direction=resolved_layout_direction,
         )
         for idx, img_path in enumerate(image_files):
             p_res = converter.process_page(
@@ -1401,7 +1546,8 @@ def main():
         all_page_results,
         title=args.title,
         toc_data=toc_data,
-        cover_image=actual_cover
+        cover_image=actual_cover,
+        layout_direction=resolved_layout_direction,
     )
     with open(html_out_path, "w", encoding="utf-8") as f:
         f.write(full_html)
@@ -1446,6 +1592,7 @@ def main():
             title=args.title,
             cover_image=str(actual_cover) if actual_cover else None,
             split_level=1,
+            layout_direction=resolved_layout_direction,
         )
 
     print("\n[🎉] 全流程轉換成功完成！")

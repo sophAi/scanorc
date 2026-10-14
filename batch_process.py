@@ -183,6 +183,12 @@ def main():
         default=None,
         help="AI 模型權重母目錄 (若指定則傳遞至每本書之 process_book.py；亦可透過 SCANORC_MODELS_DIR 設定)"
     )
+    parser.add_argument(
+        "--layout-direction",
+        choices=["auto", "horizontal", "vertical"],
+        default="auto",
+        help="書籍排版方向 (auto: 自動抽樣檢測, horizontal: 橫排由左至右, vertical: 直排豎排由右至左，預設: auto)"
+    )
 
     args = attach_preference_and_template_support(parser, "batch_process")
 
@@ -352,6 +358,9 @@ def main():
         models_dir = cfg_data.get("models_dir", args.models_dir)
         if models_dir:
             cmd.extend(["--models-dir", str(models_dir)])
+        layout_dir = cfg_data.get("layout_direction", args.layout_direction)
+        if layout_dir:
+            cmd.extend(["--layout-direction", str(layout_dir)])
 
         # TOC
         if t["has_existing_toc"] and t["toc_path"]:

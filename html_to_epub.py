@@ -291,6 +291,7 @@ def convert_html_to_epub(
     image_scale: float = 1.0,
     image_max_dim: Optional[int] = None,
     pandoc_bin: Optional[str] = None,
+    layout_direction: str = "auto",
     verbose: bool = True,
 ) -> Path:
     """
@@ -481,6 +482,22 @@ def convert_html_to_epub(
     if author:
         cmd.extend(["--metadata", f"author={author}"])
 
+    # 判斷是否為直排 (豎排) 排版
+    is_vertical = False
+    if layout_direction == "vertical":
+        is_vertical = True
+    elif layout_direction == "auto":
+        if "layout-vertical" in html_raw or "vertical-rl" in html_raw:
+            is_vertical = True
+
+    if is_vertical:
+        cmd.extend([
+            "--metadata", "page-progression-direction=rtl",
+            "--metadata", "dir=rtl",
+        ])
+        if verbose:
+            print("[*] 啟用 EPUB 直排模式 (RTL 翻頁與 vertical-rl 排版)")
+
     if actual_cover:
         cmd.append(f"--epub-cover-image={str(actual_cover)}")
 
@@ -653,6 +670,12 @@ def main():
         action="store_true",
         help="精簡輸出，僅顯示必要資訊與錯誤"
     )
+    parser.add_argument(
+        "--layout-direction",
+        choices=["auto", "horizontal", "vertical"],
+        default="auto",
+        help="排版方向 (auto: 自動從 HTML 特徵判斷, horizontal: 橫排, vertical: 直排 RTL)"
+    )
 
     args = attach_preference_and_template_support(parser, "html_to_epub")
 
@@ -695,6 +718,7 @@ def main():
             image_scale=args.image_scale,
             image_max_dim=args.image_max_dim,
             pandoc_bin=args.pandoc,
+            layout_direction=args.layout_direction,
             verbose=not args.quiet,
         )
     except Exception as e:
