@@ -897,36 +897,42 @@ class MainWindow(QMainWindow):
 
     def setup_tabs(self):
         """設定各步驟之參數面板"""
+        self.tab_batch = QWidget()
         self.tab_oneclick = QWidget()
         self.tab_step1 = QWidget()
         self.tab_step2 = QWidget()
         self.tab_step3 = QWidget()
         self.tab_step4 = QWidget()
         self.tab_step5 = QWidget()
-        self.tab_batch = QWidget()
+        self.tab_html2epub = QWidget()
+        self.tab_recompress = QWidget()
 
+        self.tabs.addTab(self.tab_batch, "📚 批次多書處理")
         self.tabs.addTab(self.tab_oneclick, "🚀 一鍵端到端總控")
         self.tabs.addTab(self.tab_step1, "📐 步驟 1: 幾何轉正裁切")
         self.tabs.addTab(self.tab_step2, "📑 步驟 2: 目錄抽取 (TOC)")
         self.tabs.addTab(self.tab_step3, "🤖 步驟 3: AI 版面與 EPUB")
         self.tabs.addTab(self.tab_step4, "📁 步驟 4: 章節目錄歸檔")
         self.tabs.addTab(self.tab_step5, "🩹 步驟 5: 異常頁微創修復")
-        self.tabs.addTab(self.tab_batch, "📚 批次多書處理")
+        self.tabs.addTab(self.tab_html2epub, "📖 HTML 直接轉 EPUB")
+        self.tabs.addTab(self.tab_recompress, "🖼️ 圖片壓縮與縮放")
 
+        self.init_tab_batch()
         self.init_tab_oneclick()
         self.init_tab_step1()
         self.init_tab_step2()
         self.init_tab_step3()
         self.init_tab_step4()
         self.init_tab_step5()
-        self.init_tab_batch()
+        self.init_tab_html2epub()
+        self.init_tab_recompress()
 
     # -------------------------------------------------------------
-    # Tab 0: 一鍵端到端總控 (process_book.py)
+    # Tab 1: 一鍵端到端總控 (process_book.py)
     # -------------------------------------------------------------
     def init_tab_oneclick(self):
         layout = QVBoxLayout(self.tab_oneclick)
-        layout.addWidget(self.create_pref_toolbar(0))
+        layout.addWidget(self.create_pref_toolbar(1))
         form = QFormLayout()
 
         self.oc_input = QLineEdit("samples")
@@ -1075,11 +1081,11 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
     # -------------------------------------------------------------
-    # Tab 1: 幾何預處理 (preprocess_scantailor.py)
+    # Tab 2: 幾何預處理 (preprocess_scantailor.py)
     # -------------------------------------------------------------
     def init_tab_step1(self):
         layout = QVBoxLayout(self.tab_step1)
-        layout.addWidget(self.create_pref_toolbar(1))
+        layout.addWidget(self.create_pref_toolbar(2))
         form = QFormLayout()
 
         self.s1_input = QLineEdit("samples")
@@ -1188,11 +1194,11 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
     # -------------------------------------------------------------
-    # Tab 2: 抽取目錄結構 (extract_toc.py)
+    # Tab 3: 抽取目錄結構 (extract_toc.py)
     # -------------------------------------------------------------
     def init_tab_step2(self):
         layout = QVBoxLayout(self.tab_step2)
-        layout.addWidget(self.create_pref_toolbar(2))
+        layout.addWidget(self.create_pref_toolbar(3))
         form = QFormLayout()
 
         self.s2_input = QLineEdit("")
@@ -1279,11 +1285,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "JSON 格式錯誤", f"無法儲存，JSON 語法有誤:\n{e}")
 
     # -------------------------------------------------------------
-    # Tab 3: AI 版面分析與 OCR + HTML/EPUB 生成 (pipeline.py)
+    # Tab 4: AI 版面分析與 OCR + HTML/EPUB 生成 (pipeline.py)
     # -------------------------------------------------------------
     def init_tab_step3(self):
         layout = QVBoxLayout(self.tab_step3)
-        layout.addWidget(self.create_pref_toolbar(3))
+        layout.addWidget(self.create_pref_toolbar(4))
         form = QFormLayout()
 
         self.s3_input = QLineEdit("preprocessed_samples")
@@ -1432,11 +1438,11 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
     # -------------------------------------------------------------
-    # Tab 4: 章節目錄歸檔 (extract_toc.py --organize-pages)
+    # Tab 5: 章節目錄歸檔 (extract_toc.py --organize-pages)
     # -------------------------------------------------------------
     def init_tab_step4(self):
         layout = QVBoxLayout(self.tab_step4)
-        layout.addWidget(self.create_pref_toolbar(4))
+        layout.addWidget(self.create_pref_toolbar(5))
         form = QFormLayout()
 
         self.s4_target = QLineEdit("preprocessed_samples")
@@ -1477,11 +1483,11 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
     # -------------------------------------------------------------
-    # Tab 5: 頁面微創替換與校對 (patch_pages.py)
+    # Tab 6: 頁面微創替換與校對 (patch_pages.py)
     # -------------------------------------------------------------
     def init_tab_step5(self):
         layout = QVBoxLayout(self.tab_step5)
-        layout.addWidget(self.create_pref_toolbar(5))
+        layout.addWidget(self.create_pref_toolbar(6))
         form = QFormLayout()
 
         self.s5_html = QLineEdit("output/book.html")
@@ -1558,11 +1564,11 @@ class MainWindow(QMainWindow):
             self.execute_cmd_list(cmd)
 
     # -------------------------------------------------------------
-    # Tab 6: 批次多書處理 (batch_process.py)
+    # Tab 0: 批次多書處理 (batch_process.py)
     # -------------------------------------------------------------
     def init_tab_batch(self):
         layout = QVBoxLayout(self.tab_batch)
-        layout.addWidget(self.create_pref_toolbar(6))
+        layout.addWidget(self.create_pref_toolbar(0))
         form = QFormLayout()
 
         # 1. 書籍母目錄
@@ -1769,6 +1775,342 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "讀取失敗", f"無法讀取批次報告:\n{e}")
 
     # -------------------------------------------------------------
+    # Tab 7: HTML 直接轉 EPUB (html_to_epub.py)
+    # -------------------------------------------------------------
+    def init_tab_html2epub(self):
+        layout = QVBoxLayout(self.tab_html2epub)
+        layout.addWidget(self.create_pref_toolbar(7))
+        form = QFormLayout()
+
+        # 1. 待轉換 HTML
+        self.h2e_html = QLineEdit("output/book.html")
+        self.h2e_html.textChanged.connect(self.update_command_preview)
+        btn_h2e_html = QPushButton("瀏覽 HTML...")
+        btn_h2e_html.clicked.connect(self.browse_h2e_html)
+        h_html = QHBoxLayout()
+        h_html.addWidget(self.h2e_html)
+        h_html.addWidget(btn_h2e_html)
+        form.addRow("待轉換 HTML (--html):", h_html)
+
+        # 2. 輸出 EPUB 檔案
+        self.h2e_output = QLineEdit("")
+        self.h2e_output.setPlaceholderText("留空則與 HTML 同目錄同名之 .epub (例如: output/book.epub)")
+        self.h2e_output.textChanged.connect(self.update_command_preview)
+        btn_h2e_out = QPushButton("另存為...")
+        btn_h2e_out.clicked.connect(self.browse_h2e_output)
+        h_out = QHBoxLayout()
+        h_out.addWidget(self.h2e_output)
+        h_out.addWidget(btn_h2e_out)
+        form.addRow("輸出 EPUB 檔名 (--output):", h_out)
+
+        # 3. 插圖資源目錄與目錄 JSON
+        h_res = QHBoxLayout()
+        self.h2e_images = QLineEdit("")
+        self.h2e_images.setPlaceholderText("留空則使用 HTML 同目錄旁之 images/")
+        self.h2e_images.textChanged.connect(self.update_command_preview)
+        btn_img = QPushButton("選取目錄...")
+        btn_img.clicked.connect(lambda: self.browse_dir(self.h2e_images))
+        h_res.addWidget(QLabel("插圖目錄 (--images):"))
+        h_res.addWidget(self.h2e_images)
+        h_res.addWidget(btn_img)
+
+        self.h2e_toc = QLineEdit("")
+        self.h2e_toc.setPlaceholderText("留空則自動讀取同目錄 toc.json")
+        self.h2e_toc.textChanged.connect(self.update_command_preview)
+        btn_toc = QPushButton("選取 JSON...")
+        btn_toc.clicked.connect(self.browse_h2e_toc)
+        h_res.addWidget(QLabel("目錄設定 (--toc):"))
+        h_res.addWidget(self.h2e_toc)
+        h_res.addWidget(btn_toc)
+        form.addRow("資源與目錄索引:", h_res)
+
+        # 4. 書籍元資料 (標題、作者、語系)
+        h_meta = QHBoxLayout()
+        self.h2e_title = QLineEdit("")
+        self.h2e_title.setPlaceholderText("留空自動抽取 HTML <title>")
+        self.h2e_title.textChanged.connect(self.update_command_preview)
+        h_meta.addWidget(QLabel("書名 (--title):"))
+        h_meta.addWidget(self.h2e_title)
+
+        self.h2e_author = QLineEdit("")
+        self.h2e_author.setPlaceholderText("選填")
+        self.h2e_author.textChanged.connect(self.update_command_preview)
+        h_meta.addWidget(QLabel("作者 (--author):"))
+        h_meta.addWidget(self.h2e_author)
+
+        self.h2e_lang = QLineEdit("")
+        self.h2e_lang.setPlaceholderText("預設: zh-TW")
+        self.h2e_lang.textChanged.connect(self.update_command_preview)
+        h_meta.addWidget(QLabel("語系 (--lang):"))
+        h_meta.addWidget(self.h2e_lang)
+        form.addRow("書籍中繼資料:", h_meta)
+
+        # 5. 封面圖檔設定
+        self.h2e_cover = QLineEdit("")
+        self.h2e_cover.setPlaceholderText("留空則自動搜尋 Cover-*.jpg 或 cover.*")
+        self.h2e_cover.textChanged.connect(self.update_command_preview)
+        btn_cov_browse = QPushButton("瀏覽圖檔...")
+        btn_cov_browse.clicked.connect(lambda: self.browse_image_file(self.h2e_cover))
+        btn_cov_detect = QPushButton("🔄 自動偵測")
+        btn_cov_detect.clicked.connect(lambda: self.auto_detect_cover_for_tab(self.h2e_html, self.h2e_cover))
+        h_cov = QHBoxLayout()
+        h_cov.addWidget(self.h2e_cover)
+        h_cov.addWidget(btn_cov_browse)
+        h_cov.addWidget(btn_cov_detect)
+        form.addRow("EPUB 封面圖檔 (--cover):", h_cov)
+
+        # 6. 排版方向設定 (橫排 / 直排 RTL / 自動)
+        h_layout_dir = QHBoxLayout()
+        self.h2e_layout_dir = QComboBox()
+        self.h2e_layout_dir.addItem("auto (預設：自動讀取 toc.json 或 HTML 樣式特徵)", "auto")
+        self.h2e_layout_dir.addItem("horizontal (橫排 / LTR 翻頁)", "horizontal")
+        self.h2e_layout_dir.addItem("vertical (直排 / vertical-rl / RTL 翻頁)", "vertical")
+        self.h2e_layout_dir.currentIndexChanged.connect(self.update_command_preview)
+        h_layout_dir.addWidget(self.h2e_layout_dir)
+        form.addRow("排版方向 (--layout-direction):", h_layout_dir)
+
+        # 7. 插圖壓縮與尺寸縮放群組
+        box_img = QGroupBox("插圖即時壓縮與最佳化 (可顯著減小 EPUB 體積)")
+        form_img = QFormLayout(box_img)
+
+        self.h2e_compress_images = QCheckBox("啟用插圖重新壓縮與縮放 (--compress-images)")
+        self.h2e_compress_images.setChecked(False)
+        self.h2e_compress_images.stateChanged.connect(self.update_command_preview)
+        form_img.addRow(self.h2e_compress_images)
+
+        h_img_params = QHBoxLayout()
+        self.h2e_img_quality = QSpinBox()
+        self.h2e_img_quality.setRange(1, 100)
+        self.h2e_img_quality.setValue(75)
+        self.h2e_img_quality.valueChanged.connect(self.update_command_preview)
+        h_img_params.addWidget(QLabel("壓縮品質 (1-100):"))
+        h_img_params.addWidget(self.h2e_img_quality)
+
+        self.h2e_img_scale = QDoubleSpinBox()
+        self.h2e_img_scale.setRange(0.1, 2.0)
+        self.h2e_img_scale.setSingleStep(0.05)
+        self.h2e_img_scale.setValue(1.0)
+        self.h2e_img_scale.valueChanged.connect(self.update_command_preview)
+        h_img_params.addWidget(QLabel("縮放比例 (例如 0.8):"))
+        h_img_params.addWidget(self.h2e_img_scale)
+
+        self.h2e_img_max_dim = QSpinBox()
+        self.h2e_img_max_dim.setRange(0, 8192)
+        self.h2e_img_max_dim.setValue(0)
+        self.h2e_img_max_dim.setSpecialValueText("不限制")
+        self.h2e_img_max_dim.valueChanged.connect(self.update_command_preview)
+        h_img_params.addWidget(QLabel("長邊限制 (像素):"))
+        h_img_params.addWidget(self.h2e_img_max_dim)
+        form_img.addRow("壓縮與縮放參數:", h_img_params)
+
+        self.h2e_img_unsharp = QLineEdit("")
+        self.h2e_img_unsharp.setPlaceholderText("選填，例如 1x0.55+1.5+0.002，留空表示關閉")
+        self.h2e_img_unsharp.textChanged.connect(self.update_command_preview)
+        form_img.addRow("影像銳化遮色片 (--image-unsharp):", self.h2e_img_unsharp)
+
+        form.addRow(box_img)
+
+        # 8. 進階排版與格式參數
+        box_adv = QGroupBox("進階排版設定")
+        form_adv = QFormLayout(box_adv)
+
+        h_adv1 = QHBoxLayout()
+        self.h2e_toc_depth = QSpinBox()
+        self.h2e_toc_depth.setRange(1, 6)
+        self.h2e_toc_depth.setValue(3)
+        self.h2e_toc_depth.valueChanged.connect(self.update_command_preview)
+        h_adv1.addWidget(QLabel("目錄層級深度 (--toc-depth):"))
+        h_adv1.addWidget(self.h2e_toc_depth)
+
+        self.h2e_chapter_level = QSpinBox()
+        self.h2e_chapter_level.setRange(1, 6)
+        self.h2e_chapter_level.setValue(1)
+        self.h2e_chapter_level.valueChanged.connect(self.update_command_preview)
+        h_adv1.addWidget(QLabel("章節切分標題層級 (--chapter-level):"))
+        h_adv1.addWidget(self.h2e_chapter_level)
+        form_adv.addRow(h_adv1)
+
+        h_adv2 = QHBoxLayout()
+        self.h2e_enable_toc = QCheckBox("生成 EPUB 導覽目錄 (TOC)")
+        self.h2e_enable_toc.setChecked(True)
+        self.h2e_enable_toc.stateChanged.connect(self.update_command_preview)
+        h_adv2.addWidget(self.h2e_enable_toc)
+
+        self.h2e_mathml = QCheckBox("啟用 LaTeX 公式至 MathML 向量轉譯")
+        self.h2e_mathml.setChecked(True)
+        self.h2e_mathml.stateChanged.connect(self.update_command_preview)
+        h_adv2.addWidget(self.h2e_mathml)
+        form_adv.addRow("輸出控制:", h_adv2)
+
+        self.h2e_css = QLineEdit("")
+        self.h2e_css.setPlaceholderText("選填，自訂樣式表 CSS 檔案路徑")
+        self.h2e_css.textChanged.connect(self.update_command_preview)
+        btn_css = QPushButton("選取 CSS...")
+        btn_css.clicked.connect(self.browse_h2e_css)
+        h_css = QHBoxLayout()
+        h_css.addWidget(self.h2e_css)
+        h_css.addWidget(btn_css)
+        form_adv.addRow("自訂 CSS 樣式 (--css):", h_css)
+
+        form.addRow(box_adv)
+
+        layout.addLayout(form)
+        desc = QLabel(
+            "<b>說明：</b> 由現有 <code>book.html</code> 與 <code>images/</code> 秒級直接編譯 EPUB3 電子書，"
+            "預設自動讀取 <code>toc.json</code> 注入直排/橫排排版方向與章節導覽大綱，免除耗時重跑 OCR。"
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #444; margin-top: 6px;")
+        layout.addWidget(desc)
+        layout.addStretch()
+
+    def browse_h2e_html(self):
+        f, _ = QFileDialog.getOpenFileName(self, "選取 HTML 檔案", str(Path.cwd()), "HTML 檔案 (*.html *.htm);;所有檔案 (*.*)")
+        if f:
+            p = Path(f)
+            self.h2e_html.setText(format_rel_path(p))
+            if not self.h2e_output.text().strip():
+                self.h2e_output.setText(format_rel_path(p.with_suffix('.epub')))
+
+    def browse_h2e_output(self):
+        f, _ = QFileDialog.getSaveFileName(self, "另存 EPUB 檔案", str(Path.cwd()), "EPUB 檔案 (*.epub);;所有檔案 (*.*)")
+        if f:
+            self.h2e_output.setText(format_rel_path(Path(f)))
+
+    def browse_h2e_toc(self):
+        f, _ = QFileDialog.getOpenFileName(self, "選取目錄結構 JSON", str(Path.cwd()), "JSON 檔案 (*.json);;所有檔案 (*.*)")
+        if f:
+            self.h2e_toc.setText(format_rel_path(Path(f)))
+
+    def browse_h2e_css(self):
+        f, _ = QFileDialog.getOpenFileName(self, "選取自訂 CSS", str(Path.cwd()), "CSS 檔案 (*.css);;所有檔案 (*.*)")
+        if f:
+            self.h2e_css.setText(format_rel_path(Path(f)))
+
+    # -------------------------------------------------------------
+    # Tab 8: 圖片壓縮與縮放 (recompress_images.py)
+    # -------------------------------------------------------------
+    def init_tab_recompress(self):
+        layout = QVBoxLayout(self.tab_recompress)
+        layout.addWidget(self.create_pref_toolbar(8))
+        form = QFormLayout()
+
+        # 1. 輸入目錄
+        self.rc_input = QLineEdit("output/images")
+        self.rc_input.setPlaceholderText("包含 JPG/PNG 圖檔的來源目錄路徑")
+        self.rc_input.textChanged.connect(self.update_command_preview)
+        btn_rc_in = QPushButton("瀏覽來源...")
+        btn_rc_in.clicked.connect(lambda: self.browse_dir(self.rc_input))
+        h_in = QHBoxLayout()
+        h_in.addWidget(self.rc_input)
+        h_in.addWidget(btn_rc_in)
+        form.addRow("輸入來源目錄 (--input):", h_in)
+
+        # 2. 輸出目錄
+        self.rc_output = QLineEdit("output/images_compressed")
+        self.rc_output.setPlaceholderText("輸出目標新目錄 (將完整鏡像子目錄結構)")
+        self.rc_output.textChanged.connect(self.update_command_preview)
+        btn_rc_out = QPushButton("瀏覽目標...")
+        btn_rc_out.clicked.connect(lambda: self.browse_dir(self.rc_output))
+        h_out = QHBoxLayout()
+        h_out.addWidget(self.rc_output)
+        h_out.addWidget(btn_rc_out)
+        form.addRow("輸出目標目錄 (--output):", h_out)
+
+        # 3. 核心壓縮與縮放設定
+        h_core = QHBoxLayout()
+        self.rc_quality = QSpinBox()
+        self.rc_quality.setRange(1, 100)
+        self.rc_quality.setValue(50)  # 預設 50
+        self.rc_quality.valueChanged.connect(self.update_command_preview)
+        h_core.addWidget(QLabel("壓縮品質 (--quality):"))
+        h_core.addWidget(self.rc_quality)
+
+        self.rc_scale = QDoubleSpinBox()
+        self.rc_scale.setRange(0.05, 3.0)
+        self.rc_scale.setSingleStep(0.05)
+        self.rc_scale.setValue(1.0)  # 預設 1.0
+        self.rc_scale.valueChanged.connect(self.update_command_preview)
+        h_core.addWidget(QLabel("尺寸縮放 (--scale):"))
+        h_core.addWidget(self.rc_scale)
+
+        self.rc_max_dim = QSpinBox()
+        self.rc_max_dim.setRange(0, 16384)
+        self.rc_max_dim.setValue(0)
+        self.rc_max_dim.setSpecialValueText("不限制")
+        self.rc_max_dim.valueChanged.connect(self.update_command_preview)
+        h_core.addWidget(QLabel("長邊限制 (--max-dim):"))
+        h_core.addWidget(self.rc_max_dim)
+
+        form.addRow("品質與尺寸設定:", h_core)
+
+        # 4. 影像銳化遮色片 (Unsharp Mask)
+        self.rc_unsharp = QLineEdit("1x0.55+1.5+0.002")  # 預設 1x0.55+1.5+0.002
+        self.rc_unsharp.setPlaceholderText("ImageMagick 語法例如 1x0.55+1.5+0.002，留空或 off 為停用")
+        self.rc_unsharp.textChanged.connect(self.update_command_preview)
+        btn_rc_unsharp_reset = QPushButton("重設預設")
+        btn_rc_unsharp_reset.clicked.connect(lambda: self.rc_unsharp.setText("1x0.55+1.5+0.002"))
+        btn_rc_unsharp_clear = QPushButton("關閉銳化")
+        btn_rc_unsharp_clear.clicked.connect(lambda: self.rc_unsharp.setText(""))
+        h_unsharp = QHBoxLayout()
+        h_unsharp.addWidget(self.rc_unsharp)
+        h_unsharp.addWidget(btn_rc_unsharp_reset)
+        h_unsharp.addWidget(btn_rc_unsharp_clear)
+        form.addRow("銳化遮色片 (--unsharp):", h_unsharp)
+
+        # 5. 並行與進階編碼選項
+        h_adv = QHBoxLayout()
+        self.rc_workers = QSpinBox()
+        self.rc_workers.setRange(1, 64)
+        self.rc_workers.setValue(min(32, max(1, os.cpu_count() or 4)))
+        self.rc_workers.valueChanged.connect(self.update_command_preview)
+        h_adv.addWidget(QLabel("並行 Worker 數 (--workers):"))
+        h_adv.addWidget(self.rc_workers)
+
+        self.rc_subsampling = QComboBox()
+        self.rc_subsampling.addItems(["keep", "444", "422", "420"])
+        self.rc_subsampling.setCurrentText("keep")
+        self.rc_subsampling.currentIndexChanged.connect(self.update_command_preview)
+        h_adv.addWidget(QLabel("JPG 色彩抽樣 (--subsampling):"))
+        h_adv.addWidget(self.rc_subsampling)
+        form.addRow("並行與編碼模式:", h_adv)
+
+        # 6. 進階旗標控制
+        grid_flags = QGridLayout()
+        self.rc_png_lossless = QCheckBox("PNG 保持無損全彩 (--png-lossless)")
+        self.rc_png_lossless.stateChanged.connect(self.update_command_preview)
+        grid_flags.addWidget(self.rc_png_lossless, 0, 0)
+
+        self.rc_optimize = QCheckBox("啟用 Huffman/zlib 編碼最佳化")
+        self.rc_optimize.setChecked(True)
+        self.rc_optimize.stateChanged.connect(self.update_command_preview)
+        grid_flags.addWidget(self.rc_optimize, 0, 1)
+
+        self.rc_progressive = QCheckBox("JPG 漸進式編碼 (--progressive)")
+        self.rc_progressive.stateChanged.connect(self.update_command_preview)
+        grid_flags.addWidget(self.rc_progressive, 1, 0)
+
+        self.rc_strip_metadata = QCheckBox("移除 EXIF/中繼資料 (--strip-metadata)")
+        self.rc_strip_metadata.stateChanged.connect(self.update_command_preview)
+        grid_flags.addWidget(self.rc_strip_metadata, 1, 1)
+
+        self.rc_dry_run = QCheckBox("模擬運行預覽清單 (--dry-run)")
+        self.rc_dry_run.stateChanged.connect(self.update_command_preview)
+        grid_flags.addWidget(self.rc_dry_run, 2, 0)
+
+        form.addRow("進階開關與旗標:", grid_flags)
+
+        layout.addLayout(form)
+        desc = QLabel(
+            "<b>說明：</b> 遞迴掃描輸入目錄下的所有 JPG 與 PNG 檔案，依設定執行尺寸縮放、品質壓縮與銳化增強，"
+            "並鏡像維持相對目錄結構輸出至新目錄；支援無損 PNG 保留與多核心並行加速。"
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #444; margin-top: 6px;")
+        layout.addWidget(desc)
+        layout.addStretch()
+
+    # -------------------------------------------------------------
     # 輔助與事件處理
     # -------------------------------------------------------------
     def get_script_path(self, script_name: str) -> str:
@@ -1848,7 +2190,11 @@ class MainWindow(QMainWindow):
     def auto_detect_cover_for_tab(self, dir_input: QLineEdit, cover_input: QLineEdit):
         """在指定的輸入或輸出目錄中自動偵測 Cover 圖檔"""
         target_dir_str = dir_input.text().strip() or "samples"
-        search_dirs = [Path(target_dir_str)]
+        p_target = Path(target_dir_str)
+        search_dirs = []
+        if p_target.is_file():
+            search_dirs.append(p_target.parent)
+        search_dirs.append(p_target)
         out_dir = Path("output")
         if out_dir.exists():
             search_dirs.append(out_dir)
@@ -2040,137 +2386,10 @@ class MainWindow(QMainWindow):
 
     def get_current_cmd_list(self) -> List[str]:
         """根據目前分頁與欄位產生完整命令清單"""
-        idx = self.tabs.currentIndex()
+        curr_w = self.tabs.currentWidget()
         py_bin = self.get_python_bin()
 
-        if idx == 0:  # 一鍵端到端 (process_book.py)
-            cmd = [py_bin, self.get_script_path("process_book.py")]
-            in_dir = self.oc_input.text().strip() or "samples"
-            out_dir = self.oc_output.text().strip() or "output"
-            cmd.extend(["--input", in_dir, "--output", out_dir])
-            if self.oc_models_dir.text().strip():
-                cmd.extend(["--models-dir", self.oc_models_dir.text().strip()])
-            if self.oc_title.text().strip():
-                cmd.extend(["--title", self.oc_title.text().strip()])
-            if self.oc_cover.text().strip():
-                cmd.extend(["--cover", self.oc_cover.text().strip()])
-            if self.oc_dpi.text().strip():
-                cmd.extend(["--dpi", self.oc_dpi.text().strip()])
-            if self.oc_unsharp.text().strip():
-                cmd.extend(["--unsharp", self.oc_unsharp.text().strip()])
-            cmd.extend(["--workers", str(self.oc_workers.value())])
-            cmd.extend(["--batch-size", str(self.oc_batch.value())])
-            if self.oc_compress_images.isChecked():
-                cmd.append("--compress-images")
-                cmd.extend(["--image-quality", str(self.oc_img_quality.value())])
-                cmd.extend(["--image-scale", str(self.oc_img_scale.value())])
-                if self.oc_img_max_dim.value() > 0:
-                    cmd.extend(["--image-max-dim", str(self.oc_img_max_dim.value())])
-                if self.oc_img_unsharp.text().strip():
-                    cmd.extend(["--image-unsharp", self.oc_img_unsharp.text().strip()])
-            skips = safe_split_args(self.oc_skip.text())
-            if skips:
-                cmd.extend(["--skip-ocr"] + skips)
-            if not self.oc_epub.isChecked():
-                cmd.append("--no-epub")
-            if not self.oc_organize.isChecked():
-                cmd.append("--no-organize-pages")
-            if self.oc_copy.isChecked():
-                cmd.append("--copy")
-            return cmd
-
-        elif idx == 1:  # 步驟 1: preprocess_scantailor.py
-            cmd = [py_bin, self.get_script_path("preprocess_scantailor.py")]
-            in_args = safe_split_args(self.s1_input.text())
-            cmd.extend(["--input"] + (in_args if in_args else ["samples"]))
-            cmd.extend(["--output", self.s1_output.text().strip() or "preprocessed_samples"])
-            cmd.extend(["--color-mode", self.s1_color.currentText()])
-            cmd.extend(["--despeckle", self.s1_despeckle.currentText()])
-            cmd.extend(["--margins", str(self.s1_margins.value())])
-            cmd.extend(["--format", self.s1_format.currentText()])
-            cmd.extend(["--quality", str(self.s1_quality.value())])
-            cmd.extend(["--scale", str(self.s1_scale.value())])
-            if self.s1_unsharp.text().strip():
-                cmd.extend(["--unsharp", self.s1_unsharp.text().strip()])
-            if self.s1_dpi.text().strip():
-                cmd.extend(["--dpi", self.s1_dpi.text().strip()])
-            s1_skips = safe_split_args(self.s1_skip.text())
-            if s1_skips:
-                cmd.extend(["--skip-orc"] + s1_skips)
-            return cmd
-
-        elif idx == 2:  # 步驟 2: extract_toc.py
-            cmd = [py_bin, self.get_script_path("extract_toc.py")]
-            in_files = safe_split_args(self.s2_input.text())
-            if in_files:
-                cmd.extend(["--input"] + in_files)
-            cmd.extend(["--output", self.s2_output.text().strip() or "toc.json"])
-            if self.s2_title.text().strip():
-                cmd.extend(["--book-title", self.s2_title.text().strip()])
-            if self.s2_models_dir.text().strip():
-                cmd.extend(["--models-dir", self.s2_models_dir.text().strip()])
-            return cmd
-
-        elif idx == 3:  # 步驟 3: pipeline.py
-            cmd = [py_bin, self.get_script_path("pipeline.py")]
-            cmd.extend(["--samples", self.s3_input.text().strip() or "preprocessed_samples"])
-            cmd.extend(["--output", self.s3_output.text().strip() or "output"])
-            if self.s3_title.text().strip():
-                cmd.extend(["--title", self.s3_title.text().strip()])
-            if self.s3_toc.text().strip():
-                cmd.extend(["--toc", self.s3_toc.text().strip()])
-            if self.s3_cover.text().strip():
-                cmd.extend(["--cover", self.s3_cover.text().strip()])
-            if self.s3_models_dir.text().strip():
-                cmd.extend(["--models-dir", self.s3_models_dir.text().strip()])
-            cmd.extend(["--workers", str(self.s3_workers.value())])
-            cmd.extend(["--batch-size", str(self.s3_batch.value())])
-            if self.s3_compress_images.isChecked():
-                cmd.append("--compress-images")
-                cmd.extend(["--image-quality", str(self.s3_img_quality.value())])
-                cmd.extend(["--image-scale", str(self.s3_img_scale.value())])
-                if self.s3_img_max_dim.value() > 0:
-                    cmd.extend(["--image-max-dim", str(self.s3_img_max_dim.value())])
-                if self.s3_img_unsharp.text().strip():
-                    cmd.extend(["--image-unsharp", self.s3_img_unsharp.text().strip()])
-            skips = safe_split_args(self.s3_skip.text())
-            if skips:
-                cmd.extend(["--skip-ocr"] + skips)
-            if self.s3_epub.isChecked():
-                cmd.append("--epub")
-            else:
-                cmd.append("--no-epub")
-            if not self.s3_cover_first.isChecked():
-                cmd.append("--no-cover-first")
-            return cmd
-
-        elif idx == 4:  # 步驟 4: extract_toc.py --organize-pages
-            cmd = [py_bin, self.get_script_path("extract_toc.py")]
-            in_files = safe_split_args(self.s4_input.text())
-            if in_files:
-                cmd.extend(["--input"] + in_files)
-            target_dir = self.s4_target.text().strip() or "preprocessed_samples"
-            cmd.extend(["--organize-pages", target_dir])
-            if self.s4_copy.isChecked():
-                cmd.append("--copy")
-            return cmd
-
-        elif idx == 5:  # 步驟 5: patch_pages.py
-            cmd = [py_bin, self.get_script_path("patch_pages.py")]
-            cmd.extend(["--html", self.s5_html.text().strip() or "output/book.html"])
-            pages = safe_split_args(self.s5_pages.text())
-            if pages:
-                cmd.extend(["--pages"] + pages)
-            sources = safe_split_args(self.s5_source.text())
-            if sources:
-                cmd.extend(["--source"] + sources)
-            if not self.s5_epub.isChecked():
-                cmd.append("--no-epub")
-            if not self.s5_backup.isChecked():
-                cmd.append("--no-backup")
-            return cmd
-
-        elif idx == 6:  # 批次多書處理 (batch_process.py)
+        if curr_w == self.tab_batch:  # 批次多書處理 (batch_process.py)
             cmd = [py_bin, self.get_script_path("batch_process.py")]
             in_dir = self.batch_input_dir.text().strip()
             if in_dir:
@@ -2216,6 +2435,208 @@ class MainWindow(QMainWindow):
                 cmd.append("--copy")
             return cmd
 
+        elif curr_w == self.tab_oneclick:  # 一鍵端到端 (process_book.py)
+            cmd = [py_bin, self.get_script_path("process_book.py")]
+            in_dir = self.oc_input.text().strip() or "samples"
+            out_dir = self.oc_output.text().strip() or "output"
+            cmd.extend(["--input", in_dir, "--output", out_dir])
+            if self.oc_models_dir.text().strip():
+                cmd.extend(["--models-dir", self.oc_models_dir.text().strip()])
+            if self.oc_title.text().strip():
+                cmd.extend(["--title", self.oc_title.text().strip()])
+            if self.oc_cover.text().strip():
+                cmd.extend(["--cover", self.oc_cover.text().strip()])
+            if self.oc_dpi.text().strip():
+                cmd.extend(["--dpi", self.oc_dpi.text().strip()])
+            if self.oc_unsharp.text().strip():
+                cmd.extend(["--unsharp", self.oc_unsharp.text().strip()])
+            cmd.extend(["--workers", str(self.oc_workers.value())])
+            cmd.extend(["--batch-size", str(self.oc_batch.value())])
+            if self.oc_compress_images.isChecked():
+                cmd.append("--compress-images")
+                cmd.extend(["--image-quality", str(self.oc_img_quality.value())])
+                cmd.extend(["--image-scale", str(self.oc_img_scale.value())])
+                if self.oc_img_max_dim.value() > 0:
+                    cmd.extend(["--image-max-dim", str(self.oc_img_max_dim.value())])
+                if self.oc_img_unsharp.text().strip():
+                    cmd.extend(["--image-unsharp", self.oc_img_unsharp.text().strip()])
+            skips = safe_split_args(self.oc_skip.text())
+            if skips:
+                cmd.extend(["--skip-ocr"] + skips)
+            if not self.oc_epub.isChecked():
+                cmd.append("--no-epub")
+            if not self.oc_organize.isChecked():
+                cmd.append("--no-organize-pages")
+            if self.oc_copy.isChecked():
+                cmd.append("--copy")
+            return cmd
+
+        elif curr_w == self.tab_step1:  # 步驟 1: preprocess_scantailor.py
+            cmd = [py_bin, self.get_script_path("preprocess_scantailor.py")]
+            in_args = safe_split_args(self.s1_input.text())
+            cmd.extend(["--input"] + (in_args if in_args else ["samples"]))
+            cmd.extend(["--output", self.s1_output.text().strip() or "preprocessed_samples"])
+            cmd.extend(["--color-mode", self.s1_color.currentText()])
+            cmd.extend(["--despeckle", self.s1_despeckle.currentText()])
+            cmd.extend(["--margins", str(self.s1_margins.value())])
+            cmd.extend(["--format", self.s1_format.currentText()])
+            cmd.extend(["--quality", str(self.s1_quality.value())])
+            cmd.extend(["--scale", str(self.s1_scale.value())])
+            if self.s1_unsharp.text().strip():
+                cmd.extend(["--unsharp", self.s1_unsharp.text().strip()])
+            if self.s1_dpi.text().strip():
+                cmd.extend(["--dpi", self.s1_dpi.text().strip()])
+            s1_skips = safe_split_args(self.s1_skip.text())
+            if s1_skips:
+                cmd.extend(["--skip-orc"] + s1_skips)
+            return cmd
+
+        elif curr_w == self.tab_step2:  # 步驟 2: extract_toc.py
+            cmd = [py_bin, self.get_script_path("extract_toc.py")]
+            in_files = safe_split_args(self.s2_input.text())
+            if in_files:
+                cmd.extend(["--input"] + in_files)
+            cmd.extend(["--output", self.s2_output.text().strip() or "toc.json"])
+            if self.s2_title.text().strip():
+                cmd.extend(["--book-title", self.s2_title.text().strip()])
+            if self.s2_models_dir.text().strip():
+                cmd.extend(["--models-dir", self.s2_models_dir.text().strip()])
+            return cmd
+
+        elif curr_w == self.tab_step3:  # 步驟 3: pipeline.py
+            cmd = [py_bin, self.get_script_path("pipeline.py")]
+            cmd.extend(["--samples", self.s3_input.text().strip() or "preprocessed_samples"])
+            cmd.extend(["--output", self.s3_output.text().strip() or "output"])
+            if self.s3_title.text().strip():
+                cmd.extend(["--title", self.s3_title.text().strip()])
+            if self.s3_toc.text().strip():
+                cmd.extend(["--toc", self.s3_toc.text().strip()])
+            if self.s3_cover.text().strip():
+                cmd.extend(["--cover", self.s3_cover.text().strip()])
+            if self.s3_models_dir.text().strip():
+                cmd.extend(["--models-dir", self.s3_models_dir.text().strip()])
+            cmd.extend(["--workers", str(self.s3_workers.value())])
+            cmd.extend(["--batch-size", str(self.s3_batch.value())])
+            if self.s3_compress_images.isChecked():
+                cmd.append("--compress-images")
+                cmd.extend(["--image-quality", str(self.s3_img_quality.value())])
+                cmd.extend(["--image-scale", str(self.s3_img_scale.value())])
+                if self.s3_img_max_dim.value() > 0:
+                    cmd.extend(["--image-max-dim", str(self.s3_img_max_dim.value())])
+                if self.s3_img_unsharp.text().strip():
+                    cmd.extend(["--image-unsharp", self.s3_img_unsharp.text().strip()])
+            skips = safe_split_args(self.s3_skip.text())
+            if skips:
+                cmd.extend(["--skip-ocr"] + skips)
+            if self.s3_epub.isChecked():
+                cmd.append("--epub")
+            else:
+                cmd.append("--no-epub")
+            if not self.s3_cover_first.isChecked():
+                cmd.append("--no-cover-first")
+            return cmd
+
+        elif curr_w == self.tab_step4:  # 步驟 4: extract_toc.py --organize-pages
+            cmd = [py_bin, self.get_script_path("extract_toc.py")]
+            in_files = safe_split_args(self.s4_input.text())
+            if in_files:
+                cmd.extend(["--input"] + in_files)
+            target_dir = self.s4_target.text().strip() or "preprocessed_samples"
+            cmd.extend(["--organize-pages", target_dir])
+            if self.s4_copy.isChecked():
+                cmd.append("--copy")
+            return cmd
+
+        elif curr_w == self.tab_step5:  # 步驟 5: patch_pages.py
+            cmd = [py_bin, self.get_script_path("patch_pages.py")]
+            cmd.extend(["--html", self.s5_html.text().strip() or "output/book.html"])
+            pages = safe_split_args(self.s5_pages.text())
+            if pages:
+                cmd.extend(["--pages"] + pages)
+            sources = safe_split_args(self.s5_source.text())
+            if sources:
+                cmd.extend(["--source"] + sources)
+            if not self.s5_epub.isChecked():
+                cmd.append("--no-epub")
+            if not self.s5_backup.isChecked():
+                cmd.append("--no-backup")
+            return cmd
+
+        elif curr_w == self.tab_html2epub:  # HTML 直接轉 EPUB (html_to_epub.py)
+            cmd = [py_bin, self.get_script_path("html_to_epub.py")]
+            html_in = self.h2e_html.text().strip() or "output/book.html"
+            cmd.extend(["--html", html_in])
+            if self.h2e_output.text().strip():
+                cmd.extend(["--output", self.h2e_output.text().strip()])
+            if self.h2e_images.text().strip():
+                cmd.extend(["--images", self.h2e_images.text().strip()])
+            if self.h2e_toc.text().strip():
+                cmd.extend(["--toc", self.h2e_toc.text().strip()])
+            if self.h2e_title.text().strip():
+                cmd.extend(["--title", self.h2e_title.text().strip()])
+            if self.h2e_author.text().strip():
+                cmd.extend(["--author", self.h2e_author.text().strip()])
+            if self.h2e_lang.text().strip():
+                cmd.extend(["--lang", self.h2e_lang.text().strip()])
+            if self.h2e_cover.text().strip():
+                cmd.extend(["--cover", self.h2e_cover.text().strip()])
+
+            layout_dir = self.h2e_layout_dir.currentData() or "auto"
+            if layout_dir != "auto":
+                cmd.extend(["--layout-direction", layout_dir])
+
+            if self.h2e_compress_images.isChecked():
+                cmd.append("--compress-images")
+                cmd.extend(["--image-quality", str(self.h2e_img_quality.value())])
+                cmd.extend(["--image-scale", str(self.h2e_img_scale.value())])
+                if self.h2e_img_max_dim.value() > 0:
+                    cmd.extend(["--image-max-dim", str(self.h2e_img_max_dim.value())])
+                if self.h2e_img_unsharp.text().strip():
+                    cmd.extend(["--image-unsharp", self.h2e_img_unsharp.text().strip()])
+
+            if self.h2e_toc_depth.value() != 3:
+                cmd.extend(["--toc-depth", str(self.h2e_toc_depth.value())])
+            if self.h2e_chapter_level.value() != 1:
+                cmd.extend(["--chapter-level", str(self.h2e_chapter_level.value())])
+            if not self.h2e_enable_toc.isChecked():
+                cmd.append("--no-toc")
+            if not self.h2e_mathml.isChecked():
+                cmd.append("--no-mathml")
+            if self.h2e_css.text().strip():
+                cmd.extend(["--css", self.h2e_css.text().strip()])
+            return cmd
+
+        elif curr_w == self.tab_recompress:  # 圖片壓縮與縮放 (recompress_images.py)
+            cmd = [py_bin, self.get_script_path("recompress_images.py")]
+            rc_in = self.rc_input.text().strip() or "output/images"
+            rc_out = self.rc_output.text().strip() or "output/images_compressed"
+            cmd.extend(["--input", rc_in, "--output", rc_out])
+            cmd.extend(["--quality", str(self.rc_quality.value())])
+            cmd.extend(["--scale", str(self.rc_scale.value())])
+            if self.rc_max_dim.value() > 0:
+                cmd.extend(["--max-dim", str(self.rc_max_dim.value())])
+            cmd.extend(["--workers", str(self.rc_workers.value())])
+
+            unsharp_val = self.rc_unsharp.text().strip()
+            if not unsharp_val or unsharp_val.lower() in ("off", "none", "false", "0"):
+                cmd.append("--no-unsharp")
+            else:
+                cmd.extend(["--unsharp", unsharp_val])
+
+            if self.rc_subsampling.currentText() != "keep":
+                cmd.extend(["--subsampling", self.rc_subsampling.currentText()])
+            if self.rc_png_lossless.isChecked():
+                cmd.append("--png-lossless")
+            if not self.rc_optimize.isChecked():
+                cmd.append("--no-optimize")
+            if self.rc_progressive.isChecked():
+                cmd.append("--progressive")
+            if self.rc_strip_metadata.isChecked():
+                cmd.append("--strip-metadata")
+            if self.rc_dry_run.isChecked():
+                cmd.append("--dry-run")
+            return cmd
+
         return [py_bin]
 
     def update_command_preview(self):
@@ -2252,13 +2673,15 @@ class MainWindow(QMainWindow):
     # JSON 偏好設定與參數範本匯入 / 匯出 (Phase 1)
     # -------------------------------------------------------------
     TAB_CONFIG_META = {
-        0: {"name": "一鍵端到端總控", "default_file": "book_config.json", "tool": "process_book.py"},
-        1: {"name": "步驟 1: 幾何轉正裁切", "default_file": "step1_config.json", "tool": "preprocess_scantailor.py"},
-        2: {"name": "步驟 2: 目錄抽取 (TOC)", "default_file": "toc_config.json", "tool": "extract_toc.py"},
-        3: {"name": "步驟 3: AI 版面與 EPUB", "default_file": "step3_config.json", "tool": "pipeline.py"},
-        4: {"name": "步驟 4: 章節目錄歸檔", "default_file": "organize_config.json", "tool": "extract_toc.py"},
-        5: {"name": "步驟 5: 異常頁微創修復", "default_file": "patch_config.json", "tool": "patch_pages.py"},
-        6: {"name": "批次多書處理", "default_file": "batch_config.json", "tool": "batch_process.py"},
+        0: {"name": "批次多書處理", "default_file": "batch_config.json", "tool": "batch_process.py"},
+        1: {"name": "一鍵端到端總控", "default_file": "book_config.json", "tool": "process_book.py"},
+        2: {"name": "步驟 1: 幾何轉正裁切", "default_file": "step1_config.json", "tool": "preprocess_scantailor.py"},
+        3: {"name": "步驟 2: 目錄抽取 (TOC)", "default_file": "toc_config.json", "tool": "extract_toc.py"},
+        4: {"name": "步驟 3: AI 版面與 EPUB", "default_file": "step3_config.json", "tool": "pipeline.py"},
+        5: {"name": "步驟 4: 章節目錄歸檔", "default_file": "organize_config.json", "tool": "extract_toc.py"},
+        6: {"name": "步驟 5: 異常頁微創修復", "default_file": "patch_config.json", "tool": "patch_pages.py"},
+        7: {"name": "HTML 直接轉 EPUB", "default_file": "epub_config.json", "tool": "html_to_epub.py"},
+        8: {"name": "圖片壓縮與縮放", "default_file": "recompress_config.json", "tool": "recompress_images.py"},
     }
 
     def setup_menu_bar(self):
@@ -2327,128 +2750,9 @@ class MainWindow(QMainWindow):
 
     def export_tab_config(self, tab_idx: int) -> dict:
         """依據當前分頁 UI 元件數值，匯出為格式化 JSON 字典"""
-        if tab_idx == 0:
-            dpi_val = None
-            dpi_text = self.oc_dpi.text().strip()
-            if dpi_text.isdigit():
-                dpi_val = int(dpi_text)
+        target_w = self.tabs.widget(tab_idx)
 
-            max_dim_val = self.oc_img_max_dim.value()
-            if max_dim_val <= 0:
-                max_dim_val = None
-
-            return {
-                "input": self.oc_input.text().strip() or "samples",
-                "output": self.oc_output.text().strip() or "output",
-                "title": self.oc_title.text().strip(),
-                "toc": None,
-                "force_toc": False,
-                "models_dir": self.oc_models_dir.text().strip() or None,
-                "dpi": dpi_val,
-                "margins": 1,
-                "quality": 50,
-                "scale": 1.0,
-                "unsharp": self.oc_unsharp.text().strip(),
-                "color_mode": "color_grayscale",
-                "batch_size": self.oc_batch.value(),
-                "workers": self.oc_workers.value(),
-                "skip_ocr": safe_split_args(self.oc_skip.text()),
-                "epub": self.oc_epub.isChecked(),
-                "cover": self.oc_cover.text().strip() or None,
-                "compress_images": self.oc_compress_images.isChecked(),
-                "image_quality": self.oc_img_quality.value(),
-                "image_scale": round(float(self.oc_img_scale.value()), 2),
-                "image_max_dim": max_dim_val,
-                "image_unsharp": self.oc_img_unsharp.text().strip() or None,
-                "organize_pages": self.oc_organize.isChecked(),
-                "copy": self.oc_copy.isChecked(),
-                "organize_target": "preprocessed"
-            }
-
-        elif tab_idx == 1:
-            dpi_val = None
-            dpi_text = self.s1_dpi.text().strip()
-            if dpi_text.isdigit():
-                dpi_val = int(dpi_text)
-
-            in_args = safe_split_args(self.s1_input.text())
-            return {
-                "input": in_args if in_args else ["samples"],
-                "output": self.s1_output.text().strip() or "preprocessed_samples",
-                "format": self.s1_format.currentText(),
-                "dpi": dpi_val,
-                "margins": self.s1_margins.value(),
-                "color_mode": self.s1_color.currentText(),
-                "despeckle": self.s1_despeckle.currentText(),
-                "quality": self.s1_quality.value(),
-                "scale": round(float(self.s1_scale.value()), 2),
-                "unsharp": self.s1_unsharp.text().strip(),
-                "batch_size": 0,
-                "skip_ocr": safe_split_args(self.s1_skip.text())
-            }
-
-        elif tab_idx == 2:
-            in_args = safe_split_args(self.s2_input.text())
-            return {
-                "input": in_args if in_args else [],
-                "output": self.s2_output.text().strip() or "toc.json",
-                "models_dir": self.s2_models_dir.text().strip() or None,
-                "model_dir": "models/glm-ocr",
-                "book_title": self.s2_title.text().strip(),
-                "organize_pages": None,
-                "copy": False
-            }
-
-        elif tab_idx == 3:
-            samples = safe_split_args(self.s3_input.text())
-            max_dim_val = self.s3_img_max_dim.value()
-            if max_dim_val <= 0:
-                max_dim_val = None
-
-            return {
-                "samples": samples if samples else ["preprocessed_samples"],
-                "output": self.s3_output.text().strip() or "output",
-                "title": self.s3_title.text().strip() or "數位化掃描書本",
-                "toc": self.s3_toc.text().strip() or None,
-                "models_dir": self.s3_models_dir.text().strip() or None,
-                "epub": self.s3_epub.isChecked(),
-                "cover": self.s3_cover.text().strip() or None,
-                "compress_images": self.s3_compress_images.isChecked(),
-                "image_quality": self.s3_img_quality.value(),
-                "image_scale": round(float(self.s3_img_scale.value()), 2),
-                "image_max_dim": max_dim_val,
-                "image_unsharp": self.s3_img_unsharp.text().strip() or None,
-                "batch_size": self.s3_batch.value(),
-                "workers": self.s3_workers.value(),
-                "recursive": True,
-                "cover_first": self.s3_cover_first.isChecked(),
-                "skip_ocr": safe_split_args(self.s3_skip.text())
-            }
-
-        elif tab_idx == 4:
-            in_args = safe_split_args(self.s4_input.text())
-            return {
-                "input": in_args if in_args else [],
-                "output": "toc.json",
-                "model_dir": "models/glm-ocr",
-                "book_title": "",
-                "organize_pages": self.s4_target.text().strip() or "preprocessed_samples",
-                "copy": self.s4_copy.isChecked()
-            }
-
-        elif tab_idx == 5:
-            sources = safe_split_args(self.s5_source.text())
-            return {
-                "pages": safe_split_args(self.s5_pages.text()),
-                "html": self.s5_html.text().strip() or "output/book.html",
-                "source": sources if sources else ["output/preprocessed", "preprocessed_samples", "samples"],
-                "epub": self.s5_epub.isChecked(),
-                "backup": self.s5_backup.isChecked(),
-                "revert": False,
-                "list": False
-            }
-
-        elif tab_idx == 6:
+        if target_w == self.tab_batch:
             dpi_val = None
             dpi_text = self.batch_dpi.text().strip()
             if dpi_text.isdigit():
@@ -2492,6 +2796,177 @@ class MainWindow(QMainWindow):
                 "organize_target": "preprocessed"
             }
 
+        elif target_w == self.tab_oneclick:
+            dpi_val = None
+            dpi_text = self.oc_dpi.text().strip()
+            if dpi_text.isdigit():
+                dpi_val = int(dpi_text)
+
+            max_dim_val = self.oc_img_max_dim.value()
+            if max_dim_val <= 0:
+                max_dim_val = None
+
+            return {
+                "input": self.oc_input.text().strip() or "samples",
+                "output": self.oc_output.text().strip() or "output",
+                "title": self.oc_title.text().strip(),
+                "toc": None,
+                "force_toc": False,
+                "models_dir": self.oc_models_dir.text().strip() or None,
+                "dpi": dpi_val,
+                "margins": 1,
+                "quality": 50,
+                "scale": 1.0,
+                "unsharp": self.oc_unsharp.text().strip(),
+                "color_mode": "color_grayscale",
+                "batch_size": self.oc_batch.value(),
+                "workers": self.oc_workers.value(),
+                "skip_ocr": safe_split_args(self.oc_skip.text()),
+                "epub": self.oc_epub.isChecked(),
+                "cover": self.oc_cover.text().strip() or None,
+                "compress_images": self.oc_compress_images.isChecked(),
+                "image_quality": self.oc_img_quality.value(),
+                "image_scale": round(float(self.oc_img_scale.value()), 2),
+                "image_max_dim": max_dim_val,
+                "image_unsharp": self.oc_img_unsharp.text().strip() or None,
+                "organize_pages": self.oc_organize.isChecked(),
+                "copy": self.oc_copy.isChecked(),
+                "organize_target": "preprocessed"
+            }
+
+        elif target_w == self.tab_step1:
+            dpi_val = None
+            dpi_text = self.s1_dpi.text().strip()
+            if dpi_text.isdigit():
+                dpi_val = int(dpi_text)
+
+            in_args = safe_split_args(self.s1_input.text())
+            return {
+                "input": in_args if in_args else ["samples"],
+                "output": self.s1_output.text().strip() or "preprocessed_samples",
+                "format": self.s1_format.currentText(),
+                "dpi": dpi_val,
+                "margins": self.s1_margins.value(),
+                "color_mode": self.s1_color.currentText(),
+                "despeckle": self.s1_despeckle.currentText(),
+                "quality": self.s1_quality.value(),
+                "scale": round(float(self.s1_scale.value()), 2),
+                "unsharp": self.s1_unsharp.text().strip(),
+                "batch_size": 0,
+                "skip_ocr": safe_split_args(self.s1_skip.text())
+            }
+
+        elif target_w == self.tab_step2:
+            in_args = safe_split_args(self.s2_input.text())
+            return {
+                "input": in_args if in_args else [],
+                "output": self.s2_output.text().strip() or "toc.json",
+                "models_dir": self.s2_models_dir.text().strip() or None,
+                "model_dir": "models/glm-ocr",
+                "book_title": self.s2_title.text().strip(),
+                "organize_pages": None,
+                "copy": False
+            }
+
+        elif target_w == self.tab_step3:
+            samples = safe_split_args(self.s3_input.text())
+            max_dim_val = self.s3_img_max_dim.value()
+            if max_dim_val <= 0:
+                max_dim_val = None
+
+            return {
+                "samples": samples if samples else ["preprocessed_samples"],
+                "output": self.s3_output.text().strip() or "output",
+                "title": self.s3_title.text().strip() or "數位化掃描書本",
+                "toc": self.s3_toc.text().strip() or None,
+                "models_dir": self.s3_models_dir.text().strip() or None,
+                "epub": self.s3_epub.isChecked(),
+                "cover": self.s3_cover.text().strip() or None,
+                "compress_images": self.s3_compress_images.isChecked(),
+                "image_quality": self.s3_img_quality.value(),
+                "image_scale": round(float(self.s3_img_scale.value()), 2),
+                "image_max_dim": max_dim_val,
+                "image_unsharp": self.s3_img_unsharp.text().strip() or None,
+                "batch_size": self.s3_batch.value(),
+                "workers": self.s3_workers.value(),
+                "recursive": True,
+                "cover_first": self.s3_cover_first.isChecked(),
+                "skip_ocr": safe_split_args(self.s3_skip.text())
+            }
+
+        elif target_w == self.tab_step4:
+            in_args = safe_split_args(self.s4_input.text())
+            return {
+                "input": in_args if in_args else [],
+                "output": "toc.json",
+                "model_dir": "models/glm-ocr",
+                "book_title": "",
+                "organize_pages": self.s4_target.text().strip() or "preprocessed_samples",
+                "copy": self.s4_copy.isChecked()
+            }
+
+        elif target_w == self.tab_step5:
+            sources = safe_split_args(self.s5_source.text())
+            return {
+                "pages": safe_split_args(self.s5_pages.text()),
+                "html": self.s5_html.text().strip() or "output/book.html",
+                "source": sources if sources else ["output/preprocessed", "preprocessed_samples", "samples"],
+                "epub": self.s5_epub.isChecked(),
+                "backup": self.s5_backup.isChecked(),
+                "revert": False,
+                "list": False
+            }
+
+        elif target_w == self.tab_html2epub:
+            max_dim_val = self.h2e_img_max_dim.value()
+            if max_dim_val <= 0:
+                max_dim_val = None
+            layout_dir = self.h2e_layout_dir.currentData() or "auto"
+            return {
+                "html": self.h2e_html.text().strip() or "output/book.html",
+                "output": self.h2e_output.text().strip() or None,
+                "images": self.h2e_images.text().strip() or None,
+                "toc": self.h2e_toc.text().strip() or None,
+                "title": self.h2e_title.text().strip() or None,
+                "author": self.h2e_author.text().strip() or None,
+                "lang": self.h2e_lang.text().strip() or None,
+                "cover": self.h2e_cover.text().strip() or None,
+                "layout_direction": layout_dir,
+                "compress_images": self.h2e_compress_images.isChecked(),
+                "image_quality": self.h2e_img_quality.value(),
+                "image_scale": round(float(self.h2e_img_scale.value()), 2),
+                "image_max_dim": max_dim_val,
+                "image_unsharp": self.h2e_img_unsharp.text().strip() or None,
+                "toc_depth": self.h2e_toc_depth.value(),
+                "chapter_level": self.h2e_chapter_level.value(),
+                "no_toc": not self.h2e_enable_toc.isChecked(),
+                "no_mathml": not self.h2e_mathml.isChecked(),
+                "css": self.h2e_css.text().strip() or None
+            }
+
+        elif target_w == self.tab_recompress:
+            max_dim_val = self.rc_max_dim.value()
+            if max_dim_val <= 0:
+                max_dim_val = None
+            unsharp_str = self.rc_unsharp.text().strip()
+            if not unsharp_str or unsharp_str.lower() in ("off", "none", "false", "0"):
+                unsharp_str = None
+            return {
+                "input": self.rc_input.text().strip() or "output/images",
+                "output": self.rc_output.text().strip() or "output/images_compressed",
+                "quality": [self.rc_quality.value()],
+                "scale": [round(float(self.rc_scale.value()), 2)],
+                "max_dim": max_dim_val,
+                "workers": self.rc_workers.value(),
+                "unsharp": unsharp_str,
+                "subsampling": self.rc_subsampling.currentText(),
+                "png_lossless": self.rc_png_lossless.isChecked(),
+                "no_optimize": not self.rc_optimize.isChecked(),
+                "progressive": self.rc_progressive.isChecked(),
+                "strip_metadata": self.rc_strip_metadata.isChecked(),
+                "dry_run": self.rc_dry_run.isChecked()
+            }
+
         return {}
 
     def import_tab_config(self, tab_idx: int, data: dict):
@@ -2499,7 +2974,52 @@ class MainWindow(QMainWindow):
         if not isinstance(data, dict):
             return
 
-        if tab_idx == 0:
+        target_w = self.tabs.widget(tab_idx)
+
+        if target_w == self.tab_batch:
+            if "input_dir" in data:
+                self.batch_input_dir.setText(str(data["input_dir"]) if data["input_dir"] is not None else "")
+            if "dirs" in data and data["dirs"] is not None:
+                val = data["dirs"]
+                self.batch_dirs.setText(" ".join(str(x) for x in val) if isinstance(val, list) else str(val))
+            if "pattern" in data and data["pattern"] is not None:
+                self.batch_pattern.setText(str(data["pattern"]))
+            if "config_name" in data and data["config_name"] is not None:
+                self.batch_config_name.setText(str(data["config_name"]))
+            if "output_root" in data and data["output_root"] is not None:
+                self.batch_output_root.setText(str(data["output_root"]))
+            if "models_dir" in data:
+                self.batch_models_dir.setText(str(data["models_dir"]) if data["models_dir"] is not None else "")
+            if "skip_existing" in data and data["skip_existing"] is not None:
+                self.batch_skip_existing.setChecked(bool(data["skip_existing"]))
+            if "use_existing_toc" in data and data["use_existing_toc"] is not None:
+                self.batch_use_existing_toc.setChecked(bool(data["use_existing_toc"]))
+            if "force_toc" in data and data["force_toc"] is not None:
+                self.batch_force_toc.setChecked(bool(data["force_toc"]))
+            if "continue_on_error" in data and data["continue_on_error"] is not None:
+                self.batch_continue_on_error.setChecked(bool(data["continue_on_error"]))
+            elif "stop_on_error" in data and data["stop_on_error"] is not None:
+                self.batch_continue_on_error.setChecked(not bool(data["stop_on_error"]))
+            if "dry_run" in data and data["dry_run"] is not None:
+                self.batch_dry_run.setChecked(bool(data["dry_run"]))
+            if "workers" in data and data["workers"] is not None:
+                self.batch_workers.setValue(int(data["workers"]))
+            if "batch_size" in data and data["batch_size"] is not None:
+                self.batch_batch_size.setValue(int(data["batch_size"]))
+            if "dpi" in data:
+                self.batch_dpi.setText(str(data["dpi"]) if data["dpi"] is not None else "")
+            if "unsharp" in data and data["unsharp"] is not None:
+                self.batch_unsharp.setText(str(data["unsharp"]))
+            if "compress_images" in data and data["compress_images"] is not None:
+                self.batch_compress_images.setChecked(bool(data["compress_images"]))
+            if "epub" in data and data["epub"] is not None:
+                self.batch_epub.setChecked(bool(data["epub"]))
+            if "organize_pages" in data and data["organize_pages"] is not None:
+                self.batch_organize.setChecked(bool(data["organize_pages"]))
+            if "copy" in data and data["copy"] is not None:
+                self.batch_copy.setChecked(bool(data["copy"]))
+
+        elif target_w == self.tab_oneclick:
             if "input" in data and data["input"] is not None:
                 val = data["input"]
                 self.oc_input.setText(" ".join(val) if isinstance(val, list) else str(val))
@@ -2542,7 +3062,7 @@ class MainWindow(QMainWindow):
             if "copy" in data and data["copy"] is not None:
                 self.oc_copy.setChecked(bool(data["copy"]))
 
-        elif tab_idx == 1:
+        elif target_w == self.tab_step1:
             if "input" in data and data["input"] is not None:
                 val = data["input"]
                 self.s1_input.setText(" ".join(val) if isinstance(val, list) else str(val))
@@ -2571,7 +3091,7 @@ class MainWindow(QMainWindow):
                 else:
                     self.s1_skip.setText(str(skip_val))
 
-        elif tab_idx == 2:
+        elif target_w == self.tab_step2:
             if "input" in data and data["input"] is not None:
                 val = data["input"]
                 self.s2_input.setText(" ".join(val) if isinstance(val, list) else str(val))
@@ -2584,7 +3104,7 @@ class MainWindow(QMainWindow):
             elif "model_dir" in data and data["model_dir"] and not str(data["model_dir"]).endswith("glm-ocr"):
                 self.s2_models_dir.setText(str(data["model_dir"]))
 
-        elif tab_idx == 3:
+        elif target_w == self.tab_step3:
             samples_val = data.get("samples", data.get("input"))
             if samples_val is not None:
                 if isinstance(samples_val, list):
@@ -2626,7 +3146,7 @@ class MainWindow(QMainWindow):
             if "cover_first" in data and data["cover_first"] is not None:
                 self.s3_cover_first.setChecked(bool(data["cover_first"]))
 
-        elif tab_idx == 4:
+        elif target_w == self.tab_step4:
             if "input" in data and data["input"] is not None:
                 val = data["input"]
                 self.s4_input.setText(" ".join(val) if isinstance(val, list) else str(val))
@@ -2635,7 +3155,7 @@ class MainWindow(QMainWindow):
             if "copy" in data and data["copy"] is not None:
                 self.s4_copy.setChecked(bool(data["copy"]))
 
-        elif tab_idx == 5:
+        elif target_w == self.tab_step5:
             if "html" in data and data["html"] is not None:
                 self.s5_html.setText(str(data["html"]))
             if "pages" in data and data["pages"] is not None:
@@ -2649,48 +3169,86 @@ class MainWindow(QMainWindow):
             if "backup" in data and data["backup"] is not None:
                 self.s5_backup.setChecked(bool(data["backup"]))
 
-        elif tab_idx == 6:
-            if "input_dir" in data:
-                self.batch_input_dir.setText(str(data["input_dir"]) if data["input_dir"] is not None else "")
-            if "dirs" in data and data["dirs"] is not None:
-                val = data["dirs"]
-                self.batch_dirs.setText(" ".join(str(x) for x in val) if isinstance(val, list) else str(val))
-            if "pattern" in data and data["pattern"] is not None:
-                self.batch_pattern.setText(str(data["pattern"]))
-            if "config_name" in data and data["config_name"] is not None:
-                self.batch_config_name.setText(str(data["config_name"]))
-            if "output_root" in data and data["output_root"] is not None:
-                self.batch_output_root.setText(str(data["output_root"]))
-            if "models_dir" in data:
-                self.batch_models_dir.setText(str(data["models_dir"]) if data["models_dir"] is not None else "")
-            if "skip_existing" in data and data["skip_existing"] is not None:
-                self.batch_skip_existing.setChecked(bool(data["skip_existing"]))
-            if "use_existing_toc" in data and data["use_existing_toc"] is not None:
-                self.batch_use_existing_toc.setChecked(bool(data["use_existing_toc"]))
-            if "force_toc" in data and data["force_toc"] is not None:
-                self.batch_force_toc.setChecked(bool(data["force_toc"]))
-            if "continue_on_error" in data and data["continue_on_error"] is not None:
-                self.batch_continue_on_error.setChecked(bool(data["continue_on_error"]))
-            elif "stop_on_error" in data and data["stop_on_error"] is not None:
-                self.batch_continue_on_error.setChecked(not bool(data["stop_on_error"]))
-            if "dry_run" in data and data["dry_run"] is not None:
-                self.batch_dry_run.setChecked(bool(data["dry_run"]))
-            if "workers" in data and data["workers"] is not None:
-                self.batch_workers.setValue(int(data["workers"]))
-            if "batch_size" in data and data["batch_size"] is not None:
-                self.batch_batch_size.setValue(int(data["batch_size"]))
-            if "dpi" in data:
-                self.batch_dpi.setText(str(data["dpi"]) if data["dpi"] is not None else "")
-            if "unsharp" in data and data["unsharp"] is not None:
-                self.batch_unsharp.setText(str(data["unsharp"]))
+        elif target_w == self.tab_html2epub:
+            if "html" in data and data["html"] is not None:
+                self.h2e_html.setText(str(data["html"]))
+            if "output" in data:
+                self.h2e_output.setText(str(data["output"]) if data["output"] is not None else "")
+            if "images" in data:
+                self.h2e_images.setText(str(data["images"]) if data["images"] is not None else "")
+            if "toc" in data:
+                self.h2e_toc.setText(str(data["toc"]) if data["toc"] is not None else "")
+            if "title" in data:
+                self.h2e_title.setText(str(data["title"]) if data["title"] is not None else "")
+            if "author" in data:
+                self.h2e_author.setText(str(data["author"]) if data["author"] is not None else "")
+            if "lang" in data:
+                self.h2e_lang.setText(str(data["lang"]) if data["lang"] is not None else "")
+            if "cover" in data:
+                self.h2e_cover.setText(str(data["cover"]) if data["cover"] is not None else "")
+            if "layout_direction" in data or "direction" in data:
+                val = str(data.get("layout_direction") or data.get("direction") or "auto").lower()
+                for i in range(self.h2e_layout_dir.count()):
+                    if self.h2e_layout_dir.itemData(i) == val:
+                        self.h2e_layout_dir.setCurrentIndex(i)
+                        break
             if "compress_images" in data and data["compress_images"] is not None:
-                self.batch_compress_images.setChecked(bool(data["compress_images"]))
-            if "epub" in data and data["epub"] is not None:
-                self.batch_epub.setChecked(bool(data["epub"]))
-            if "organize_pages" in data and data["organize_pages"] is not None:
-                self.batch_organize.setChecked(bool(data["organize_pages"]))
-            if "copy" in data and data["copy"] is not None:
-                self.batch_copy.setChecked(bool(data["copy"]))
+                self.h2e_compress_images.setChecked(bool(data["compress_images"]))
+            if "image_quality" in data and data["image_quality"] is not None:
+                self.h2e_img_quality.setValue(int(data["image_quality"]))
+            if "image_scale" in data and data["image_scale"] is not None:
+                self.h2e_img_scale.setValue(float(data["image_scale"]))
+            if "image_max_dim" in data:
+                self.h2e_img_max_dim.setValue(int(data["image_max_dim"]) if data["image_max_dim"] else 0)
+            if "image_unsharp" in data and data["image_unsharp"] is not None:
+                self.h2e_img_unsharp.setText(str(data["image_unsharp"]))
+            if "toc_depth" in data and data["toc_depth"] is not None:
+                self.h2e_toc_depth.setValue(int(data["toc_depth"]))
+            if "chapter_level" in data and data["chapter_level"] is not None:
+                self.h2e_chapter_level.setValue(int(data["chapter_level"]))
+            if "no_toc" in data and data["no_toc"] is not None:
+                self.h2e_enable_toc.setChecked(not bool(data["no_toc"]))
+            if "no_mathml" in data and data["no_mathml"] is not None:
+                self.h2e_mathml.setChecked(not bool(data["no_mathml"]))
+            if "css" in data:
+                self.h2e_css.setText(str(data["css"]) if data["css"] is not None else "")
+
+        elif target_w == self.tab_recompress:
+            if "input" in data and data["input"] is not None:
+                self.rc_input.setText(str(data["input"]))
+            if "output" in data and data["output"] is not None:
+                self.rc_output.setText(str(data["output"]))
+            if "quality" in data and data["quality"] is not None:
+                q_val = data["quality"]
+                if isinstance(q_val, list) and len(q_val) > 0:
+                    self.rc_quality.setValue(int(q_val[0]))
+                elif isinstance(q_val, (int, str)) and str(q_val).isdigit():
+                    self.rc_quality.setValue(int(q_val))
+            if "scale" in data and data["scale"] is not None:
+                s_val = data["scale"]
+                if isinstance(s_val, list) and len(s_val) > 0:
+                    self.rc_scale.setValue(float(s_val[0]))
+                elif isinstance(s_val, (int, float, str)):
+                    self.rc_scale.setValue(float(s_val))
+            if "max_dim" in data:
+                self.rc_max_dim.setValue(int(data["max_dim"]) if data["max_dim"] else 0)
+            if "workers" in data and data["workers"] is not None:
+                self.rc_workers.setValue(int(data["workers"]))
+            if "unsharp" in data:
+                u_val = data["unsharp"]
+                self.rc_unsharp.setText(str(u_val) if u_val is not None else "")
+            if "subsampling" in data and data["subsampling"] is not None:
+                self.rc_subsampling.setCurrentText(str(data["subsampling"]))
+            if "png_lossless" in data and data["png_lossless"] is not None:
+                self.rc_png_lossless.setChecked(bool(data["png_lossless"]))
+            if "no_optimize" in data and data["no_optimize"] is not None:
+                self.rc_optimize.setChecked(not bool(data["no_optimize"]))
+            if "progressive" in data and data["progressive"] is not None:
+                self.rc_progressive.setChecked(bool(data["progressive"]))
+            if "strip_metadata" in data and data["strip_metadata"] is not None:
+                self.rc_strip_metadata.setChecked(bool(data["strip_metadata"]))
+            if "dry_run" in data and data["dry_run"] is not None:
+                self.rc_dry_run.setChecked(bool(data["dry_run"]))
 
         self.update_command_preview()
 
@@ -2871,7 +3429,7 @@ class MainWindow(QMainWindow):
             msg = "\n[+] 任務順利完成 (結束碼: 0)"
             self.log_text.append(msg)
             self.append_task_log(msg + "\n")
-            if self.tabs.currentIndex() == 2:
+            if self.tabs.currentWidget() == self.tab_step2:
                 self.load_toc_json()
         else:
             self.lbl_status.setText(f"❌ 執行中斷或異常 (代碼: {exit_code})")

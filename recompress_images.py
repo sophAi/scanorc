@@ -26,6 +26,10 @@ from typing import List, Tuple, Dict, Optional, Union
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from PIL import Image, ImageFilter
+try:
+    from config_utils import attach_preference_and_template_support
+except ImportError:
+    attach_preference_and_template_support = None
 
 VALID_EXTS = {".jpg", ".jpeg", ".png"}
 
@@ -285,7 +289,7 @@ def collect_image_files(input_dir: Path) -> List[Tuple[Path, Path]]:
 def recompress_directory(
     input_dir: Union[str, Path],
     output_dir: Union[str, Path],
-    qualities: List[int] = [75],
+    qualities: List[int] = [50],
     scales: List[float] = [1.0],
     max_dim: Optional[int] = None,
     workers: Optional[int] = None,
@@ -294,7 +298,7 @@ def recompress_directory(
     subsampling: str = "keep",
     preserve_metadata: bool = True,
     png_lossless: bool = False,
-    unsharp: Optional[str] = None,
+    unsharp: Optional[str] = "1x0.55+1.5+0.002",
     dry_run: bool = False,
     verbose: bool = True,
 ) -> Dict:
@@ -535,14 +539,14 @@ def main():
         "--quality", "-q",
         nargs="+",
         type=int,
-        default=[75],
-        help="壓縮品質 (1~100，預設: 75；支援傳入多個值如 -q 50 75 85。對 JPG 為編碼品質，對 PNG 為調色盤自適應量化品質)"
+        default=[50],
+        help="壓縮品質 (1~100，預設: 50；支援傳入多個值如 -q 50 75 85。對 JPG 為編碼品質，對 PNG 為調色盤自適應量化品質)"
     )
     parser.add_argument(
         "--scale", "-s",
         nargs="+",
         default=["1.0"],
-        help="圖片尺寸縮放比例 (例如 0.75 或 75%%，預設: 1.0；支援傳入多個值如 -s 1.0 0.8 0.5。同時作用於 JPG 與 PNG)"
+        help="圖片尺寸縮放比例 (例如 0.8 或 1.0，預設: 1.0；支援傳入多個值如 -s 1.0 0.8 0.5。同時作用於 JPG 與 PNG)"
     )
     parser.add_argument(
         "--max-dim", "-m",
@@ -584,10 +588,16 @@ def main():
     )
     parser.add_argument(
         "--unsharp",
-        nargs="?",
-        const="1x0.55+1.5+0.002",
-        default=None,
-        help="影像銳化濾鏡參數 (ImageMagick unsharp 語法例如 1x0.55+1.5+0.002，預設: 關閉；若僅指定 --unsharp 則使用 1x0.55+1.5+0.002)"
+        default="1x0.55+1.5+0.002",
+        help="影像銳化濾鏡參數 (ImageMagick unsharp 語法例如 1x0.55+1.5+0.002，預設: 1x0.55+1.5+0.002；若傳入 off/none 則關閉)"
+    )
+    parser.add_argument(
+        "--no-unsharp",
+        action="store_const",
+        dest="unsharp",
+        const=None,
+        default=argparse.SUPPRESS,
+        help="停用影像銳化濾鏡"
     )
     parser.add_argument(
         "--dry-run",
@@ -600,7 +610,10 @@ def main():
         help="精簡輸出，僅顯示摘要與錯誤"
     )
 
-    args = parser.parse_args()
+    if attach_preference_and_template_support:
+        args = attach_preference_and_template_support(parser, "recompress_images")
+    else:
+        args = parser.parse_args()
 
     in_target = args.input_opt or args.input
     if not in_target:

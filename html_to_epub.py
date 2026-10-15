@@ -484,13 +484,55 @@ def convert_html_to_epub(
     if author:
         cmd.extend(["--metadata", f"author={author}"])
 
-    # 判斷是否為直排 (豎排) 排版
+    # 讀取目錄索引檔 (若有)，以供讀取 layout_direction 與 Outline 輔助
+    toc_data = None
+    toc_file = Path(toc_path).resolve() if toc_path else None
+    if not toc_file and html_dir:
+        for c in [html_dir / "toc.json", html_dir.parent / "toc.json", Path("toc.json"), Path("output/toc.json")]:
+            if c.exists():
+                toc_file = c.resolve()
+                break
+
+    if toc_file and toc_file.exists():
+        try:
+            with open(toc_file, "r", encoding="utf-8") as f:
+                toc_data = json.load(f)
+        except Exception as e:
+            if verbose:
+                print(f"[-] 讀取目錄索引檔失敗: {e}")
+
+    # 判斷是否為直排 (豎排 / vertical-rl) 排版
     is_vertical = False
-    if layout_direction == "vertical":
+    clean_dir = str(layout_direction).strip().lower()
+
+    if clean_dir in ("vertical", "vert", "vertical-rl"):
         is_vertical = True
-    elif layout_direction == "auto":
-        if "layout-vertical" in html_raw or "vertical-rl" in html_raw:
+        if verbose:
+            print("[*] 手動指定 EPUB 排版方向: 直排 (豎排 / vertical-rl / RTL)")
+    elif clean_dir in ("horizontal", "horizon", "horizontal-tb"):
+        is_vertical = False
+        if verbose:
+            print("[*] 手動指定 EPUB 排版方向: 橫排 (horizontal / LTR)")
+    else:  # auto: 預設優先讀取 toc.json，次之檢查 HTML 特徵
+        toc_dir = str(toc_data.get("layout_direction", "")).strip().lower() if toc_data else ""
+        if toc_dir in ("vertical", "vert", "vertical-rl"):
             is_vertical = True
+            if verbose:
+                t_name = toc_file.name if toc_file else "toc.json"
+                print(f"[*] 依據 {t_name} 自動套用 EPUB 排版方向: 直排 (豎排 / vertical-rl / RTL)")
+        elif toc_dir in ("horizontal", "horizon", "horizontal-tb"):
+            is_vertical = False
+            if verbose:
+                t_name = toc_file.name if toc_file else "toc.json"
+                print(f"[*] 依據 {t_name} 自動套用 EPUB 排版方向: 橫排 (horizontal / LTR)")
+        elif "layout-vertical" in html_raw or "vertical-rl" in html_raw:
+            is_vertical = True
+            if verbose:
+                print("[*] 依據 HTML 樣式特徵自動套用 EPUB 排版方向: 直排 (豎排 / vertical-rl / RTL)")
+        else:
+            is_vertical = False
+            if verbose:
+                print("[*] 預設 EPUB 排版方向: 橫排 (horizontal / LTR)")
 
     if is_vertical:
         cmd.extend([
@@ -499,6 +541,39 @@ def convert_html_to_epub(
         ])
         if verbose:
             print("[*] 啟用 EPUB 直排模式 (RTL 翻頁與 vertical-rl 排版)")
+        # 確保 HTML 中包含直排 CSS 樣式
+        if "vertical-rl" not in updated_html:
+            vertical_css = """
+    body {
+      writing-mode: vertical-rl;
+      -webkit-writing-mode: vertical-rl;
+      text-orientation: mixed;
+    }
+"""
+            style_end = updated_html.find("</style>")
+            if style_end != -1:
+                updated_html = updated_html[:style_end] + vertical_css + updated_html[style_end:]
+            else:
+                updated_html = updated_html.replace("<head>", f"<head>\n<style>{vertical_css}</style>")
+            temp_html_path = html_dir / f"__epub_temp_{h_path.stem}.html"
+            temp_html_path.write_text(updated_html, encoding="utf-8")
+            compile_target_name = temp_html_path.name
+    elif clean_dir in ("horizontal", "horizon", "horizontal-tb") and ("writing-mode: vertical-rl" in updated_html or "layout-vertical" in updated_html):
+        # 使用者明確要求橫排但 HTML 帶有直排樣式時，強制覆蓋為橫排
+        override_css = """
+    body, body.layout-vertical {
+      writing-mode: horizontal-tb !important;
+      -webkit-writing-mode: horizontal-tb !important;
+    }
+"""
+        style_end = updated_html.find("</style>")
+        if style_end != -1:
+            updated_html = updated_html[:style_end] + override_css + updated_html[style_end:]
+        else:
+            updated_html = updated_html.replace("<head>", f"<head>\n<style>{override_css}</style>")
+        temp_html_path = html_dir / f"__epub_temp_{h_path.stem}.html"
+        temp_html_path.write_text(updated_html, encoding="utf-8")
+        compile_target_name = temp_html_path.name
 
     if actual_cover:
         cmd.append(f"--epub-cover-image={str(actual_cover)}")
@@ -678,10 +753,27 @@ def main():
         help="精簡輸出，僅顯示必要資訊與錯誤"
     )
     parser.add_argument(
-        "--layout-direction",
+        "--layout-direction", "--direction",
+        dest="layout_direction",
         choices=["auto", "horizontal", "vertical"],
         default="auto",
-        help="排版方向 (auto: 自動從 HTML 特徵判斷, horizontal: 橫排, vertical: 直排 RTL)"
+        help="EPUB 排版方向 (auto: 預設自動讀取 toc.json 或 HTML 樣式特徵, horizontal: 橫排, vertical: 直排 RTL)"
+    )
+    parser.add_argument(
+        "--vertical",
+        action="store_const",
+        dest="layout_direction",
+        const="vertical",
+        default=argparse.SUPPRESS,
+        help="快捷切換為直排 (豎排 / vertical-rl / RTL 翻頁) EPUB"
+    )
+    parser.add_argument(
+        "--horizontal",
+        action="store_const",
+        dest="layout_direction",
+        const="horizontal",
+        default=argparse.SUPPRESS,
+        help="快捷切換為橫排 (horizontal / LTR 翻頁) EPUB"
     )
 
     args = attach_preference_and_template_support(parser, "html_to_epub")
