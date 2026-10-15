@@ -73,39 +73,6 @@ def natural_sort_key(p: Path) -> List[Any]:
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", p.name)]
 
 
-def collect_toc_images(input_args: List[str]) -> List[Path]:
-    """
-    從命令列參數中收集所有目錄圖檔：支援單檔、多檔、萬用字元與目錄，並依自然順序排序
-    """
-    collected = []
-    for arg in input_args:
-        p = Path(arg).resolve()
-        if p.is_file():
-            if p.suffix.lower() in VALID_IMAGE_EXTS:
-                collected.append(p)
-            else:
-                print(f"[-] 警告：略過非支援的圖片檔案 '{p.name}'", file=sys.stderr)
-        elif p.is_dir():
-            for root, _, files in os.walk(p):
-                for f in files:
-                    fp = Path(root) / f
-                    if fp.suffix.lower() in VALID_IMAGE_EXTS:
-                        collected.append(fp)
-        else:
-            # 支援 shell 未展開之萬用字元 (例如 "samples/Cover-0*.jpg")
-            parent = p.parent
-            pattern = p.name
-            if parent.exists():
-                matches = list(parent.glob(pattern))
-                for m in matches:
-                    if m.is_file() and m.suffix.lower() in VALID_IMAGE_EXTS:
-                        collected.append(m)
-
-    unique_images = list({img.resolve(): img for img in collected}.values())
-    unique_images.sort(key=natural_sort_key)
-    return unique_images
-
-
 def find_default_content_images(search_dirs: Optional[List[Path]] = None) -> List[Path]:
     """
     預設自動搜尋檔名為 Content-xx.jpg 或 content-xx.jpg 的檔案群，並依照自然編號排序。
@@ -149,6 +116,45 @@ def find_default_content_images(search_dirs: Optional[List[Path]] = None) -> Lis
     return []
 
 
+def collect_toc_images(input_args: List[str]) -> List[Path]:
+    """
+    從命令列參數中收集所有目錄圖檔：支援單檔、多檔、萬用字元與目錄，並依自然順序排序。
+    若傳入參數為目錄，優先自動搜尋該目錄下之 Content-*.jpg 目錄圖檔。
+    """
+    collected = []
+    for arg in input_args:
+        p = Path(arg).resolve()
+        if p.is_file():
+            if p.suffix.lower() in VALID_IMAGE_EXTS:
+                collected.append(p)
+            else:
+                print(f"[-] 警告：略過非支援的圖片檔案 '{p.name}'", file=sys.stderr)
+        elif p.is_dir():
+            content_in_dir = find_default_content_images([p])
+            if content_in_dir:
+                collected.extend(content_in_dir)
+            else:
+                for root, dirs, files in os.walk(p):
+                    dirs[:] = [dn for dn in dirs if not dn.startswith(".") and dn not in ("deb_dist", "node_modules", "dist", "build", "__pycache__")]
+                    for f in files:
+                        fp = Path(root) / f
+                        if fp.suffix.lower() in VALID_IMAGE_EXTS:
+                            collected.append(fp)
+        else:
+            # 支援 shell 未展開之萬用字元 (例如 "samples/Cover-0*.jpg")
+            parent = p.parent
+            pattern = p.name
+            if parent.exists():
+                matches = list(parent.glob(pattern))
+                for m in matches:
+                    if m.is_file() and m.suffix.lower() in VALID_IMAGE_EXTS:
+                        collected.append(m)
+
+    unique_images = list({img.resolve(): img for img in collected}.values())
+    unique_images.sort(key=natural_sort_key)
+    return unique_images
+
+
 
 def extract_toc_from_image(
     image_path: Path,
@@ -156,10 +162,12 @@ def extract_toc_from_image(
     model: GlmOcrForConditionalGeneration,
     device: str,
     max_ocr_dim: int = 1280,
-    max_tokens: int = 1024
+    max_tokens: int = 1024,
+    repetition_penalty: float = 1.1,
+    no_repeat_ngram_size: int = 10
 ) -> str:
     """
-    使用 GLM-OCR 進行整頁文字識別
+    使用 GLM-OCR 進行整頁文字識別 (支援重複懲罰與 n-gram 限制防止長點線/破折號無限死循環)
     """
     img = Image.open(image_path).convert("RGB")
     w, h = img.size
@@ -181,8 +189,16 @@ def extract_toc_from_image(
     if "pixel_values" in inputs and inputs["pixel_values"].dtype != torch.float16 and device.startswith("cuda"):
         inputs["pixel_values"] = inputs["pixel_values"].to(torch.float16)
 
+    gen_kwargs = {
+        "max_new_tokens": max_tokens,
+    }
+    if repetition_penalty is not None and repetition_penalty > 1.0:
+        gen_kwargs["repetition_penalty"] = repetition_penalty
+    if no_repeat_ngram_size is not None and no_repeat_ngram_size > 0:
+        gen_kwargs["no_repeat_ngram_size"] = no_repeat_ngram_size
+
     with torch.no_grad():
-        outputs = model.generate(**inputs, max_new_tokens=max_tokens)
+        outputs = model.generate(**inputs, **gen_kwargs)
 
     raw_text = processor.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
     return raw_text
@@ -505,6 +521,18 @@ def main():
         action="store_true",
         help="配合 --organize-pages 使用：複製檔案而非移動檔案 (預設為移動)"
     )
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=1.1,
+        help="GLM-OCR 生成文字時的重複懲罰係數 (預設: 1.1，防止引導線或符號陷入無限重複死循環)"
+    )
+    parser.add_argument(
+        "--no-repeat-ngram-size",
+        type=int,
+        default=10,
+        help="禁止連續重複的 n-gram 大小 (預設: 10，防止長引導點/破折號無限重複)"
+    )
     args = attach_preference_and_template_support(parser, "extract_toc")
 
     # 判定輸入來源：若使用者未傳入 -i / --input，預設自動搜尋 Content-xx.jpg 或 content-xx.jpg
@@ -618,7 +646,14 @@ def main():
 
         for idx, img_path in enumerate(sorted_images, 1):
             print(f"\n[*] [{idx}/{len(sorted_images)}] 正在識別目錄頁: {img_path.name}...")
-            raw_ocr_text = extract_toc_from_image(img_path, processor, model, device)
+            raw_ocr_text = extract_toc_from_image(
+                img_path,
+                processor,
+                model,
+                device,
+                repetition_penalty=args.repetition_penalty,
+                no_repeat_ngram_size=args.no_repeat_ngram_size
+            )
             raw_texts.append(f"--- File: {img_path.name} ---\n" + raw_ocr_text.strip())
 
             page_entries = parse_toc_text_raw(raw_ocr_text, source_filename=img_path.name)
