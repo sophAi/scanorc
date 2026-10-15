@@ -16,7 +16,7 @@ import shutil
 import argparse
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 import torch
 from PIL import Image
@@ -232,19 +232,114 @@ def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[st
     return entries
 
 
+def extract_guess_toc(
+    raw_texts: List[str],
+    source_images: List[Path],
+    resolved_layout_direction: str,
+    model_dir_str: str,
+    book_title: str,
+    target_output_path: Path,
+) -> Tuple[Path, List[Dict[str, Any]]]:
+    """
+    當標準目錄提取正則未能匹配任何條目時，觸發候選目錄生成模式 (TOC Guess Mode)。
+    將 OCR 識別所得之每一行都當作一個條目，搜尋該行數字作為頁數 (start_page)；
+    若無數字則寫 "none"。
+    儲存至 target_output_path 同層目錄之 toc_guess.json，不覆蓋也不生成 toc.json。
+    """
+    guess_entries = []
+
+    for img_path, raw_block in zip(source_images, raw_texts):
+        lines = [line.strip() for line in raw_block.splitlines() if line.strip()]
+        for line in lines:
+            if line.startswith("--- File:"):
+                continue
+            if line in ("目錄", "Contents", "目 錄", "CONTENTS", "目　錄"):
+                continue
+
+            # 辨識章節前綴 (例如 '第一章', '第1章', 'Chapter 1' 等)
+            ch_match = re.match(r"^(第\s*([0-9]+|[一二三四五六七八九十百千兩]+)\s*[章節回卷部篇])\s*(.*)$", line)
+            if ch_match:
+                ch_num = re.sub(r"\s+", "", ch_match.group(1))
+                remainder = ch_match.group(3).strip()
+            else:
+                ch_num = ""
+                remainder = line
+
+            # 搜尋該行數字的部分當作頁數
+            # 優先搜尋行尾數字 (例如 '投資心得 ...... 15' 或 '投資心得 15')
+            tail_match = re.search(r"(\d+)\s*$", remainder or line)
+            all_digits = re.findall(r"\b\d+\b", remainder)
+
+            if tail_match:
+                start_page = int(tail_match.group(1))
+                clean_title = re.sub(r"[\s·.．…・\-_|]+" + tail_match.group(1) + r"\s*$", "", remainder or line).strip()
+            elif all_digits:
+                start_page = int(all_digits[-1])
+                clean_title = re.sub(r"[\s·.．…・\-_|]+" + str(start_page) + r"\b", "", remainder or line).strip()
+            else:
+                start_page = "none"
+                clean_title = remainder or line
+
+            # 清理引導點線與無效符號
+            clean_title = re.sub(r"[·.．…・\-_|]{2,}", "", clean_title).strip()
+            if not clean_title and ch_num:
+                clean_title = ch_num
+
+            full_title = f"{ch_num} {clean_title}".strip() if ch_num and clean_title != ch_num else (clean_title or ch_num or line)
+
+            guess_entries.append({
+                "index": len(guess_entries) + 1,
+                "chapter": ch_num,
+                "title": clean_title,
+                "full_title": full_title,
+                "start_page": start_page,
+                "end_page": "none",
+                "page_count": "none",
+                "source_file": img_path.name
+            })
+
+    guess_output_path = target_output_path.parent / "toc_guess.json"
+    guess_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    guess_data = {
+        "book_title": book_title,
+        "layout_direction": resolved_layout_direction,
+        "is_guess": True,
+        "note": "此檔案由 extract_toc.py 於標準目錄格式未匹配時自動生成之候選目錄 (toc_guess.json)。請人工校對並補全頁碼後，另存為 toc.json 供後續生成 EPUB/HTML 使用。",
+        "source_images": [str(p) for p in source_images],
+        "extracted_at": datetime.now().isoformat(),
+        "model": model_dir_str,
+        "total_chapters": len(guess_entries),
+        "toc": guess_entries,
+        "raw_text": "\n\n".join(raw_texts)
+    }
+
+    with open(guess_output_path, "w", encoding="utf-8") as f:
+        json.dump(guess_data, f, ensure_ascii=False, indent=2)
+
+    return guess_output_path, guess_entries
+
+
 def validate_toc(entries: List[Dict[str, Any]]) -> bool:
     """
     校驗頁碼單調遞增性
     """
     is_valid = True
     for i in range(len(entries) - 1):
-        if entries[i]["start_page"] >= entries[i + 1]["start_page"]:
-            print(
-                f"[-] 警告：頁碼順序異常！條目 '{entries[i]['full_title']}' (頁 {entries[i]['start_page']}) "
-                f">= 下一條目 '{entries[i+1]['full_title']}' (頁 {entries[i+1]['start_page']})",
-                file=sys.stderr
-            )
-            is_valid = False
+        p1 = entries[i].get("start_page")
+        p2 = entries[i + 1].get("start_page")
+        if p1 is None or p2 is None or str(p1).lower() == "none" or str(p2).lower() == "none":
+            continue
+        try:
+            if int(p1) >= int(p2):
+                print(
+                    f"[-] 警告：頁碼順序異常！條目 '{entries[i]['full_title']}' (頁 {p1}) "
+                    f">= 下一條目 '{entries[i+1]['full_title']}' (頁 {p2})",
+                    file=sys.stderr
+                )
+                is_valid = False
+        except (ValueError, TypeError):
+            pass
     return is_valid
 
 
@@ -277,14 +372,21 @@ def find_matching_chapter(page_num: int, toc_entries: List[Dict[str, Any]]) -> O
     根據頁碼查詢屬於哪一個章節區間
     """
     for entry in toc_entries:
-        s = entry["start_page"]
-        e = entry["end_page"]
-        if e is not None:
-            if s <= page_num <= e:
-                return entry
-        else:
-            if page_num >= s:
-                return entry
+        s_raw = entry.get("start_page")
+        e_raw = entry.get("end_page")
+        if s_raw is None or str(s_raw).lower() == "none":
+            continue
+        try:
+            s = int(s_raw)
+            if e_raw is not None and str(e_raw).lower() != "none":
+                e = int(e_raw)
+                if s <= page_num <= e:
+                    return entry
+            else:
+                if page_num >= s:
+                    return entry
+        except (ValueError, TypeError):
+            continue
     return None
 
 
@@ -524,8 +626,45 @@ def main():
             all_entries.extend(page_entries)
 
         if not all_entries:
-            print("[-] 警告：未能在所有目錄圖片中解析出任何有效目錄條目！", file=sys.stderr)
-            sys.exit(1)
+            print("\n[-] 提示：未能從目錄頁中匹配到標準章節與頁碼引導格式。")
+            print("[*] 自動啟動候選目錄分析模式 (TOC Guess Mode)...")
+            output_path = Path(args.output).resolve()
+            book_title = args.book_title
+            if not book_title and sorted_images:
+                p_dir = sorted_images[0].parent
+                if p_dir.name.lower() in ("preprocessed", "preprocessed_samples", "output") and p_dir.parent.name:
+                    book_title = p_dir.parent.name
+                else:
+                    book_title = p_dir.name or "Unknown"
+            if not book_title:
+                book_title = "Unknown"
+
+            guess_file, guess_entries = extract_guess_toc(
+                raw_texts=raw_texts,
+                source_images=sorted_images,
+                resolved_layout_direction=resolved_layout_direction,
+                model_dir_str=model_dir_str,
+                book_title=book_title,
+                target_output_path=output_path,
+            )
+            print(f"[+] 候選條目抽取完成！共整理出 {len(guess_entries)} 個候選條目")
+            print(f"[+] 候選目錄檔案已儲存至: {guess_file}")
+            print(f"[*] 注意：本步驟未產生 {output_path.name}，後續流程將以無目錄模式繼續執行。")
+            print(f"    待全書轉檔完成後，您可以手動編輯 {guess_file.name} 並另存為 {output_path.name}，再重新編譯 HTML/EPUB。")
+
+            # 印出候選預覽表格
+            print("\n" + "=" * 68)
+            print(f"{'索引':<4} {'章節編號':<8} {'章節標題':<28} {'起始頁':<8} {'結束頁':<8} {'總頁數'}")
+            print("-" * 68)
+            for item in guess_entries:
+                start_str = str(item['start_page'])
+                end_str = str(item['end_page'])
+                count_str = str(item['page_count'])
+                ch_str = str(item.get('chapter', ''))
+                title_str = str(item.get('title', ''))
+                print(f"{item['index']:<4} {ch_str:<8} {title_str:<28} {start_str:<8} {end_str:<8} {count_str}")
+            print("=" * 68 + "\n")
+            return
 
         # 直排目錄條目閱讀順序校驗：
         # 直式中文目錄通常由右向左 (RTL) 排列；若 OCR 引擎以左到右 (LTR) 掃描輸出，會導致章節起始頁碼呈現單調遞減。

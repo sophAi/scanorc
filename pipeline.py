@@ -851,29 +851,41 @@ class DocumentConverter:
                 page_numbers.append((p_num, p_file))
 
             for c_idx, entry in enumerate(toc_entries, start=1):
-                start_p = entry.get("start_page", 0)
-                end_p = entry.get("end_page", start_p)
+                start_p_val = entry.get("start_page")
+                try:
+                    start_p = int(start_p_val) if start_p_val is not None and str(start_p_val).strip().lower() != "none" else None
+                except (ValueError, TypeError):
+                    start_p = None
+
+                end_p_val = entry.get("end_page")
+                try:
+                    end_p = int(end_p_val) if end_p_val is not None and str(end_p_val).strip().lower() != "none" else start_p
+                except (ValueError, TypeError):
+                    end_p = start_p
+
                 target_file = None
-                # 優先 1: 精確比對頁碼
-                for p_num, p_file in page_numbers:
-                    if p_num is not None and p_num == start_p:
-                        target_file = p_file
-                        break
-                # 優先 2: 落在章節頁碼範圍內的第一個頁面
-                if not target_file:
+                if start_p is not None:
+                    # 優先 1: 精確比對頁碼
                     for p_num, p_file in page_numbers:
-                        if p_num is not None and start_p <= p_num <= end_p:
+                        if p_num is not None and p_num == start_p:
                             target_file = p_file
                             break
-                # 優先 3: 依檔名規則推算 fallback
-                if not target_file:
-                    target_file = resolve_page_filename(start_p, available_page_files)
+                    # 優先 2: 落在章節頁碼範圍內的第一個頁面
+                    if not target_file and end_p is not None:
+                        for p_num, p_file in page_numbers:
+                            if p_num is not None and start_p <= p_num <= end_p:
+                                target_file = p_file
+                                break
+                    # 優先 3: 依檔名規則推算 fallback
+                    if not target_file:
+                        target_file = resolve_page_filename(start_p, available_page_files)
 
                 entry_info = dict(entry)
                 entry_info["_chapter_index"] = c_idx
-                if target_file not in page_chapter_map:
-                    page_chapter_map[target_file] = []
-                page_chapter_map[target_file].append(entry_info)
+                if target_file:
+                    if target_file not in page_chapter_map:
+                        page_chapter_map[target_file] = []
+                    page_chapter_map[target_file].append(entry_info)
 
         # 插入目錄索引導覽區塊 (TOC)
         if toc_data and "toc" in toc_data and toc_data["toc"]:
@@ -886,16 +898,26 @@ class DocumentConverter:
             body_content.append('  <ul class="toc-list">')
 
             for c_idx, entry in enumerate(toc_entries, start=1):
-                start_p = entry.get("start_page", 0)
+                start_p_val = entry.get("start_page")
+                try:
+                    start_p = int(start_p_val) if start_p_val is not None and str(start_p_val).strip().lower() != "none" else None
+                except (ValueError, TypeError):
+                    start_p = None
+
                 full_t = entry.get("full_title", entry.get("title", ""))
-                target_file = resolve_page_filename(start_p, available_page_files)
+                target_file = resolve_page_filename(start_p, available_page_files) if start_p is not None else ""
 
                 body_content.append('    <li class="toc-item">')
-                body_content.append(f'      <a href="#chapter-{c_idx}" class="toc-link">')
-                body_content.append(f'        <span class="toc-chapter">{full_t}</span>')
-                body_content.append('        <span class="toc-dots"></span>')
-                body_content.append(f'        <span class="toc-page">第 {start_p} 頁 ({target_file})</span>')
-                body_content.append('      </a>')
+                if start_p is not None and target_file:
+                    body_content.append(f'      <a href="#chapter-{c_idx}" class="toc-link">')
+                    body_content.append(f'        <span class="toc-chapter">{full_t}</span>')
+                    body_content.append('        <span class="toc-dots"></span>')
+                    body_content.append(f'        <span class="toc-page">第 {start_p} 頁 ({target_file})</span>')
+                    body_content.append('      </a>')
+                else:
+                    body_content.append('      <span class="toc-link noclick">')
+                    body_content.append(f'        <span class="toc-chapter">{full_t}</span>')
+                    body_content.append('      </span>')
                 body_content.append('    </li>')
 
             body_content.append('  </ul>')

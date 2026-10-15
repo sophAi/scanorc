@@ -328,6 +328,11 @@ def main():
                 has_toc = toc_json_path.exists()
                 if has_toc:
                     print(f"[+] 成功生成目錄結構索引 JSON: {toc_json_path}")
+                else:
+                    guess_path = toc_json_path.parent / "toc_guess.json"
+                    if guess_path.exists():
+                        print(f"[*] 提示：標準目錄未匹配，已自動產生候選目錄: {guess_path.name}")
+                        print(f"    後續步驟將以無目錄模式繼續執行，待全書步驟完成後可人工校對另存為 {toc_json_path.name}。")
             except subprocess.CalledProcessError as e:
                 print(f"[-] 警告：目錄結構抽取過程異常 ({e})，後續將以無目錄索引模式繼續執行", file=sys.stderr)
         else:
@@ -426,22 +431,13 @@ def main():
             print(f"[*] 執行指令: {' '.join(step4_cmd)}")
             subprocess.run(step4_cmd, check=True)
             print(f"[+] 章節資料夾建立與圖檔歸檔完成！")
-        elif content_images:
-            print(f"[*] 準備對目錄進行章節歸檔: {target_dir} (使用目錄頁圖檔)")
-            step4_cmd = [
-                sys.executable, str(script_dir / "extract_toc.py"),
-                "--input", *[str(p) for p in content_images],
-                "--output", str(toc_json_path),
-                "--organize-pages", str(target_dir),
-            ]
-            if args.copy:
-                step4_cmd.append("--copy")
-
-            print(f"[*] 執行指令: {' '.join(step4_cmd)}")
-            subprocess.run(step4_cmd, check=True)
-            print(f"[+] 章節資料夾建立與圖檔歸檔完成！")
         else:
-            print("[-] 由於缺少 toc.json 或目錄資料，略過章節歸檔步驟")
+            print("[-] 由於缺少有效的 toc.json 目錄索引，略過章節歸檔步驟")
+            guess_path = toc_json_path.parent / "toc_guess.json"
+            if guess_path.exists():
+                print(f"    提示：請於手動編修 {guess_path.name} 並另存為 {toc_json_path.name} 後，")
+                print(f"    單獨執行以下指令進行章節歸檔：")
+                print(f"    scanorc-toc -i {toc_json_path} --organize-pages {target_dir}")
     else:
         print("[*] 依設定略過章節目錄歸檔步驟 (--no-organize-pages)")
 
