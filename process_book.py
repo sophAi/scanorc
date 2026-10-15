@@ -121,14 +121,14 @@ def main():
     parser.add_argument(
         "--quality",
         type=int,
-        default=60,
-        help="轉正裁切若輸出為 JPG 時的壓縮品質 (1-100，預設: 60)"
+        default=50,
+        help="轉正裁切若輸出為 JPG 時的壓縮品質 (1-100，預設: 50)"
     )
     parser.add_argument(
         "--scale",
         type=float,
-        default=0.8,
-        help="轉正裁切輸出圖檔尺寸縮放比例 (例如 0.8 或 1.0，預設: 0.8)"
+        default=1.0,
+        help="轉正裁切輸出圖檔尺寸縮放比例 (例如 0.8 或 1.0，預設: 1.0)"
     )
     parser.add_argument(
         "--unsharp",

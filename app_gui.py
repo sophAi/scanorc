@@ -1135,7 +1135,7 @@ class MainWindow(QMainWindow):
 
         self.s1_quality = QSpinBox()
         self.s1_quality.setRange(1, 100)
-        self.s1_quality.setValue(60)
+        self.s1_quality.setValue(50)
         self.s1_quality.valueChanged.connect(self.update_command_preview)
         h_fmt.addWidget(QLabel("品質:"))
         h_fmt.addWidget(self.s1_quality)
@@ -1143,7 +1143,7 @@ class MainWindow(QMainWindow):
         self.s1_scale = QDoubleSpinBox()
         self.s1_scale.setRange(0.1, 2.0)
         self.s1_scale.setSingleStep(0.05)
-        self.s1_scale.setValue(0.8)
+        self.s1_scale.setValue(1.0)
         self.s1_scale.valueChanged.connect(self.update_command_preview)
         h_fmt.addWidget(QLabel("縮放:"))
         h_fmt.addWidget(self.s1_scale)
@@ -2346,8 +2346,8 @@ class MainWindow(QMainWindow):
                 "models_dir": self.oc_models_dir.text().strip() or None,
                 "dpi": dpi_val,
                 "margins": 1,
-                "quality": 60,
-                "scale": 0.8,
+                "quality": 50,
+                "scale": 1.0,
                 "unsharp": self.oc_unsharp.text().strip(),
                 "color_mode": "color_grayscale",
                 "batch_size": self.oc_batch.value(),
@@ -2475,8 +2475,8 @@ class MainWindow(QMainWindow):
                 "cover": None,
                 "dpi": dpi_val,
                 "margins": 1,
-                "quality": 60,
-                "scale": 0.8,
+                "quality": 50,
+                "scale": 1.0,
                 "unsharp": self.batch_unsharp.text().strip() or "1x0.55+1.5+0.002",
                 "color_mode": "color_grayscale",
                 "batch_size": self.batch_batch_size.value(),

@@ -135,8 +135,8 @@ def main():
     parser.add_argument("--cover", default=None, help="預設封面圖片路徑")
     parser.add_argument("--dpi", type=int, default=None, help="預設解析度 DPI (預設 None 保持 1:1)")
     parser.add_argument("--margins", type=int, default=1, help="預設版心四周邊距大小 (mm，預設: 1)")
-    parser.add_argument("--quality", type=int, default=60, help="預設 JPG 壓縮品質 (預設: 60)")
-    parser.add_argument("--scale", type=float, default=0.8, help="預設圖檔尺寸縮放比例 (預設: 0.8)")
+    parser.add_argument("--quality", type=int, default=50, help="預設 JPG 壓縮品質 (預設: 50)")
+    parser.add_argument("--scale", type=float, default=1.0, help="預設圖檔尺寸縮放比例 (預設: 1.0)")
     parser.add_argument("--unsharp", default="1x0.55+1.5+0.002", help="預設銳化參數 (ImageMagick unsharp 語法，預設: 1x0.55+1.5+0.002)")
     parser.add_argument(
         "--repetition-penalty",
