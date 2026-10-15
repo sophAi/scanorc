@@ -206,46 +206,117 @@ def extract_toc_from_image(
 
 def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[str, Any]]:
     """
-    從 OCR 原始文本中抽取單行章節與頁碼項目 (相容橫排與直排常見點線、引導線及中文數字)
+    從 OCR 原始文本中抽取章節與頁碼項目。
+    支援：
+    1. 傳統引導點線 (......) 或純空格/符號分隔之頁碼
+    2. 多行長標題自動合併 (章節名無頁碼時，自動串接次行次標題與頁碼)
+    3. 多種常見中文及英文章節、序言前綴 (第X章, Part X, Chapter X, 推薦序, 簡介等)
     """
-    line_pattern = re.compile(r"^(?P<raw_title>.+?)\s*[·.．…・\s\-_|]{2,}\s*(?P<page>\d+)\s*$")
-    chapter_pattern = re.compile(r"^(第\s*([0-9]+|[一二三四五六七八九十百千兩]+)\s*[章節回卷部篇])\s*(.*)$")
+    chapter_prefix_pat = re.compile(
+        r"^(?:(第\s*([0-9]+|[一二三四五六七八九十百千兩]+)\s*[章節回卷部篇])|"
+        r"((?:Chapter|Part|Section|Unit)\s*([0-9]+|[A-Za-z]+|[IVXLCDM]+))|"
+        r"(推薦序|自序|總序|譯序|作者序|編者序|序言|序|前言|導讀|簡介|引言|跋|後記|附錄|結語|尾聲|附錄[A-Za-z0-9一二三四五六七八九十]*))\s*(.*)$",
+        re.IGNORECASE
+    )
+    # 匹配行尾數字作為頁碼：中間允許 2 個以上引導符號或 1 個以上空格
+    line_pattern = re.compile(r"^(?P<raw_title>.+?)\s*(?:[·.．…・\-_|]{2,}|\s+)\s*(?P<page>\d+)\s*$")
 
     entries = []
-    lines = raw_text.strip().splitlines()
+    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+    pending = None
+
+    def finalize_pending():
+        nonlocal pending
+        if not pending:
+            return
+        ch = pending["chapter"]
+        parts = [p.strip() for p in pending["title_parts"] if p.strip()]
+        if not parts:
+            raw_ch_title = ch
+        else:
+            combined = parts[0]
+            for next_p in parts[1:]:
+                if combined and combined[-1] in ("；", "：", "，", "、", ";", ":", ","):
+                    combined += next_p
+                else:
+                    combined += " " + next_p
+            raw_ch_title = combined.strip()
+
+        # 清除首尾殘留的引導點線與無效符號
+        raw_ch_title = re.sub(r"^[\s·.．…・\-_|]+", "", raw_ch_title).strip()
+        raw_ch_title = re.sub(r"[\s·.．…・\-_|]+$", "", raw_ch_title).strip()
+        full_title = f"{ch} {raw_ch_title}".strip() if ch and raw_ch_title != ch else (raw_ch_title or ch)
+
+        entries.append({
+            "chapter": ch,
+            "title": raw_ch_title,
+            "full_title": full_title,
+            "start_page": pending["page"],
+            "source_file": source_filename
+        })
+        pending = None
 
     for line in lines:
-        line = line.strip()
-        if not line:
+        if line.startswith("--- File:"):
             continue
-
         if line in ("目錄", "Contents", "目 錄", "CONTENTS", "目　錄"):
             continue
 
-        match = line_pattern.match(line)
-        if match:
-            raw_title = match.group("raw_title").strip()
-            page = int(match.group("page"))
+        m_end_page = line_pattern.match(line)
+        m_prefix = chapter_prefix_pat.match(line)
 
-            ch_match = chapter_pattern.match(raw_title)
-            if ch_match:
-                ch_num = re.sub(r"\s+", "", ch_match.group(1))
-                ch_name = ch_match.group(3).strip() if ch_match.group(3) else ch_num
+        if m_end_page:
+            raw_title = m_end_page.group("raw_title").strip()
+            raw_title = re.sub(r"[\s·.．…・\-_|]+$", "", raw_title).strip()
+            page = int(m_end_page.group("page"))
+
+            # 檢查此行本身是否含有章節前綴
+            ch_m = chapter_prefix_pat.match(raw_title)
+            if ch_m:
+                # 獨立的新章節行 (具前綴、標題、頁碼)
+                finalize_pending()
+                ch_str = ch_m.group(1) or ch_m.group(3) or ch_m.group(5) or ""
+                rem_title = ch_m.group(6).strip() if ch_m.group(6) else ""
+                pending = {
+                    "chapter": ch_str,
+                    "title_parts": [rem_title] if rem_title else [],
+                    "page": page
+                }
+                finalize_pending()
+            elif pending:
+                # 屬於前一個未完章節的接續行 (提供次標題並補齊頁碼)
+                pending["title_parts"].append(raw_title)
+                pending["page"] = page
+                finalize_pending()
             else:
-                ch_num = re.sub(r"\s+", "", raw_title)
-                ch_name = re.sub(r"\s+", "", raw_title)
+                # 無章節前綴但有頁碼之獨立條目 (如 "成功故事回饋 505")
+                pending = {
+                    "chapter": "",
+                    "title_parts": [raw_title],
+                    "page": page
+                }
+                finalize_pending()
 
-            full_title = f"{ch_num} {ch_name}" if ch_num != ch_name else ch_name
+        elif m_prefix:
+            # 開頭為章節前綴，但行尾無頁碼 (例如多行標題的第一行)
+            finalize_pending()
+            ch_str = m_prefix.group(1) or m_prefix.group(3) or m_prefix.group(5) or ""
+            rem_title = m_prefix.group(6).strip() if m_prefix.group(6) else ""
+            pending = {
+                "chapter": ch_str,
+                "title_parts": [rem_title] if rem_title else [],
+                "page": None
+            }
+        elif pending:
+            # 前一個章節標題的跨行接續行 (中間行，尚未帶頁碼)
+            pending["title_parts"].append(line)
+        else:
+            # 無頁碼亦無章節前綴之書名或裝飾標語 (例如 "笑傲股市", "歐尼爾投資致富經典")，略過
+            continue
 
-            entries.append({
-                "chapter": ch_num,
-                "title": ch_name,
-                "full_title": full_title,
-                "start_page": page,
-                "source_file": source_filename
-            })
-
+    finalize_pending()
     return entries
+
 
 
 def extract_guess_toc(
@@ -367,10 +438,14 @@ def format_chapter_dirname(entry: Dict[str, Any], total_entries: int) -> str:
     ch_title = entry.get("title", "").strip()
     index = entry.get("index", 1)
 
-    match = re.search(r"第\s*([0-9]+|[一二三四五六七八九十兩]+)\s*[章節回卷部篇]", ch_num)
+    match = re.search(r"第\s*([0-9]+|[一二三四五六七八九十百千兩]+)\s*[章節回卷部篇]", ch_num)
+    match_en = re.search(r"(?:Chapter|Unit|Section|Part)\s*([0-9]+)", ch_num, re.IGNORECASE)
     if match:
         num = parse_chinese_number(match.group(1))
         prefix = f"{num:02d}" if num is not None else f"{(index - 1):02d}"
+    elif match_en:
+        num = int(match_en.group(1))
+        prefix = f"{num:02d}"
     else:
         prefix = f"{(index - 1):02d}"
 
@@ -533,6 +608,24 @@ def main():
         default=10,
         help="禁止連續重複的 n-gram 大小 (預設: 10，防止長引導點/破折號無限重複)"
     )
+    parser.add_argument(
+        "--auto-accept-guess",
+        dest="auto_accept_guess",
+        action="store_true",
+        default=True,
+        help="當候選目錄 (toc_guess) 品質符合門檻 (頁碼覆蓋率>=60%且順序正確) 時自動採納並寫入 toc.json (預設開啟)"
+    )
+    parser.add_argument(
+        "--no-auto-accept-guess",
+        dest="auto_accept_guess",
+        action="store_false",
+        help="停用候選目錄自動採納，強制僅輸出 toc_guess.json"
+    )
+    parser.add_argument(
+        "--accept-guess",
+        action="store_true",
+        help="強制採納候選目錄 (toc_guess) 為正式 toc.json"
+    )
     args = attach_preference_and_template_support(parser, "extract_toc")
 
     # 判定輸入來源：若使用者未傳入 -i / --input，預設自動搜尋 Content-xx.jpg 或 content-xx.jpg
@@ -684,42 +777,73 @@ def main():
             )
             print(f"[+] 候選條目抽取完成！共整理出 {len(guess_entries)} 個候選條目")
             print(f"[+] 候選目錄檔案已儲存至: {guess_file}")
-            print(f"[*] 注意：本步驟未產生 {output_path.name}，後續流程將以無目錄模式繼續執行。")
-            print(f"    待全書轉檔完成後，您可以手動編輯 {guess_file.name} 並另存為 {output_path.name}，再重新編譯 HTML/EPUB。")
 
-            # 印出候選預覽表格
-            print("\n" + "=" * 68)
-            print(f"{'索引':<4} {'章節編號':<8} {'章節標題':<28} {'起始頁':<8} {'結束頁':<8} {'總頁數'}")
-            print("-" * 68)
-            for item in guess_entries:
-                start_str = str(item['start_page'])
-                end_str = str(item['end_page'])
-                count_str = str(item['page_count'])
-                ch_str = str(item.get('chapter', ''))
-                title_str = str(item.get('title', ''))
-                print(f"{item['index']:<4} {ch_str:<8} {title_str:<28} {start_str:<8} {end_str:<8} {count_str}")
-            print("=" * 68 + "\n")
-            return
+            # 評估候選目錄品質：若多數條目具有有效頁碼且具備單調性，自動採納
+            total_guess = len(guess_entries)
+            valid_page_entries = [e for e in guess_entries if isinstance(e.get("start_page"), int) and e.get("start_page") > 0]
+            valid_ratio = len(valid_page_entries) / total_guess if total_guess > 0 else 0.0
+
+            should_accept = False
+            if getattr(args, "accept_guess", False):
+                should_accept = True
+                print("[*] 使用者指定 --accept-guess，強制採納候選目錄！")
+            elif getattr(args, "auto_accept_guess", True) and len(valid_page_entries) >= 2 and valid_ratio >= 0.6:
+                inc_count = sum(1 for k in range(len(valid_page_entries) - 1) if valid_page_entries[k]["start_page"] <= valid_page_entries[k + 1]["start_page"])
+                monotonic_ratio = inc_count / (len(valid_page_entries) - 1) if len(valid_page_entries) > 1 else 1.0
+                if monotonic_ratio >= 0.7:
+                    should_accept = True
+                    print(f"[+] 候選目錄品質良好 (頁碼覆蓋率: {valid_ratio:.0%}，順序單調性: {monotonic_ratio:.0%})，自動採納為正式目錄！")
+
+            if should_accept:
+                all_entries = guess_entries
+            else:
+                print(f"[*] 注意：候選目錄品質未達自動採納門檻，本步驟未產生 {output_path.name}，後續流程將以無目錄模式繼續執行。")
+                print(f"    待全書轉檔完成後，您可以手動編輯 {guess_file.name} 並另存為 {output_path.name}，再重新編譯 HTML/EPUB。")
+
+                # 印出候選預覽表格
+                print("\n" + "=" * 68)
+                print(f"{'索引':<4} {'章節編號':<8} {'章節標題':<28} {'起始頁':<8} {'結束頁':<8} {'總頁數'}")
+                print("-" * 68)
+                for item in guess_entries:
+                    start_str = str(item['start_page'])
+                    end_str = str(item['end_page'])
+                    count_str = str(item['page_count'])
+                    ch_str = str(item.get('chapter', ''))
+                    title_str = str(item.get('title', ''))
+                    print(f"{item['index']:<4} {ch_str:<8} {title_str:<28} {start_str:<8} {end_str:<8} {count_str}")
+                print("=" * 68 + "\n")
+                return
 
         # 直排目錄條目閱讀順序校驗：
         # 直式中文目錄通常由右向左 (RTL) 排列；若 OCR 引擎以左到右 (LTR) 掃描輸出，會導致章節起始頁碼呈現單調遞減。
         # 此時自動反轉列表為正確的由右至左 (RTL) 順序。
-        if resolved_layout_direction == "vertical" and len(all_entries) >= 2:
+        valid_int_pages = [e["start_page"] for e in all_entries if isinstance(e.get("start_page"), int) and e["start_page"] > 0]
+        if resolved_layout_direction == "vertical" and len(valid_int_pages) >= 2:
             descending_count = sum(
-                1 for i in range(len(all_entries) - 1)
-                if all_entries[i]["start_page"] > all_entries[i + 1]["start_page"]
+                1 for i in range(len(valid_int_pages) - 1)
+                if valid_int_pages[i] > valid_int_pages[i + 1]
             )
-            if descending_count > (len(all_entries) - 1) * 0.7:
-                print(f"[*] 偵測到直排目錄條目以從左至右 (LTR) 逆序排列 (倒序比例: {descending_count}/{len(all_entries)-1})，自動反轉修正為由右至左 (RTL) 正確閱讀順序！")
+            if descending_count > (len(valid_int_pages) - 1) * 0.7:
+                print(f"[*] 偵測到直排目錄條目以從左至右 (LTR) 逆序排列 (倒序比例: {descending_count}/{len(valid_int_pages)-1})，自動反轉修正為由右至左 (RTL) 正確閱讀順序！")
                 all_entries.reverse()
 
         # 全域計算結束頁碼與總頁數
         for i in range(len(all_entries)):
             all_entries[i]["index"] = i + 1
-            if i < len(all_entries) - 1:
-                end_page = all_entries[i + 1]["start_page"] - 1
-                all_entries[i]["end_page"] = end_page
-                all_entries[i]["page_count"] = max(1, end_page - all_entries[i]["start_page"] + 1)
+            curr_p = all_entries[i].get("start_page")
+
+            # 尋找下一個具有有效整數頁碼的條目以決定結束頁
+            next_p = None
+            for j in range(i + 1, len(all_entries)):
+                pj = all_entries[j].get("start_page")
+                if isinstance(pj, int) and pj > 0:
+                    next_p = pj
+                    break
+
+            if isinstance(curr_p, int) and curr_p > 0 and next_p is not None:
+                end_page = next_p - 1
+                all_entries[i]["end_page"] = max(curr_p, end_page)
+                all_entries[i]["page_count"] = max(1, end_page - curr_p + 1)
             else:
                 all_entries[i]["end_page"] = None
                 all_entries[i]["page_count"] = None
