@@ -71,6 +71,8 @@ cp -a "$SCRIPT_DIR/wrappers/scanorc-toc" "$STAGING_DIR/usr/bin/"
 cp -a "$SCRIPT_DIR/wrappers/scanorc-orientation" "$STAGING_DIR/usr/bin/"
 cp -a "$SCRIPT_DIR/wrappers/scanorc-pipeline" "$STAGING_DIR/usr/bin/"
 cp -a "$SCRIPT_DIR/wrappers/scanorc-setup" "$STAGING_DIR/usr/bin/"
+cp -a "$SCRIPT_DIR/wrappers/scanorc-recompress" "$STAGING_DIR/usr/bin/"
+cp -a "$SCRIPT_DIR/wrappers/scanorc-html2epub" "$STAGING_DIR/usr/bin/"
 
 # 3. 複製桌面整合檔案 (.desktop 與圖示)
 echo "[4/6] 產生桌面捷徑與多解析度圖示..."
