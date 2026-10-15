@@ -1027,6 +1027,10 @@ class MainWindow(QMainWindow):
         self.oc_img_max_dim.setSpecialValueText("不限制 (原尺寸)")
         self.oc_img_max_dim.valueChanged.connect(self.update_command_preview)
 
+        self.oc_img_unsharp = QLineEdit("")
+        self.oc_img_unsharp.setPlaceholderText("留空關閉 (例如 1x0.55+1.5+0.002)")
+        self.oc_img_unsharp.textChanged.connect(self.update_command_preview)
+
         h_img_opt = QHBoxLayout()
         h_img_opt.addWidget(QLabel("品質:"))
         h_img_opt.addWidget(self.oc_img_quality)
@@ -1034,6 +1038,8 @@ class MainWindow(QMainWindow):
         h_img_opt.addWidget(self.oc_img_scale)
         h_img_opt.addWidget(QLabel("最大長寬:"))
         h_img_opt.addWidget(self.oc_img_max_dim)
+        h_img_opt.addWidget(QLabel("銳化:"))
+        h_img_opt.addWidget(self.oc_img_unsharp)
 
         form.addRow("images 圖片優化:", self.oc_compress_images)
         form.addRow("圖片品質與尺寸:", h_img_opt)
@@ -1369,6 +1375,10 @@ class MainWindow(QMainWindow):
         self.s3_img_max_dim.setSpecialValueText("不限制 (原尺寸)")
         self.s3_img_max_dim.valueChanged.connect(self.update_command_preview)
 
+        self.s3_img_unsharp = QLineEdit("")
+        self.s3_img_unsharp.setPlaceholderText("留空關閉 (例如 1x0.55+1.5+0.002)")
+        self.s3_img_unsharp.textChanged.connect(self.update_command_preview)
+
         h_s3_img_opt = QHBoxLayout()
         h_s3_img_opt.addWidget(QLabel("品質:"))
         h_s3_img_opt.addWidget(self.s3_img_quality)
@@ -1376,6 +1386,8 @@ class MainWindow(QMainWindow):
         h_s3_img_opt.addWidget(self.s3_img_scale)
         h_s3_img_opt.addWidget(QLabel("最大長寬:"))
         h_s3_img_opt.addWidget(self.s3_img_max_dim)
+        h_s3_img_opt.addWidget(QLabel("銳化:"))
+        h_s3_img_opt.addWidget(self.s3_img_unsharp)
 
         form.addRow("images 圖片優化:", self.s3_compress_images)
         form.addRow("圖片品質與尺寸:", h_s3_img_opt)
@@ -2054,6 +2066,8 @@ class MainWindow(QMainWindow):
                 cmd.extend(["--image-scale", str(self.oc_img_scale.value())])
                 if self.oc_img_max_dim.value() > 0:
                     cmd.extend(["--image-max-dim", str(self.oc_img_max_dim.value())])
+                if self.oc_img_unsharp.text().strip():
+                    cmd.extend(["--image-unsharp", self.oc_img_unsharp.text().strip()])
             skips = safe_split_args(self.oc_skip.text())
             if skips:
                 cmd.extend(["--skip-ocr"] + skips)
@@ -2117,6 +2131,8 @@ class MainWindow(QMainWindow):
                 cmd.extend(["--image-scale", str(self.s3_img_scale.value())])
                 if self.s3_img_max_dim.value() > 0:
                     cmd.extend(["--image-max-dim", str(self.s3_img_max_dim.value())])
+                if self.s3_img_unsharp.text().strip():
+                    cmd.extend(["--image-unsharp", self.s3_img_unsharp.text().strip()])
             skips = safe_split_args(self.s3_skip.text())
             if skips:
                 cmd.extend(["--skip-ocr"] + skips)
@@ -2343,6 +2359,7 @@ class MainWindow(QMainWindow):
                 "image_quality": self.oc_img_quality.value(),
                 "image_scale": round(float(self.oc_img_scale.value()), 2),
                 "image_max_dim": max_dim_val,
+                "image_unsharp": self.oc_img_unsharp.text().strip() or None,
                 "organize_pages": self.oc_organize.isChecked(),
                 "copy": self.oc_copy.isChecked(),
                 "organize_target": "preprocessed"
@@ -2400,6 +2417,7 @@ class MainWindow(QMainWindow):
                 "image_quality": self.s3_img_quality.value(),
                 "image_scale": round(float(self.s3_img_scale.value()), 2),
                 "image_max_dim": max_dim_val,
+                "image_unsharp": self.s3_img_unsharp.text().strip() or None,
                 "batch_size": self.s3_batch.value(),
                 "workers": self.s3_workers.value(),
                 "recursive": True,
@@ -2507,6 +2525,8 @@ class MainWindow(QMainWindow):
                 self.oc_img_scale.setValue(float(data["image_scale"]))
             if "image_max_dim" in data:
                 self.oc_img_max_dim.setValue(int(data["image_max_dim"]) if data["image_max_dim"] else 0)
+            if "image_unsharp" in data and data["image_unsharp"] is not None:
+                self.oc_img_unsharp.setText(str(data["image_unsharp"]))
             if "unsharp" in data and data["unsharp"] is not None:
                 self.oc_unsharp.setText(str(data["unsharp"]))
             if "skip_ocr" in data:
@@ -2593,6 +2613,8 @@ class MainWindow(QMainWindow):
                 self.s3_img_scale.setValue(float(data["image_scale"]))
             if "image_max_dim" in data:
                 self.s3_img_max_dim.setValue(int(data["image_max_dim"]) if data["image_max_dim"] else 0)
+            if "image_unsharp" in data and data["image_unsharp"] is not None:
+                self.s3_img_unsharp.setText(str(data["image_unsharp"]))
             if "skip_ocr" in data:
                 val = data["skip_ocr"]
                 if isinstance(val, list):
@@ -2914,6 +2936,8 @@ class MainWindow(QMainWindow):
             cmd.extend(["--image-scale", str(self.s3_img_scale.value())])
             if self.s3_img_max_dim.value() > 0:
                 cmd.extend(["--image-max-dim", str(self.s3_img_max_dim.value())])
+            if self.s3_img_unsharp.text().strip():
+                cmd.extend(["--image-unsharp", self.s3_img_unsharp.text().strip()])
         self.execute_cmd_list(cmd)
 
     def open_folder(self, folder_str: str):

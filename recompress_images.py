@@ -17,6 +17,7 @@ ScanORC: 批次圖片重新壓縮與縮放工具 (recompress_images.py / images_
 """
 
 import os
+import re
 import sys
 import time
 import argparse
@@ -24,9 +25,41 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Optional, Union
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from PIL import Image
+from PIL import Image, ImageFilter
 
 VALID_EXTS = {".jpg", ".jpeg", ".png"}
+
+
+def apply_unsharp_filter(im: Image.Image, unsharp: Optional[str]) -> Image.Image:
+    """
+    對 PIL 影像套用 Unsharp Mask 銳化濾鏡。
+    支援 ImageMagick 語法如 '1x0.55+1.5+0.002' (radiusxsigma+amount+threshold)。
+    """
+    if not unsharp:
+        return im
+    unsharp_str = str(unsharp).strip()
+    if unsharp_str.lower() in ("none", "off", "0", "false"):
+        return im
+
+    r_val, p_val, th_val = 1.0, 150, 0
+    m = re.match(r"^(\d*(?:\.\d+)?)x(\d*(?:\.\d+)?)\+([0-9.]+)\+([0-9.]+)$", unsharp_str)
+    if m:
+        rad_s, sig_s, amt_s, th_s = m.groups()
+        rad = float(rad_s) if rad_s else 1.0
+        sig = float(sig_s) if sig_s else 0.55
+        amt = float(amt_s) if amt_s else 1.5
+        th = float(th_s) if th_s else 0.002
+        r_val = rad if rad > 0 else sig
+        p_val = int(round(amt * 100))
+        th_val = int(round(th * 255))
+    else:
+        try:
+            val = float(unsharp_str)
+            r_val, p_val, th_val = val, 150, 0
+        except ValueError:
+            r_val, p_val, th_val = 1.0, 150, 0
+
+    return im.filter(ImageFilter.UnsharpMask(radius=r_val, percent=p_val, threshold=th_val))
 
 
 def parse_scale_value(val_str: Union[str, float]) -> float:
@@ -66,11 +99,13 @@ def _worker_task(args_tuple) -> Dict:
         subsampling,
         preserve_metadata,
         png_lossless,
+        unsharp,
     ) = args_tuple
 
     src_p = Path(src_path_str)
     dst_p = Path(dst_path_str)
     is_png = src_p.suffix.lower() == ".png"
+    has_unsharp = bool(unsharp and str(unsharp).strip().lower() not in ("none", "off", "0", "false"))
 
     try:
         orig_size = src_p.stat().st_size
@@ -105,6 +140,10 @@ def _worker_task(args_tuple) -> Dict:
                 # 若尺寸改變，執行高品質 Lanczos 重採樣
                 if (new_w, new_h) != (orig_w, orig_h):
                     im = im.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+
+                # 銳化濾鏡處理 (在縮放後、調色盤量化前套用)
+                if has_unsharp:
+                    im = apply_unsharp_filter(im, unsharp)
 
                 # 品質 -q 作用於 PNG：若非 lossless 且品質小於 100，套用調色盤量化降階 (大幅縮減檔案體積)
                 if not png_lossless and quality < 100:
@@ -141,6 +180,10 @@ def _worker_task(args_tuple) -> Dict:
                 # 若尺寸改變，執行高品質 Lanczos 重採樣
                 if (new_w, new_h) != (orig_w, orig_h):
                     im = im.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+
+                # 銳化濾鏡處理 (在縮放後套用)
+                if has_unsharp:
+                    im = apply_unsharp_filter(im, unsharp)
 
                 save_kwargs = {
                     "format": "JPEG",
@@ -251,6 +294,7 @@ def recompress_directory(
     subsampling: str = "keep",
     preserve_metadata: bool = True,
     png_lossless: bool = False,
+    unsharp: Optional[str] = None,
     dry_run: bool = False,
     verbose: bool = True,
 ) -> Dict:
@@ -290,6 +334,10 @@ def recompress_directory(
         print(f"[*] 找到圖檔:    {total_files} 個圖檔 (含 {jpg_cnt} 個 JPG, {png_cnt} 個 PNG，涵蓋所有子目錄)")
         print(f"[*] 壓縮品質:    {qualities}")
         print(f"[*] 縮放比例:    {[f'{int(s*100)}%' if s<=10 else f'{s}' for s in scales]}")
+        if unsharp and str(unsharp).strip().lower() not in ("none", "off", "0", "false"):
+            print(f"[*] 影像銳化:    啟用 ({unsharp})")
+        else:
+            print(f"[*] 影像銳化:    關閉")
         if max_dim:
             print(f"[*] 最大長寬:    {max_dim} px")
         print(f"[*] 並行 Worker: {workers}")
@@ -336,6 +384,7 @@ def recompress_directory(
                     subsampling,
                     preserve_metadata,
                     png_lossless,
+                    unsharp,
                 ))
 
             if dry_run:
@@ -459,6 +508,9 @@ def main():
 
   # 6. 模擬運行預覽清單 (不實際寫入任何檔案):
   python recompress_images.py samples -o output_preview -q 75 --dry-run
+
+  # 7. 套用影像銳化遮色片 (增強文字與線條邊緣清晰度):
+  python recompress_images.py samples -o output_sharp -q 75 -s 0.8 --unsharp 1x0.55+1.5+0.002
 """
     )
 
@@ -531,6 +583,13 @@ def main():
         help="移除 EXIF 與 DPI 元資料 (預設為保留)"
     )
     parser.add_argument(
+        "--unsharp",
+        nargs="?",
+        const="1x0.55+1.5+0.002",
+        default=None,
+        help="影像銳化濾鏡參數 (ImageMagick unsharp 語法例如 1x0.55+1.5+0.002，預設: 關閉；若僅指定 --unsharp 則使用 1x0.55+1.5+0.002)"
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="模擬執行模式 (僅列出檔案清單與目錄結構，不實際寫入)"
@@ -564,6 +623,7 @@ def main():
             subsampling=args.subsampling,
             preserve_metadata=not args.strip_metadata,
             png_lossless=args.png_lossless,
+            unsharp=args.unsharp,
             dry_run=args.dry_run,
             verbose=not args.quiet,
         )

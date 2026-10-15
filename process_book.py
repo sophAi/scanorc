@@ -209,6 +209,11 @@ def main():
         help="images 圖檔最大長寬限制 (例如 1920，預設 None 不限制)"
     )
     parser.add_argument(
+        "--image-unsharp",
+        default=None,
+        help="images 圖檔銳化參數 (ImageMagick unsharp 語法例如 1x0.55+1.5+0.002，預設: None 關閉)"
+    )
+    parser.add_argument(
         "--organize-pages",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -443,6 +448,8 @@ def main():
         step3_cmd.extend(["--image-scale", str(args.image_scale)])
         if args.image_max_dim:
             step3_cmd.extend(["--image-max-dim", str(args.image_max_dim)])
+        if args.image_unsharp:
+            step3_cmd.extend(["--image-unsharp", str(args.image_unsharp)])
 
     print(f"[*] 執行指令: {' '.join(step3_cmd)}")
     subprocess.run(step3_cmd, check=True)

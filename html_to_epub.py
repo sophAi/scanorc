@@ -290,6 +290,7 @@ def convert_html_to_epub(
     image_quality: int = 75,
     image_scale: float = 1.0,
     image_max_dim: Optional[int] = None,
+    image_unsharp: Optional[str] = None,
     pandoc_bin: Optional[str] = None,
     layout_direction: str = "auto",
     verbose: bool = True,
@@ -382,6 +383,7 @@ def convert_html_to_epub(
                     scales=[image_scale],
                     max_dim=image_max_dim,
                     workers=min(os.cpu_count() or 4, 16),
+                    unsharp=image_unsharp,
                     verbose=verbose,
                 )
                 shutil.rmtree(img_dir)
@@ -634,6 +636,11 @@ def main():
         help="images 圖檔最大長寬限制 (例如 1920，預設 None 不限制)"
     )
     parser.add_argument(
+        "--image-unsharp",
+        default=None,
+        help="images 圖檔銳化參數 (ImageMagick unsharp 語法例如 1x0.55+1.5+0.002，預設: None 關閉)"
+    )
+    parser.add_argument(
         "--css",
         default=None,
         help="自訂樣式表 CSS 檔案路徑 (選填)"
@@ -717,6 +724,7 @@ def main():
             image_quality=args.image_quality,
             image_scale=args.image_scale,
             image_max_dim=args.image_max_dim,
+            image_unsharp=args.image_unsharp,
             pandoc_bin=args.pandoc,
             layout_direction=args.layout_direction,
             verbose=not args.quiet,

@@ -179,6 +179,7 @@ def main():
     parser.add_argument("--image-quality", type=int, default=75, help="images 圖片品質 (預設: 75)")
     parser.add_argument("--image-scale", type=float, default=0.8, help="images 圖片縮放 (預設: 0.8)")
     parser.add_argument("--image-max-dim", type=int, default=None, help="images 圖片長寬限制 (預設: None)")
+    parser.add_argument("--image-unsharp", default=None, help="預設 images 圖片銳化參數 (預設: None)")
     parser.add_argument(
         "--organize-pages",
         action=argparse.BooleanOptionalAction,
@@ -418,6 +419,9 @@ def main():
             img_dim = cfg_data.get("image_max_dim", args.image_max_dim)
             if img_dim:
                 cmd.extend(["--image-max-dim", str(img_dim)])
+            img_unsharp = cfg_data.get("image_unsharp", args.image_unsharp)
+            if img_unsharp:
+                cmd.extend(["--image-unsharp", str(img_unsharp)])
         else:
             cmd.append("--no-compress-images")
 
