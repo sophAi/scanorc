@@ -436,6 +436,8 @@ class DocumentConverter:
         max_ocr_dim: int = 1024,
         batch_size: int = 2,
         layout_direction: str = "auto",
+        repetition_penalty: float = 1.1,
+        no_repeat_ngram_size: int = 10,
     ):
         self.resolved_yolo, self.resolved_glm = resolve_model_paths(models_dir, yolo_weights, glm_model_dir)
         self.device = device if torch.cuda.is_available() else "cpu"
@@ -443,6 +445,8 @@ class DocumentConverter:
         self.max_ocr_dim = max_ocr_dim
         self.batch_size = max(1, batch_size)
         self.layout_direction = layout_direction
+        self.repetition_penalty = repetition_penalty
+        self.no_repeat_ngram_size = no_repeat_ngram_size
         self.yolo = None
         self.glm = None
         self.processor = None
@@ -615,8 +619,16 @@ class DocumentConverter:
             ).to(self.device)
 
             max_tokens = 1024 if has_table else 512
+            gen_kwargs = {
+                "max_new_tokens": max_tokens,
+            }
+            if self.repetition_penalty is not None and self.repetition_penalty > 1.0:
+                gen_kwargs["repetition_penalty"] = self.repetition_penalty
+            if self.no_repeat_ngram_size is not None and self.no_repeat_ngram_size > 0:
+                gen_kwargs["no_repeat_ngram_size"] = self.no_repeat_ngram_size
+
             with torch.no_grad():
-                outputs = self.glm.generate(**inputs, max_new_tokens=max_tokens)
+                outputs = self.glm.generate(**inputs, **gen_kwargs)
 
             # 解碼各批次結果
             for out_seq in outputs:
@@ -1278,7 +1290,7 @@ def build_epub_with_pandoc(
 
 def _worker_process_page(args_tuple):
     """多進程 Worker 任務函數"""
-    task_idx, img_path, output_dir, batch_size, skip_ocr, models_dir, yolo_weights, glm_model_dir, layout_direction = args_tuple
+    task_idx, img_path, output_dir, batch_size, skip_ocr, models_dir, yolo_weights, glm_model_dir, layout_direction, repetition_penalty, no_repeat_ngram_size = args_tuple
     # 每個子進程獨立初始化 Converter (套用傳入之模型目錄與版面排版方向)
     converter = DocumentConverter(
         models_dir=models_dir,
@@ -1286,6 +1298,8 @@ def _worker_process_page(args_tuple):
         glm_model_dir=glm_model_dir,
         batch_size=batch_size,
         layout_direction=layout_direction,
+        repetition_penalty=repetition_penalty,
+        no_repeat_ngram_size=no_repeat_ngram_size,
     )
     res = converter.process_page(img_path, output_dir, skip_ocr=skip_ocr)
     res["_task_idx"] = task_idx
@@ -1377,6 +1391,18 @@ def main():
         choices=["auto", "horizontal", "vertical", "horizon"],
         default="auto",
         help="書籍排版方向 (auto: 自動抽樣檢測, horizontal/horizon: 橫排, vertical: 直排, 預設: auto)"
+    )
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=1.1,
+        help="GLM-OCR 生成文字時的重複懲罰係數 (預設: 1.1，防止引導線或符號陷入無限重複死循環)"
+    )
+    parser.add_argument(
+        "--no-repeat-ngram-size",
+        type=int,
+        default=10,
+        help="禁止連續重複的 n-gram 大小 (預設: 10，防止長引導點/破折號無限重複)"
     )
     args = attach_preference_and_template_support(parser, "pipeline")
 
@@ -1547,6 +1573,8 @@ def main():
                 args.yolo_weights,
                 args.glm_model_dir,
                 resolved_layout_direction,
+                args.repetition_penalty,
+                args.no_repeat_ngram_size,
             )
             for idx, img_path in enumerate(image_files)
         ]
@@ -1561,6 +1589,8 @@ def main():
             glm_model_dir=args.glm_model_dir,
             batch_size=args.batch_size,
             layout_direction=resolved_layout_direction,
+            repetition_penalty=args.repetition_penalty,
+            no_repeat_ngram_size=args.no_repeat_ngram_size,
         )
         for idx, img_path in enumerate(image_files):
             p_res = converter.process_page(

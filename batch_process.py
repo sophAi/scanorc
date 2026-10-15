@@ -135,7 +135,20 @@ def main():
     parser.add_argument("--cover", default=None, help="預設封面圖片路徑")
     parser.add_argument("--dpi", type=int, default=None, help="預設解析度 DPI (預設 None 保持 1:1)")
     parser.add_argument("--margins", type=int, default=1, help="預設版心四周邊距大小 (mm，預設: 1)")
-    parser.add_argument("--quality", type=int, default=85, help="預設 JPG 壓縮品質 (預設: 85)")
+    parser.add_argument("--quality", type=int, default=60, help="預設 JPG 壓縮品質 (預設: 60)")
+    parser.add_argument("--scale", type=float, default=0.8, help="預設圖檔尺寸縮放比例 (預設: 0.8)")
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=1.1,
+        help="GLM-OCR 生成文字時的重複懲罰係數 (預設: 1.1)"
+    )
+    parser.add_argument(
+        "--no-repeat-ngram-size",
+        type=int,
+        default=10,
+        help="禁止連續重複的 n-gram 大小 (預設: 10)"
+    )
     parser.add_argument(
         "--color-mode",
         choices=["color_grayscale", "mixed", "black_and_white"],
@@ -163,7 +176,7 @@ def main():
         help="是否壓縮與縮放 images 插圖 (預設: True)"
     )
     parser.add_argument("--image-quality", type=int, default=75, help="images 圖片品質 (預設: 75)")
-    parser.add_argument("--image-scale", type=float, default=0.75, help="images 圖片縮放 (預設: 0.75)")
+    parser.add_argument("--image-scale", type=float, default=0.8, help="images 圖片縮放 (預設: 0.8)")
     parser.add_argument("--image-max-dim", type=int, default=None, help="images 圖片長寬限制 (預設: None)")
     parser.add_argument(
         "--organize-pages",
@@ -351,6 +364,15 @@ def main():
         cmd.extend(["--margins", str(margins)])
         cmd.extend(["--quality", str(quality)])
         cmd.extend(["--color-mode", str(color_mode)])
+        scale = cfg_data.get("scale", args.scale)
+        if scale:
+            cmd.extend(["--scale", str(scale)])
+        rep_pen = cfg_data.get("repetition_penalty", args.repetition_penalty)
+        if rep_pen:
+            cmd.extend(["--repetition-penalty", str(rep_pen)])
+        no_rep = cfg_data.get("no_repeat_ngram_size", args.no_repeat_ngram_size)
+        if no_rep:
+            cmd.extend(["--no-repeat-ngram-size", str(no_rep)])
         if dpi:
             cmd.extend(["--dpi", str(dpi)])
         if cover:

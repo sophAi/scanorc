@@ -1012,7 +1012,7 @@ class MainWindow(QMainWindow):
         self.oc_img_scale = QDoubleSpinBox()
         self.oc_img_scale.setRange(0.1, 2.0)
         self.oc_img_scale.setSingleStep(0.05)
-        self.oc_img_scale.setValue(0.75)
+        self.oc_img_scale.setValue(0.8)
         self.oc_img_scale.valueChanged.connect(self.update_command_preview)
 
         self.oc_img_max_dim = QSpinBox()
@@ -1123,17 +1123,25 @@ class MainWindow(QMainWindow):
 
         self.s1_quality = QSpinBox()
         self.s1_quality.setRange(1, 100)
-        self.s1_quality.setValue(85)
+        self.s1_quality.setValue(60)
         self.s1_quality.valueChanged.connect(self.update_command_preview)
         h_fmt.addWidget(QLabel("品質:"))
         h_fmt.addWidget(self.s1_quality)
+
+        self.s1_scale = QDoubleSpinBox()
+        self.s1_scale.setRange(0.1, 2.0)
+        self.s1_scale.setSingleStep(0.05)
+        self.s1_scale.setValue(0.8)
+        self.s1_scale.valueChanged.connect(self.update_command_preview)
+        h_fmt.addWidget(QLabel("縮放:"))
+        h_fmt.addWidget(self.s1_scale)
 
         self.s1_dpi = QLineEdit("")
         self.s1_dpi.setPlaceholderText("留空為 1:1 原生尺寸")
         self.s1_dpi.textChanged.connect(self.update_command_preview)
         h_fmt.addWidget(QLabel("DPI:"))
         h_fmt.addWidget(self.s1_dpi)
-        form.addRow("輸出品質:", h_fmt)
+        form.addRow("輸出品質與尺寸:", h_fmt)
 
         self.s1_skip = QLineEdit("")
         self.s1_skip.setPlaceholderText("指定略過頁碼/檔名 (自動同步左側『略過OCR』勾選項，繞過 ScanTailor 直接導出原圖)")
@@ -1340,7 +1348,7 @@ class MainWindow(QMainWindow):
         self.s3_img_scale = QDoubleSpinBox()
         self.s3_img_scale.setRange(0.1, 2.0)
         self.s3_img_scale.setSingleStep(0.05)
-        self.s3_img_scale.setValue(0.75)
+        self.s3_img_scale.setValue(0.8)
         self.s3_img_scale.valueChanged.connect(self.update_command_preview)
 
         self.s3_img_max_dim = QSpinBox()
@@ -2047,6 +2055,7 @@ class MainWindow(QMainWindow):
             cmd.extend(["--margins", str(self.s1_margins.value())])
             cmd.extend(["--format", self.s1_format.currentText()])
             cmd.extend(["--quality", str(self.s1_quality.value())])
+            cmd.extend(["--scale", str(self.s1_scale.value())])
             if self.s1_dpi.text().strip():
                 cmd.extend(["--dpi", self.s1_dpi.text().strip()])
             s1_skips = safe_split_args(self.s1_skip.text())
@@ -2297,7 +2306,8 @@ class MainWindow(QMainWindow):
                 "models_dir": self.oc_models_dir.text().strip() or None,
                 "dpi": dpi_val,
                 "margins": 1,
-                "quality": 85,
+                "quality": 60,
+                "scale": 0.8,
                 "color_mode": "color_grayscale",
                 "batch_size": self.oc_batch.value(),
                 "workers": self.oc_workers.value(),
@@ -2329,6 +2339,7 @@ class MainWindow(QMainWindow):
                 "color_mode": self.s1_color.currentText(),
                 "despeckle": self.s1_despeckle.currentText(),
                 "quality": self.s1_quality.value(),
+                "scale": round(float(self.s1_scale.value()), 2),
                 "batch_size": 0,
                 "skip_ocr": safe_split_args(self.s1_skip.text())
             }
@@ -2420,7 +2431,8 @@ class MainWindow(QMainWindow):
                 "cover": None,
                 "dpi": dpi_val,
                 "margins": 1,
-                "quality": 85,
+                "quality": 60,
+                "scale": 0.8,
                 "color_mode": "color_grayscale",
                 "batch_size": self.batch_batch_size.value(),
                 "workers": self.batch_workers.value(),
@@ -2428,7 +2440,7 @@ class MainWindow(QMainWindow):
                 "epub": self.batch_epub.isChecked(),
                 "compress_images": self.batch_compress_images.isChecked(),
                 "image_quality": 75,
-                "image_scale": 0.75,
+                "image_scale": 0.8,
                 "image_max_dim": None,
                 "organize_pages": self.batch_organize.isChecked(),
                 "copy": self.batch_copy.isChecked(),
@@ -2499,6 +2511,8 @@ class MainWindow(QMainWindow):
                 self.s1_despeckle.setCurrentText(str(data["despeckle"]))
             if "quality" in data and data["quality"] is not None:
                 self.s1_quality.setValue(int(data["quality"]))
+            if "scale" in data and data["scale"] is not None:
+                self.s1_scale.setValue(float(data["scale"]))
             skip_val = data.get("skip_ocr", data.get("skip_orc"))
             if skip_val is not None:
                 if isinstance(skip_val, list):

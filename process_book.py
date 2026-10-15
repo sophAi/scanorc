@@ -121,8 +121,26 @@ def main():
     parser.add_argument(
         "--quality",
         type=int,
-        default=85,
-        help="轉正裁切若輸出為 JPG 時的壓縮品質 (1-100，預設: 85)"
+        default=60,
+        help="轉正裁切若輸出為 JPG 時的壓縮品質 (1-100，預設: 60)"
+    )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=0.8,
+        help="轉正裁切輸出圖檔尺寸縮放比例 (例如 0.8 或 1.0，預設: 0.8)"
+    )
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=1.1,
+        help="GLM-OCR 生成文字時的重複懲罰係數 (預設: 1.1，防止引導線或符號陷入無限重複死循環)"
+    )
+    parser.add_argument(
+        "--no-repeat-ngram-size",
+        type=int,
+        default=10,
+        help="禁止連續重複的 n-gram 大小 (預設: 10，防止長引導點/破折號無限重複)"
     )
     parser.add_argument(
         "--color-mode",
@@ -176,8 +194,8 @@ def main():
     parser.add_argument(
         "--image-scale",
         type=float,
-        default=0.75,
-        help="images 圖檔尺寸縮放比例 (例如 0.75 或 1.0，預設: 0.75)"
+        default=0.8,
+        help="images 圖檔尺寸縮放比例 (例如 0.8 或 1.0，預設: 0.8)"
     )
     parser.add_argument(
         "--image-max-dim",
@@ -270,6 +288,8 @@ def main():
         step1_cmd.extend(["--dpi", str(args.dpi)])
     if args.quality:
         step1_cmd.extend(["--quality", str(args.quality)])
+    if args.scale:
+        step1_cmd.extend(["--scale", str(args.scale)])
     if args.skip_ocr:
         step1_cmd.extend(["--skip-orc", *args.skip_ocr])
 
@@ -322,6 +342,10 @@ def main():
                 step2_cmd.extend(["--models-dir", str(args.models_dir)])
             if args.layout_direction:
                 step2_cmd.extend(["--layout-direction", str(args.layout_direction)])
+            if args.repetition_penalty:
+                step2_cmd.extend(["--repetition-penalty", str(args.repetition_penalty)])
+            if args.no_repeat_ngram_size:
+                step2_cmd.extend(["--no-repeat-ngram-size", str(args.no_repeat_ngram_size)])
             print(f"[*] 執行指令: {' '.join(step2_cmd)}")
             try:
                 subprocess.run(step2_cmd, check=True)
@@ -356,6 +380,10 @@ def main():
         step3_cmd.append("--epub")
     if args.models_dir:
         step3_cmd.extend(["--models-dir", str(args.models_dir)])
+    if args.repetition_penalty:
+        step3_cmd.extend(["--repetition-penalty", str(args.repetition_penalty)])
+    if args.no_repeat_ngram_size:
+        step3_cmd.extend(["--no-repeat-ngram-size", str(args.no_repeat_ngram_size)])
     if args.skip_ocr:
         step3_cmd.extend(["--skip-ocr", *args.skip_ocr])
 

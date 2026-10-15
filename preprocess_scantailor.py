@@ -80,19 +80,28 @@ def convert_tif_to_target_format(
     tif_path: Path,
     target_path: Path,
     target_format: str = "jpg",
-    quality: int = 95
+    quality: int = 60,
+    scale: float = 0.8
 ):
     """
-    將 ScanTailor 輸出的 TIF 轉換為指定的 JPG / PNG / TIF 格式
+    將 ScanTailor 輸出的 TIF 轉換為指定的 JPG / PNG / TIF 格式，並支援尺寸縮放
     """
     fmt = target_format.lower()
     if fmt in ("jpg", "jpeg"):
         with Image.open(tif_path) as im:
             if im.mode not in ("RGB", "L"):
                 im = im.convert("RGB")
+            if scale is not None and scale > 0 and abs(scale - 1.0) > 1e-4:
+                new_w = max(1, int(round(im.width * scale)))
+                new_h = max(1, int(round(im.height * scale)))
+                im = im.resize((new_w, new_h), Image.Resampling.LANCZOS)
             im.save(target_path, "JPEG", quality=quality)
     elif fmt == "png":
         with Image.open(tif_path) as im:
+            if scale is not None and scale > 0 and abs(scale - 1.0) > 1e-4:
+                new_w = max(1, int(round(im.width * scale)))
+                new_h = max(1, int(round(im.height * scale)))
+                im = im.resize((new_w, new_h), Image.Resampling.LANCZOS)
             im.save(target_path, "PNG", optimize=True)
     elif fmt in ("tif", "tiff"):
         shutil.copy2(tif_path, target_path)
@@ -104,19 +113,28 @@ def export_image_to_target_format(
     src_path: Path,
     target_path: Path,
     target_format: str = "jpg",
-    quality: int = 95
+    quality: int = 60,
+    scale: float = 0.8
 ):
     """
-    將原圖導出為指定的目標格式 (若格式相同直接快速複製，否則轉換儲存)
+    將原圖導出為指定的目標格式 (若需格式轉換或尺寸縮放則透過 PIL 處理)
     """
     fmt = target_format.lower()
     target_ext = f".{fmt}" if fmt != "jpeg" else ".jpg"
-    if src_path.suffix.lower() == target_ext and fmt != "jpg":
+    is_same_ext = (src_path.suffix.lower() == target_ext)
+    no_scale = (scale is None or abs(scale - 1.0) <= 1e-4)
+
+    if is_same_ext and fmt not in ("jpg", "jpeg") and no_scale:
         shutil.copy2(src_path, target_path)
         return
 
     try:
         with Image.open(src_path) as im:
+            if scale is not None and scale > 0 and abs(scale - 1.0) > 1e-4:
+                new_w = max(1, int(round(im.width * scale)))
+                new_h = max(1, int(round(im.height * scale)))
+                im = im.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
             if fmt in ("jpg", "jpeg"):
                 if im.mode not in ("RGB", "L"):
                     im = im.convert("RGB")
@@ -281,7 +299,8 @@ def process_image_group(
             skip_img,
             final_dest,
             target_format=args.format,
-            quality=args.quality
+            quality=args.quality,
+            scale=args.scale
         )
         total_converted += 1
         print(f"    [*] [略過 ScanTailor 處理] {skip_img.name} -> 直接導出原始圖檔至目標目錄")
@@ -354,7 +373,8 @@ def process_image_group(
                     tif_file,
                     final_dest,
                     target_format=args.format,
-                    quality=args.quality
+                    quality=args.quality,
+                    scale=args.scale
                 )
                 total_converted += 1
 
@@ -421,8 +441,14 @@ def main():
     parser.add_argument(
         "--quality",
         type=int,
-        default=85,
-        help="若輸出為 JPG 時的壓縮品質 1-100 (預設: 85)"
+        default=60,
+        help="若輸出為 JPG 時的壓縮品質 1-100 (預設: 60)"
+    )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=0.8,
+        help="輸出圖檔尺寸縮放比例 (例如 0.8 或 1.0，預設: 0.8)"
     )
     parser.add_argument(
         "--batch-size",
