@@ -43,10 +43,20 @@ except ImportError:
     recompress_directory = None
 
 try:
-    from orientation_detector import detect_book_orientation, detect_page_orientation
+    from orientation_detector import detect_book_orientation, detect_page_orientation, normalize_layout_direction
 except ImportError:
     detect_book_orientation = None
     detect_page_orientation = None
+
+    def normalize_layout_direction(val: Optional[str]) -> str:
+        if not val:
+            return "auto"
+        s = str(val).strip().lower()
+        if s in ("vertical", "vert", "vertical-rl", "v"):
+            return "vertical"
+        if s in ("horizontal", "horizon", "horizontal-tb", "h"):
+            return "horizontal"
+        return "auto"
 
 
 def clean_math_syntax(text: str) -> str:
@@ -1393,9 +1403,27 @@ def main():
     )
     parser.add_argument(
         "--layout-direction",
-        choices=["auto", "horizontal", "vertical", "horizon"],
+        "--direction",
+        dest="layout_direction",
+        choices=["auto", "horizontal", "vertical", "horizon", "vertical-rl", "horizontal-tb"],
         default="auto",
-        help="書籍排版方向 (auto: 自動抽樣檢測, horizontal/horizon: 橫排, vertical: 直排, 預設: auto)"
+        help="書籍排版方向 (auto: 優先讀取 toc.json，次之自動抽樣檢測, horizontal: 橫排, vertical: 直排, 預設: auto)"
+    )
+    parser.add_argument(
+        "--vertical",
+        dest="layout_direction",
+        action="store_const",
+        const="vertical",
+        default=argparse.SUPPRESS,
+        help="快捷選項：強制設定為直排模式 (豎排 / vertical-rl / RTL 翻頁)"
+    )
+    parser.add_argument(
+        "--horizontal",
+        dest="layout_direction",
+        action="store_const",
+        const="horizontal",
+        default=argparse.SUPPRESS,
+        help="快捷選項：強制設定為橫排模式 (horizontal / LTR 翻頁)"
     )
     parser.add_argument(
         "--repetition-penalty",
@@ -1534,15 +1562,17 @@ def main():
 
     # 自動辨識書籍排版方向 (直排 / 橫排，優先繼承 toc.json，次選抽樣 Page-*.jpg)
     if args.layout_direction == "auto":
-        if toc_data and toc_data.get("layout_direction"):
-            toc_dir = toc_data.get("layout_direction")
-            resolved_layout_direction = "horizontal" if toc_dir in ("horizon", "horizontal") else "vertical"
+        toc_dir = normalize_layout_direction(toc_data.get("layout_direction")) if toc_data else "auto"
+        if toc_dir != "auto":
+            resolved_layout_direction = toc_dir
             ori_text = "直排 (豎排 / vertical-rl)" if resolved_layout_direction == "vertical" else "橫排 (horizontal)"
             print(f"[*] 從目錄索引 (toc.json) 自動繼承書籍排版方向: {ori_text}")
         elif detect_book_orientation is not None:
             book_ori_res = detect_book_orientation(image_files, sample_count=5)
             raw_direction = book_ori_res["orientation"]
-            resolved_layout_direction = "horizontal" if raw_direction in ("horizon", "horizontal") else "vertical"
+            resolved_layout_direction = normalize_layout_direction(raw_direction)
+            if resolved_layout_direction == "auto":
+                resolved_layout_direction = "horizontal"
             v_votes = book_ori_res["votes"]["vertical"]
             h_votes = book_ori_res["votes"]["horizontal"]
             conf_pct = book_ori_res["confidence"] * 100
@@ -1552,7 +1582,9 @@ def main():
         else:
             resolved_layout_direction = "horizontal"
     else:
-        resolved_layout_direction = "horizontal" if args.layout_direction in ("horizon", "horizontal") else "vertical"
+        resolved_layout_direction = normalize_layout_direction(args.layout_direction)
+        if resolved_layout_direction == "auto":
+            resolved_layout_direction = "horizontal"
         ori_text = "直排 (豎排 / vertical-rl)" if resolved_layout_direction == "vertical" else "橫排 (horizontal)"
         print(f"[*] 設定書籍版面排版方向: {ori_text}")
 

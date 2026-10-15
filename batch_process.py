@@ -23,6 +23,19 @@ from typing import List, Dict, Any, Optional
 
 from config_utils import attach_preference_and_template_support, load_json_with_comments
 
+try:
+    from orientation_detector import normalize_layout_direction
+except ImportError:
+    def normalize_layout_direction(val: Optional[str]) -> str:
+        if not val:
+            return "auto"
+        s = str(val).strip().lower()
+        if s in ("vertical", "vert", "vertical-rl", "v"):
+            return "vertical"
+        if s in ("horizontal", "horizon", "horizontal-tb", "h"):
+            return "horizontal"
+        return "auto"
+
 VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 
 
@@ -200,9 +213,27 @@ def main():
     )
     parser.add_argument(
         "--layout-direction",
-        choices=["auto", "horizontal", "vertical", "horizon"],
+        "--direction",
+        dest="layout_direction",
+        choices=["auto", "horizontal", "vertical", "horizon", "vertical-rl", "horizontal-tb"],
         default="auto",
-        help="書籍排版方向 (auto: 自動抽樣檢測, horizontal/horizon: 橫排, vertical: 直排, 預設: auto)"
+        help="書籍排版方向 (auto: 優先讀取各書 toc.json，次之自動抽樣檢測, horizontal: 橫排, vertical: 直排, 預設: auto)"
+    )
+    parser.add_argument(
+        "--vertical",
+        dest="layout_direction",
+        action="store_const",
+        const="vertical",
+        default=argparse.SUPPRESS,
+        help="快捷選項：強制設定為直排模式 (豎排 / vertical-rl / RTL 翻頁)"
+    )
+    parser.add_argument(
+        "--horizontal",
+        dest="layout_direction",
+        action="store_const",
+        const="horizontal",
+        default=argparse.SUPPRESS,
+        help="快捷選項：強制設定為橫排模式 (horizontal / LTR 翻頁)"
     )
 
     args = attach_preference_and_template_support(parser, "batch_process")
@@ -281,6 +312,42 @@ def main():
                 toc_path = (out_sub_dir / "toc.json").resolve()
                 has_existing_toc = True
 
+        # 排版方向解析 (優先級: CLI明確指定 > book_config.json > 現成 toc.json > auto)
+        book_layout_dir = "auto"
+        cli_layout = normalize_layout_direction(args.layout_direction)
+        cfg_layout = normalize_layout_direction(cfg_data.get("layout_direction") or cfg_data.get("direction"))
+
+        if cli_layout != "auto":
+            book_layout_dir = cli_layout
+            layout_source = "CLI 指定"
+        elif cfg_layout != "auto":
+            book_layout_dir = cfg_layout
+            layout_source = "書籍設定"
+        else:
+            # 嘗試從現成 toc.json 讀取
+            toc_candidates = []
+            if toc_path and toc_path.exists():
+                toc_candidates.append(toc_path)
+            if (b_dir / "toc.json").exists() and (b_dir / "toc.json") not in toc_candidates:
+                toc_candidates.append(b_dir / "toc.json")
+            if (out_sub_dir / "toc.json").exists() and (out_sub_dir / "toc.json") not in toc_candidates:
+                toc_candidates.append(out_sub_dir / "toc.json")
+
+            for cand_toc in toc_candidates:
+                try:
+                    with open(cand_toc, "r", encoding="utf-8") as f:
+                        t_json = json.load(f)
+                    if t_json.get("layout_direction"):
+                        norm = normalize_layout_direction(t_json["layout_direction"])
+                        if norm != "auto":
+                            book_layout_dir = norm
+                            layout_source = f"{cand_toc.name} 繼承"
+                            break
+                except Exception:
+                    pass
+            else:
+                layout_source = "自動偵測"
+
         # 檢查是否已完成 (續傳)
         is_completed = False
         check_target = out_sub_dir / ("book.epub" if args.epub else "book.html")
@@ -296,19 +363,23 @@ def main():
             "config_data": cfg_data,
             "toc_path": toc_path,
             "has_existing_toc": has_existing_toc,
+            "layout_direction": book_layout_dir,
+            "layout_source": layout_source,
             "is_completed": is_completed,
         })
 
     # 3. Dry-Run 預覽模式
     if args.dry_run:
         print(" [🔍] 批次執行排程預覽 (Dry Run)：\n")
-        print(f"{'編號':<5} {'書籍目錄名稱':<25} {'書名標題':<25} {'TOC 狀態':<18} {'排程狀態'}")
-        print("-" * 85)
+        print(f"{'編號':<5} {'書籍目錄名稱':<22} {'書名標題':<22} {'TOC 狀態':<14} {'排版方向':<22} {'排程狀態'}")
+        print("-" * 105)
         for t in book_tasks:
             toc_status = "現成沿用" if t["has_existing_toc"] else "AI 抽取"
+            dir_str = "直排 (RTL)" if t["layout_direction"] == "vertical" else ("橫排 (LTR)" if t["layout_direction"] == "horizontal" else "自動偵測")
+            layout_desc = f"{dir_str} [{t['layout_source']}]"
             run_status = "略過 (已完成)" if (t["is_completed"] and args.skip_existing) else "待處理"
-            print(f"{t['index']:<5} {t['book_dir'].name:<25} {t['title']:<25} {toc_status:<18} {run_status}")
-        print("-" * 85)
+            print(f"{t['index']:<5} {t['book_dir'].name:<22} {t['title']:<22} {toc_status:<14} {layout_desc:<22} {run_status}")
+        print("-" * 105)
         pending_cnt = sum(1 for t in book_tasks if not (t["is_completed"] and args.skip_existing))
         skip_cnt = len(book_tasks) - pending_cnt
         print(f"總計: {len(book_tasks)} 本 | 待執行: {pending_cnt} 本 | 續傳略過: {skip_cnt} 本\n")
@@ -338,6 +409,7 @@ def main():
                 "title": title,
                 "directory": str(b_dir),
                 "output_dir": str(out_sub_dir),
+                "layout_direction": t.get("layout_direction", "auto"),
                 "status": "SKIPPED",
                 "elapsed": 0.0,
                 "error": None
@@ -448,6 +520,7 @@ def main():
                 "title": title,
                 "directory": str(b_dir),
                 "output_dir": str(out_sub_dir),
+                "layout_direction": t.get("layout_direction", "auto"),
                 "status": "SUCCESS",
                 "elapsed": round(elapsed, 2),
                 "error": None
@@ -460,6 +533,7 @@ def main():
                 "title": title,
                 "directory": str(b_dir),
                 "output_dir": str(out_sub_dir),
+                "layout_direction": t.get("layout_direction", "auto"),
                 "status": "FAILED",
                 "elapsed": round(elapsed, 2),
                 "error": f"CalledProcessError: {e}"
@@ -475,6 +549,7 @@ def main():
                 "title": title,
                 "directory": str(b_dir),
                 "output_dir": str(out_sub_dir),
+                "layout_direction": t.get("layout_direction", "auto"),
                 "status": "FAILED",
                 "elapsed": round(elapsed, 2),
                 "error": str(e)
@@ -515,12 +590,14 @@ def main():
         f"- **總耗時**：{total_time:.1f} 秒 ({total_time / 60:.1f} 分鐘)",
         "",
         "## 書籍執行詳情",
-        "| 編號 | 書名標題 | 狀態 | 耗時 (秒) | 成果目錄 |",
-        "| :--- | :--- | :---: | :---: | :--- |",
+        "| 編號 | 書名標題 | 排版方向 | 狀態 | 耗時 (秒) | 成果目錄 |",
+        "| :--- | :--- | :---: | :---: | :---: | :--- |",
     ]
     for r in results:
         status_icon = "✅ 成功" if r["status"] == "SUCCESS" else ("⏭ 略過" if r["status"] == "SKIPPED" else "❌ 失敗")
-        md_lines.append(f"| {r['index']} | {r['title']} | {status_icon} | {r['elapsed']} | `{r['output_dir']}` |")
+        ld_val = r.get("layout_direction", "auto")
+        ld_desc = "直排 (RTL)" if ld_val == "vertical" else ("橫排 (LTR)" if ld_val == "horizontal" else "自動偵測")
+        md_lines.append(f"| {r['index']} | {r['title']} | {ld_desc} | {status_icon} | {r['elapsed']} | `{r['output_dir']}` |")
     md_lines.append("")
     md_path.write_text("\n".join(md_lines), encoding="utf-8")
 

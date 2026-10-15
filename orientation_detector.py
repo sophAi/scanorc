@@ -27,6 +27,22 @@ from config_utils import attach_preference_and_template_support
 VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 
 
+def normalize_layout_direction(val: Optional[str]) -> str:
+    """
+    將排版方向值正規化為標準的 'vertical' 或 'horizontal'，若未提供或無法辨識則回傳 'auto'。
+    支援別名: vertical, vert, vertical-rl, v -> vertical
+              horizontal, horizon, horizontal-tb, h -> horizontal
+    """
+    if not val:
+        return "auto"
+    s = str(val).strip().lower()
+    if s in ("vertical", "vert", "vertical-rl", "v"):
+        return "vertical"
+    if s in ("horizontal", "horizon", "horizontal-tb", "h"):
+        return "horizontal"
+    return "auto"
+
+
 def natural_sort_key(s: Any) -> List:
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", str(s))]
 

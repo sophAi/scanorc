@@ -20,6 +20,19 @@ from typing import List, Optional
 
 from config_utils import attach_preference_and_template_support
 
+try:
+    from orientation_detector import normalize_layout_direction
+except ImportError:
+    def normalize_layout_direction(val: Optional[str]) -> str:
+        if not val:
+            return "auto"
+        s = str(val).strip().lower()
+        if s in ("vertical", "vert", "vertical-rl", "v"):
+            return "vertical"
+        if s in ("horizontal", "horizon", "horizontal-tb", "h"):
+            return "horizontal"
+        return "auto"
+
 VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 
 
@@ -237,9 +250,27 @@ def main():
     )
     parser.add_argument(
         "--layout-direction",
-        choices=["auto", "horizontal", "vertical", "horizon"],
+        "--direction",
+        dest="layout_direction",
+        choices=["auto", "horizontal", "vertical", "horizon", "vertical-rl", "horizontal-tb"],
         default="auto",
-        help="書籍排版方向 (auto: 自動抽樣檢測, horizontal/horizon: 橫排, vertical: 直排, 預設: auto)"
+        help="書籍排版方向 (auto: 優先讀取 toc.json，次之自動抽樣檢測, horizontal: 橫排, vertical: 直排, 預設: auto)"
+    )
+    parser.add_argument(
+        "--vertical",
+        dest="layout_direction",
+        action="store_const",
+        const="vertical",
+        default=argparse.SUPPRESS,
+        help="快捷選項：強制設定為直排模式 (豎排 / vertical-rl / RTL 翻頁)"
+    )
+    parser.add_argument(
+        "--horizontal",
+        dest="layout_direction",
+        action="store_const",
+        const="horizontal",
+        default=argparse.SUPPRESS,
+        help="快捷選項：強制設定為橫排模式 (horizontal / LTR 翻頁)"
     )
     args = attach_preference_and_template_support(parser, "process_book")
 
@@ -386,6 +417,8 @@ def main():
         "--batch-size", str(args.batch_size),
         "--workers", str(args.workers),
     ]
+    if not has_toc and toc_json_path.exists():
+        has_toc = True
     if has_toc:
         step3_cmd.extend(["--toc", str(toc_json_path)])
     if args.epub:
@@ -399,29 +432,50 @@ def main():
     if args.skip_ocr:
         step3_cmd.extend(["--skip-ocr", *args.skip_ocr])
 
-    # 自動偵測書籍排版方向 (優先抽樣 Page-*.jpg)
-    layout_dir = args.layout_direction
+    # 自動偵測書籍排版方向 (優先繼承 toc.json，次之抽樣 Page-*.jpg)
+    layout_dir = normalize_layout_direction(args.layout_direction)
     if layout_dir == "auto":
-        # 若步驟 2 產出之 toc.json 包含 layout_direction，直接繼承！
-        if has_toc and toc_json_path.exists():
+        # 尋找可用之 toc.json (步驟 2 產出之成果、現成 TOC、輸入目錄或轉正目錄)
+        cand_tocs = []
+        if toc_json_path.exists():
+            cand_tocs.append(toc_json_path)
+        if args.toc and Path(args.toc).exists():
+            cand_tocs.append(Path(args.toc).resolve())
+        if (input_dir / "toc.json").exists():
+            cand_tocs.append((input_dir / "toc.json").resolve())
+        if (preprocessed_dir / "toc.json").exists():
+            cand_tocs.append((preprocessed_dir / "toc.json").resolve())
+
+        for cand_t in cand_tocs:
             try:
-                with open(toc_json_path, "r", encoding="utf-8") as f:
+                with open(cand_t, "r", encoding="utf-8") as f:
                     t_data = json.load(f)
                 if t_data.get("layout_direction"):
-                    layout_dir = t_data["layout_direction"]
-                    print(f"[*] 步驟 3 繼承目錄分析所得之書籍排版方向: '{layout_dir}'")
+                    norm = normalize_layout_direction(t_data["layout_direction"])
+                    if norm != "auto":
+                        layout_dir = norm
+                        ori_desc = "直排 (豎排 / vertical-rl)" if layout_dir == "vertical" else "橫排 (horizontal)"
+                        print(f"[*] 步驟 3 繼承目錄分析所得之書籍排版方向 ({cand_t.name}): '{layout_dir}' ({ori_desc})")
+                        break
             except Exception:
                 pass
+
         if layout_dir == "auto":
             try:
                 from orientation_detector import detect_orientation
                 detect_target = preprocessed_dir if preprocessed_dir.exists() and any(preprocessed_dir.iterdir()) else input_dir
                 detected_dir = detect_orientation(detect_target, sample_count=5, short_label=True)
-                print(f"[*] 執行排版方向自動偵測 (抽樣 Page-*.jpg): 判定為 '{detected_dir}'")
-                layout_dir = detected_dir
+                norm = normalize_layout_direction(detected_dir)
+                if norm != "auto":
+                    layout_dir = norm
+                ori_desc = "直排 (豎排 / vertical-rl)" if layout_dir == "vertical" else "橫排 (horizontal)"
+                print(f"[*] 執行排版方向自動偵測 (抽樣 Page-*.jpg): 判定為 '{layout_dir}' ({ori_desc})")
             except Exception as e:
                 print(f"[-] 自動排版方向偵測異常 ({e})，交由 pipeline 自動處理", file=sys.stderr)
                 layout_dir = "auto"
+    else:
+        ori_desc = "直排 (豎排 / vertical-rl)" if layout_dir == "vertical" else "橫排 (horizontal)"
+        print(f"[*] 手動指定書籍版面排版方向: '{layout_dir}' ({ori_desc})")
 
     if layout_dir:
         step3_cmd.extend(["--layout-direction", str(layout_dir)])

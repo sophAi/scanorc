@@ -1071,6 +1071,15 @@ class MainWindow(QMainWindow):
         grid_chk.addWidget(self.oc_copy, 1, 0, 1, 2)
         form.addRow("功能開關:", grid_chk)
 
+        h_oc_layout_dir = QHBoxLayout()
+        self.oc_layout_dir = QComboBox()
+        self.oc_layout_dir.addItem("auto (預設：自動讀取 toc.json 或抽樣檢測)", "auto")
+        self.oc_layout_dir.addItem("horizontal (橫排 / LTR 翻頁)", "horizontal")
+        self.oc_layout_dir.addItem("vertical (直排 / vertical-rl / RTL 翻頁)", "vertical")
+        self.oc_layout_dir.currentIndexChanged.connect(self.update_command_preview)
+        h_oc_layout_dir.addWidget(self.oc_layout_dir)
+        form.addRow("書籍排版方向 (--layout-direction):", h_oc_layout_dir)
+
         layout.addLayout(form)
         desc = QLabel(
             "<b>說明：</b> 一鍵自動串聯【轉正裁切 → 目錄抽取 → AI OCR & EPUB → 章節歸檔】全流程。"
@@ -1415,6 +1424,15 @@ class MainWindow(QMainWindow):
         h_chk.addWidget(self.s3_cover_first)
         form.addRow("排版選項:", h_chk)
 
+        h_s3_layout_dir = QHBoxLayout()
+        self.s3_layout_dir = QComboBox()
+        self.s3_layout_dir.addItem("auto (預設：自動讀取 toc.json 或抽樣檢測)", "auto")
+        self.s3_layout_dir.addItem("horizontal (橫排 / LTR 翻頁)", "horizontal")
+        self.s3_layout_dir.addItem("vertical (直排 / vertical-rl / RTL 翻頁)", "vertical")
+        self.s3_layout_dir.currentIndexChanged.connect(self.update_command_preview)
+        h_s3_layout_dir.addWidget(self.s3_layout_dir)
+        form.addRow("書籍排版方向 (--layout-direction):", h_s3_layout_dir)
+
         layout.addLayout(form)
 
         # 快捷開啟成果按鈕
@@ -1697,6 +1715,15 @@ class MainWindow(QMainWindow):
         self.batch_copy.stateChanged.connect(self.update_command_preview)
         grid_common_chk.addWidget(self.batch_copy, 1, 1)
         form_common.addRow("功能開關:", grid_common_chk)
+
+        h_batch_layout_dir = QHBoxLayout()
+        self.batch_layout_dir = QComboBox()
+        self.batch_layout_dir.addItem("auto (預設：自動讀取各書 toc.json 或抽樣檢測)", "auto")
+        self.batch_layout_dir.addItem("horizontal (橫排 / LTR 翻頁)", "horizontal")
+        self.batch_layout_dir.addItem("vertical (直排 / vertical-rl / RTL 翻頁)", "vertical")
+        self.batch_layout_dir.currentIndexChanged.connect(self.update_command_preview)
+        h_batch_layout_dir.addWidget(self.batch_layout_dir)
+        form_common.addRow("排版方向 (--layout-direction):", h_batch_layout_dir)
 
         self.batch_models_dir = QLineEdit("")
         self.batch_models_dir.setPlaceholderText("留空使用預設 (/opt/models 或 models/ 或 SCANORC_MODELS_DIR)")
@@ -2425,6 +2452,9 @@ class MainWindow(QMainWindow):
                 cmd.extend(["--dpi", self.batch_dpi.text().strip()])
             if self.batch_unsharp.text().strip():
                 cmd.extend(["--unsharp", self.batch_unsharp.text().strip()])
+            batch_ld = self.batch_layout_dir.currentData() or "auto"
+            if batch_ld != "auto":
+                cmd.extend(["--layout-direction", batch_ld])
             if not self.batch_compress_images.isChecked():
                 cmd.append("--no-compress-images")
             if not self.batch_epub.isChecked():
@@ -2450,6 +2480,9 @@ class MainWindow(QMainWindow):
                 cmd.extend(["--dpi", self.oc_dpi.text().strip()])
             if self.oc_unsharp.text().strip():
                 cmd.extend(["--unsharp", self.oc_unsharp.text().strip()])
+            oc_ld = self.oc_layout_dir.currentData() or "auto"
+            if oc_ld != "auto":
+                cmd.extend(["--layout-direction", oc_ld])
             cmd.extend(["--workers", str(self.oc_workers.value())])
             cmd.extend(["--batch-size", str(self.oc_batch.value())])
             if self.oc_compress_images.isChecked():
@@ -2528,6 +2561,9 @@ class MainWindow(QMainWindow):
             skips = safe_split_args(self.s3_skip.text())
             if skips:
                 cmd.extend(["--skip-ocr"] + skips)
+            s3_ld = self.s3_layout_dir.currentData() or "auto"
+            if s3_ld != "auto":
+                cmd.extend(["--layout-direction", s3_ld])
             if self.s3_epub.isChecked():
                 cmd.append("--epub")
             else:
@@ -2793,7 +2829,8 @@ class MainWindow(QMainWindow):
                 "image_max_dim": None,
                 "organize_pages": self.batch_organize.isChecked(),
                 "copy": self.batch_copy.isChecked(),
-                "organize_target": "preprocessed"
+                "organize_target": "preprocessed",
+                "layout_direction": self.batch_layout_dir.currentData() or "auto"
             }
 
         elif target_w == self.tab_oneclick:
@@ -2831,7 +2868,8 @@ class MainWindow(QMainWindow):
                 "image_unsharp": self.oc_img_unsharp.text().strip() or None,
                 "organize_pages": self.oc_organize.isChecked(),
                 "copy": self.oc_copy.isChecked(),
-                "organize_target": "preprocessed"
+                "organize_target": "preprocessed",
+                "layout_direction": self.oc_layout_dir.currentData() or "auto"
             }
 
         elif target_w == self.tab_step1:
@@ -2891,7 +2929,8 @@ class MainWindow(QMainWindow):
                 "workers": self.s3_workers.value(),
                 "recursive": True,
                 "cover_first": self.s3_cover_first.isChecked(),
-                "skip_ocr": safe_split_args(self.s3_skip.text())
+                "skip_ocr": safe_split_args(self.s3_skip.text()),
+                "layout_direction": self.s3_layout_dir.currentData() or "auto"
             }
 
         elif target_w == self.tab_step4:
@@ -3018,6 +3057,11 @@ class MainWindow(QMainWindow):
                 self.batch_organize.setChecked(bool(data["organize_pages"]))
             if "copy" in data and data["copy"] is not None:
                 self.batch_copy.setChecked(bool(data["copy"]))
+            if "layout_direction" in data or "direction" in data:
+                val = str(data.get("layout_direction") or data.get("direction") or "auto").lower()
+                for i in range(self.batch_layout_dir.count()):
+                    if self.batch_layout_dir.itemData(i) == val:
+                        self.batch_layout_dir.setCurrentIndex(i)
 
         elif target_w == self.tab_oneclick:
             if "input" in data and data["input"] is not None:
@@ -3061,6 +3105,11 @@ class MainWindow(QMainWindow):
                 self.oc_organize.setChecked(bool(data["organize_pages"]))
             if "copy" in data and data["copy"] is not None:
                 self.oc_copy.setChecked(bool(data["copy"]))
+            if "layout_direction" in data or "direction" in data:
+                val = str(data.get("layout_direction") or data.get("direction") or "auto").lower()
+                for i in range(self.oc_layout_dir.count()):
+                    if self.oc_layout_dir.itemData(i) == val:
+                        self.oc_layout_dir.setCurrentIndex(i)
 
         elif target_w == self.tab_step1:
             if "input" in data and data["input"] is not None:
@@ -3145,6 +3194,11 @@ class MainWindow(QMainWindow):
                 self.s3_epub.setChecked(bool(data["epub"]))
             if "cover_first" in data and data["cover_first"] is not None:
                 self.s3_cover_first.setChecked(bool(data["cover_first"]))
+            if "layout_direction" in data or "direction" in data:
+                val = str(data.get("layout_direction") or data.get("direction") or "auto").lower()
+                for i in range(self.s3_layout_dir.count()):
+                    if self.s3_layout_dir.itemData(i) == val:
+                        self.s3_layout_dir.setCurrentIndex(i)
 
         elif target_w == self.tab_step4:
             if "input" in data and data["input"] is not None:
