@@ -5,7 +5,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: ScanORC Team <scanorc@sophai.org>
 Depends: pandoc, python3 (>= 3.10), python3-venv, python3-pip, libgl1, libxkbcommon-x11-0, libxcb-cursor0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-randr0, libxcb-render-util0, libxcb-shape0, libxcb-xfixes0, libxcb-xinerama0
-Recommends: zenity | kdialog
+Recommends: zenity | kdialog, imagemagick
 Homepage: https://github.com/sophAi/scanorc
 Description: Modern GPU-accelerated book scanning, deskewing, AI OCR, and EPUB3 digitizer
  ScanORC is a high-performance book scanning and digitization pipeline.

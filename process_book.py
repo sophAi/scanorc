@@ -131,6 +131,11 @@ def main():
         help="轉正裁切輸出圖檔尺寸縮放比例 (例如 0.8 或 1.0，預設: 0.8)"
     )
     parser.add_argument(
+        "--unsharp",
+        default="1x0.55+1.5+0.002",
+        help="轉正裁切影像銳化濾鏡參數 (ImageMagick unsharp 語法，例如 1x0.55+1.5+0.002，設為 none 或 off 關閉，預設: 1x0.55+1.5+0.002)"
+    )
+    parser.add_argument(
         "--repetition-penalty",
         type=float,
         default=1.1,
@@ -290,6 +295,8 @@ def main():
         step1_cmd.extend(["--quality", str(args.quality)])
     if args.scale:
         step1_cmd.extend(["--scale", str(args.scale)])
+    if args.unsharp:
+        step1_cmd.extend(["--unsharp", str(args.unsharp)])
     if args.skip_ocr:
         step1_cmd.extend(["--skip-orc", *args.skip_ocr])
 

@@ -996,6 +996,12 @@ class MainWindow(QMainWindow):
         self.oc_dpi.textChanged.connect(self.update_command_preview)
         h_opts.addWidget(QLabel("DPI:"))
         h_opts.addWidget(self.oc_dpi)
+
+        self.oc_unsharp = QLineEdit("1x0.55+1.5+0.002")
+        self.oc_unsharp.setPlaceholderText("例如 1x0.55+1.5+0.002 或 none")
+        self.oc_unsharp.textChanged.connect(self.update_command_preview)
+        h_opts.addWidget(QLabel("銳化:"))
+        h_opts.addWidget(self.oc_unsharp)
         form.addRow("效能與尺寸參數:", h_opts)
 
         # images 插圖重新壓縮與尺寸縮放設定
@@ -1141,6 +1147,12 @@ class MainWindow(QMainWindow):
         self.s1_dpi.textChanged.connect(self.update_command_preview)
         h_fmt.addWidget(QLabel("DPI:"))
         h_fmt.addWidget(self.s1_dpi)
+
+        self.s1_unsharp = QLineEdit("1x0.55+1.5+0.002")
+        self.s1_unsharp.setPlaceholderText("例如 1x0.55+1.5+0.002 或 none")
+        self.s1_unsharp.textChanged.connect(self.update_command_preview)
+        h_fmt.addWidget(QLabel("銳化:"))
+        h_fmt.addWidget(self.s1_unsharp)
         form.addRow("輸出品質與尺寸:", h_fmt)
 
         self.s1_skip = QLineEdit("")
@@ -1639,6 +1651,12 @@ class MainWindow(QMainWindow):
         self.batch_dpi.textChanged.connect(self.update_command_preview)
         h_b_perf.addWidget(QLabel("DPI:"))
         h_b_perf.addWidget(self.batch_dpi)
+
+        self.batch_unsharp = QLineEdit("1x0.55+1.5+0.002")
+        self.batch_unsharp.setPlaceholderText("例如 1x0.55+1.5+0.002 或 none")
+        self.batch_unsharp.textChanged.connect(self.update_command_preview)
+        h_b_perf.addWidget(QLabel("銳化:"))
+        h_b_perf.addWidget(self.batch_unsharp)
         form_common.addRow("效能與尺寸:", h_b_perf)
 
         grid_common_chk = QGridLayout()
@@ -2026,6 +2044,8 @@ class MainWindow(QMainWindow):
                 cmd.extend(["--cover", self.oc_cover.text().strip()])
             if self.oc_dpi.text().strip():
                 cmd.extend(["--dpi", self.oc_dpi.text().strip()])
+            if self.oc_unsharp.text().strip():
+                cmd.extend(["--unsharp", self.oc_unsharp.text().strip()])
             cmd.extend(["--workers", str(self.oc_workers.value())])
             cmd.extend(["--batch-size", str(self.oc_batch.value())])
             if self.oc_compress_images.isChecked():
@@ -2056,6 +2076,8 @@ class MainWindow(QMainWindow):
             cmd.extend(["--format", self.s1_format.currentText()])
             cmd.extend(["--quality", str(self.s1_quality.value())])
             cmd.extend(["--scale", str(self.s1_scale.value())])
+            if self.s1_unsharp.text().strip():
+                cmd.extend(["--unsharp", self.s1_unsharp.text().strip()])
             if self.s1_dpi.text().strip():
                 cmd.extend(["--dpi", self.s1_dpi.text().strip()])
             s1_skips = safe_split_args(self.s1_skip.text())
@@ -2166,6 +2188,8 @@ class MainWindow(QMainWindow):
             cmd.extend(["--batch-size", str(self.batch_batch_size.value())])
             if self.batch_dpi.text().strip():
                 cmd.extend(["--dpi", self.batch_dpi.text().strip()])
+            if self.batch_unsharp.text().strip():
+                cmd.extend(["--unsharp", self.batch_unsharp.text().strip()])
             if not self.batch_compress_images.isChecked():
                 cmd.append("--no-compress-images")
             if not self.batch_epub.isChecked():
@@ -2308,6 +2332,7 @@ class MainWindow(QMainWindow):
                 "margins": 1,
                 "quality": 60,
                 "scale": 0.8,
+                "unsharp": self.oc_unsharp.text().strip(),
                 "color_mode": "color_grayscale",
                 "batch_size": self.oc_batch.value(),
                 "workers": self.oc_workers.value(),
@@ -2340,6 +2365,7 @@ class MainWindow(QMainWindow):
                 "despeckle": self.s1_despeckle.currentText(),
                 "quality": self.s1_quality.value(),
                 "scale": round(float(self.s1_scale.value()), 2),
+                "unsharp": self.s1_unsharp.text().strip(),
                 "batch_size": 0,
                 "skip_ocr": safe_split_args(self.s1_skip.text())
             }
@@ -2433,6 +2459,7 @@ class MainWindow(QMainWindow):
                 "margins": 1,
                 "quality": 60,
                 "scale": 0.8,
+                "unsharp": self.batch_unsharp.text().strip() or "1x0.55+1.5+0.002",
                 "color_mode": "color_grayscale",
                 "batch_size": self.batch_batch_size.value(),
                 "workers": self.batch_workers.value(),
@@ -2480,6 +2507,8 @@ class MainWindow(QMainWindow):
                 self.oc_img_scale.setValue(float(data["image_scale"]))
             if "image_max_dim" in data:
                 self.oc_img_max_dim.setValue(int(data["image_max_dim"]) if data["image_max_dim"] else 0)
+            if "unsharp" in data and data["unsharp"] is not None:
+                self.oc_unsharp.setText(str(data["unsharp"]))
             if "skip_ocr" in data:
                 val = data["skip_ocr"]
                 if isinstance(val, list):
@@ -2513,6 +2542,8 @@ class MainWindow(QMainWindow):
                 self.s1_quality.setValue(int(data["quality"]))
             if "scale" in data and data["scale"] is not None:
                 self.s1_scale.setValue(float(data["scale"]))
+            if "unsharp" in data and data["unsharp"] is not None:
+                self.s1_unsharp.setText(str(data["unsharp"]))
             skip_val = data.get("skip_ocr", data.get("skip_orc"))
             if skip_val is not None:
                 if isinstance(skip_val, list):
@@ -2628,6 +2659,8 @@ class MainWindow(QMainWindow):
                 self.batch_batch_size.setValue(int(data["batch_size"]))
             if "dpi" in data:
                 self.batch_dpi.setText(str(data["dpi"]) if data["dpi"] is not None else "")
+            if "unsharp" in data and data["unsharp"] is not None:
+                self.batch_unsharp.setText(str(data["unsharp"]))
             if "compress_images" in data and data["compress_images"] is not None:
                 self.batch_compress_images.setChecked(bool(data["compress_images"]))
             if "epub" in data and data["epub"] is not None:

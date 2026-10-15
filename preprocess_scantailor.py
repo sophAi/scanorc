@@ -20,7 +20,7 @@ import argparse
 import subprocess
 from pathlib import Path
 from typing import List, Tuple, Optional
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from config_utils import attach_preference_and_template_support
 
@@ -76,64 +76,72 @@ def get_directory_dpi(img_files: List[Path], fallback_dpi: int = 300) -> int:
     return fallback_dpi
 
 
-def convert_tif_to_target_format(
-    tif_path: Path,
-    target_path: Path,
-    target_format: str = "jpg",
-    quality: int = 60,
-    scale: float = 0.8
-):
-    """
-    將 ScanTailor 輸出的 TIF 轉換為指定的 JPG / PNG / TIF 格式，並支援尺寸縮放
-    """
-    fmt = target_format.lower()
-    if fmt in ("jpg", "jpeg"):
-        with Image.open(tif_path) as im:
-            if im.mode not in ("RGB", "L"):
-                im = im.convert("RGB")
-            if scale is not None and scale > 0 and abs(scale - 1.0) > 1e-4:
-                new_w = max(1, int(round(im.width * scale)))
-                new_h = max(1, int(round(im.height * scale)))
-                im = im.resize((new_w, new_h), Image.Resampling.LANCZOS)
-            im.save(target_path, "JPEG", quality=quality)
-    elif fmt == "png":
-        with Image.open(tif_path) as im:
-            if scale is not None and scale > 0 and abs(scale - 1.0) > 1e-4:
-                new_w = max(1, int(round(im.width * scale)))
-                new_h = max(1, int(round(im.height * scale)))
-                im = im.resize((new_w, new_h), Image.Resampling.LANCZOS)
-            im.save(target_path, "PNG", optimize=True)
-    elif fmt in ("tif", "tiff"):
-        shutil.copy2(tif_path, target_path)
-    else:
-        shutil.copy2(tif_path, target_path)
-
-
-def export_image_to_target_format(
+def apply_image_transform(
     src_path: Path,
     target_path: Path,
     target_format: str = "jpg",
     quality: int = 60,
-    scale: float = 0.8
+    scale: float = 0.8,
+    unsharp: Optional[str] = "1x0.55+1.5+0.002"
 ):
     """
-    將原圖導出為指定的目標格式 (若需格式轉換或尺寸縮放則透過 PIL 處理)
+    通用影像導出與處理函式：
+    支援尺寸縮放 (scale)、銳化遮色片 (unsharp，預設 1x0.55+1.5+0.002) 與 JPG 品質壓縮 (quality)。
+    優先使用 ImageMagick convert 執行高效精確之 -unsharp 濾鏡，若無則自動降級為 PIL UnsharpMask。
     """
     fmt = target_format.lower()
     target_ext = f".{fmt}" if fmt != "jpeg" else ".jpg"
     is_same_ext = (src_path.suffix.lower() == target_ext)
     no_scale = (scale is None or abs(scale - 1.0) <= 1e-4)
+    has_unsharp = bool(unsharp and str(unsharp).strip().lower() not in ("none", "off", "0", "false"))
 
-    if is_same_ext and fmt not in ("jpg", "jpeg") and no_scale:
+    # 若無需轉換格式、縮放或銳化，且非 JPG 格式，直接快速複製
+    if is_same_ext and fmt not in ("jpg", "jpeg") and no_scale and not has_unsharp:
         shutil.copy2(src_path, target_path)
         return
 
+    # 1. 優先嘗試 ImageMagick (convert / magick)
+    convert_bin = shutil.which("convert") or shutil.which("magick")
+    if convert_bin:
+        cmd = [convert_bin, str(src_path)]
+        if not no_scale and scale > 0:
+            scale_pct = round(scale * 100, 2)
+            cmd.extend(["-resize", f"{scale_pct}%"])
+        if has_unsharp:
+            cmd.extend(["-unsharp", str(unsharp).strip()])
+        if fmt in ("jpg", "jpeg"):
+            cmd.extend(["-quality", str(quality)])
+        cmd.append(str(target_path))
+
+        try:
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if res.returncode == 0 and target_path.exists():
+                return
+        except Exception:
+            pass
+
+    # 2. 備援方案：PIL (Pillow)
     try:
         with Image.open(src_path) as im:
-            if scale is not None and scale > 0 and abs(scale - 1.0) > 1e-4:
+            if not no_scale and scale > 0:
                 new_w = max(1, int(round(im.width * scale)))
                 new_h = max(1, int(round(im.height * scale)))
                 im = im.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+            if has_unsharp:
+                # 解析 radiusxsigma+amount+threshold (例如 1x0.55+1.5+0.002)
+                r_val, p_val, th_val = 1.0, 150, 0
+                m = re.match(r"^(\d*(?:\.\d+)?)x(\d*(?:\.\d+)?)\+([0-9.]+)\+([0-9.]+)$", str(unsharp).strip())
+                if m:
+                    rad_s, sig_s, amt_s, th_s = m.groups()
+                    rad = float(rad_s) if rad_s else 1.0
+                    sig = float(sig_s) if sig_s else 0.55
+                    amt = float(amt_s) if amt_s else 1.5
+                    th = float(th_s) if th_s else 0.002
+                    r_val = rad if rad > 0 else sig
+                    p_val = int(round(amt * 100))
+                    th_val = int(round(th * 255))
+                im = im.filter(ImageFilter.UnsharpMask(radius=r_val, percent=p_val, threshold=th_val))
 
             if fmt in ("jpg", "jpeg"):
                 if im.mode not in ("RGB", "L"):
@@ -147,6 +155,48 @@ def export_image_to_target_format(
                 shutil.copy2(src_path, target_path)
     except Exception:
         shutil.copy2(src_path, target_path)
+
+
+def convert_tif_to_target_format(
+    tif_path: Path,
+    target_path: Path,
+    target_format: str = "jpg",
+    quality: int = 60,
+    scale: float = 0.8,
+    unsharp: Optional[str] = "1x0.55+1.5+0.002"
+):
+    """
+    將 ScanTailor 輸出的 TIF 轉換為指定的 JPG / PNG / TIF 格式，並支援尺寸縮放與銳化
+    """
+    apply_image_transform(
+        src_path=tif_path,
+        target_path=target_path,
+        target_format=target_format,
+        quality=quality,
+        scale=scale,
+        unsharp=unsharp
+    )
+
+
+def export_image_to_target_format(
+    src_path: Path,
+    target_path: Path,
+    target_format: str = "jpg",
+    quality: int = 60,
+    scale: float = 0.8,
+    unsharp: Optional[str] = "1x0.55+1.5+0.002"
+):
+    """
+    將原圖導出為指定的目標格式 (支援尺寸縮放與銳化)
+    """
+    apply_image_transform(
+        src_path=src_path,
+        target_path=target_path,
+        target_format=target_format,
+        quality=quality,
+        scale=scale,
+        unsharp=unsharp
+    )
 
 
 def parse_skip_ocr_targets(skip_args: List[str]) -> set:
@@ -300,7 +350,8 @@ def process_image_group(
             final_dest,
             target_format=args.format,
             quality=args.quality,
-            scale=args.scale
+            scale=args.scale,
+            unsharp=args.unsharp
         )
         total_converted += 1
         print(f"    [*] [略過 ScanTailor 處理] {skip_img.name} -> 直接導出原始圖檔至目標目錄")
@@ -374,7 +425,8 @@ def process_image_group(
                     final_dest,
                     target_format=args.format,
                     quality=args.quality,
-                    scale=args.scale
+                    scale=args.scale,
+                    unsharp=args.unsharp
                 )
                 total_converted += 1
 
@@ -451,6 +503,11 @@ def main():
         help="輸出圖檔尺寸縮放比例 (例如 0.8 或 1.0，預設: 0.8)"
     )
     parser.add_argument(
+        "--unsharp",
+        default="1x0.55+1.5+0.002",
+        help="影像銳化濾鏡參數 (ImageMagick unsharp 語法，例如 1x0.55+1.5+0.002，設為 none 或 off 則關閉，預設: 1x0.55+1.5+0.002)"
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=0,
@@ -496,7 +553,7 @@ def main():
     print(f"[*] 執行引擎: {scantailor_cmd[0]} ({cmd_type})")
     print(f"[*] 輸入來源: {args.input}")
     print(f"[*] 輸出目錄: {output_base_dir}")
-    print(f"[*] 參數設定: {args.format.upper()} (解析度: {dpi_summary}, 邊距: {args.margins}mm, 色彩: {args.color_mode})")
+    print(f"[*] 參數設定: {args.format.upper()} (解析度: {dpi_summary}, 邊距: {args.margins}mm, 色彩: {args.color_mode}, 縮放: {args.scale}, 銳化: {args.unsharp})")
     if skip_targets:
         print(f"[*] 略過設定: 發現 {len(skip_targets)} 個略過項目 (將繞過 ScanTailor 運算並直接導出原圖)")
     print(f"[*] 掃描統計: 發現 {len(image_groups)} 個書籍/章節目錄群組，共計 {total_images} 張圖片待處理")
