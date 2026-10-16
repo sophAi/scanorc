@@ -552,8 +552,8 @@ def main():
     print("==================================================")
     print(f"[*] 執行引擎: {scantailor_cmd[0]} ({cmd_type})")
     print(f"[*] 輸入來源: {args.input}")
-    print(f"[*] 輸出目錄: {output_base_dir}")
-    print(f"[*] 參數設定: {args.format.upper()} (解析度: {dpi_summary}, 邊距: {args.margins}mm, 色彩: {args.color_mode}, 縮放: {args.scale}, 銳化: {args.unsharp})")
+    quality_desc = f", 品質: {args.quality}" if args.format.lower() in ("jpg", "jpeg") else ""
+    print(f"[*] 參數設定: {args.format.upper()} (解析度: {dpi_summary}, 邊距: {args.margins}mm, 色彩: {args.color_mode}{quality_desc}, 縮放: {args.scale}, 銳化: {args.unsharp})")
     if skip_targets:
         print(f"[*] 略過設定: 發現 {len(skip_targets)} 個略過項目 (將繞過 ScanTailor 運算並直接導出原圖)")
     print(f"[*] 掃描統計: 發現 {len(image_groups)} 個書籍/章節目錄群組，共計 {total_images} 張圖片待處理")

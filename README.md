@@ -46,7 +46,8 @@
 8. **全功能視覺化控制台 (`app_gui.py`)**：
    - 基於 PyQt6 / PySide6 雙引擎架構打造，具備自適應原生引導機制，全面相容 Linux Fcitx5 繁簡中文輸入法切換。
    - 內建跨平台字型備選鏈 (Font Fallback Chain)，完美支援 `Noto Color Emoji` 全彩圖示與繁體中文顯示，徹底杜絕方框缺字 (Tofu)。
-   - 提供完整分步頁籤（轉正 → 目錄抽取 → AI 辨識 → 章節歸檔 → 微創修復）與「一鍵端到端總控」，預設參數全面最佳化（邊距 1mm、品質 85、Worker 1、Batch 2、自動壓縮插圖、預設自動分章歸檔）。
+   - 提供完整分步頁籤：「批次多書處理」置首於第一分頁，依序為「一鍵端到端總控 → 幾何轉正裁切 → 目錄抽取 → AI 辨識 → 章節歸檔 → 微創修復」，最右側追加「HTML 轉 EPUB」與「圖片壓縮與縮放」專屬頁籤。
+   - 預設參數全面最佳化（品質 50、縮放 1.0、銳化 1x0.55+1.5+0.002、邊距 1mm、Worker 1、Batch 2、預設自動分章歸檔）。
    - 內建智慧檔案清單與標記機制，所有參數可視化即時調整，並同步預覽與複製對應之 CLI 終端指令。
    - 非同步進程通訊，即時串流終端日誌，底層 Python 腳本 100% 解耦保留，可隨時於終端機單獨使用。
 
@@ -366,7 +367,9 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--margins` | - | `1` | 版心四周均勻邊距大小 (單位: mm，預設 1) |
 | `--color-mode` | - | `color_grayscale` | 色彩模式：`color_grayscale` (保留插圖/照片階調)、`mixed`、`black_and_white` |
 | `--despeckle` | - | `normal` | 去雜點強度：`normal`、`cautious`、`aggressive`、`off` |
-| `--quality` | - | `85` | JPG 輸出壓縮品質 (1~100，預設 85) |
+| `--quality` | - | `50` | JPG 輸出壓縮品質 (1~100，預設 50，於畫面參數中即時顯示) |
+| `--scale` | - | `1.0` | 輸出圖檔尺寸縮放比例（例如 0.8 或 1.0，預設: 1.0） |
+| `--unsharp` | - | `1x0.55+1.5+0.002` | 影像銳化濾鏡參數（ImageMagick unsharp 語法，例如 1x0.55+1.5+0.002，設為 none 或 off 關閉） |
 | `--batch-size` | - | `0` | 單一目錄分批大小 (預設 0 表示整章節一次性處理以維持版心尺寸統一) |
 | `--skip-orc` | `--skip-ocr`, `--no-ocr` | `[]` | 略過 ScanTailor 幾何轉正與裁切處理的檔案清單（支援萬用字元如 `Cover-*.jpg`、`Content-*`、檔名、頁碼或 txt 清單，直接將原始圖檔導出至輸出目錄） |
 
@@ -378,11 +381,16 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | :--- | :---: | :---: | :--- |
 | `--input` | `-i` | `None` (自動搜尋) | 輸入目錄頁圖檔路徑或現有 `toc.json` 檔案（選填；**預設自動搜尋 `Content-xx.jpg` 或 `content-xx.jpg` 檔案群並依編號自然排序**，指定此參數則覆蓋預設搜尋） |
 | `--output` | `-o` | `toc.json` | 輸出結構化 JSON 檔案路徑 |
+| `--layout-direction` | - | `auto` | 目錄排版方向（`auto`: 依 Content-*.jpg 目錄圖檔自動判斷, `horizontal`: 橫排, `vertical`: 直排） |
 | `--models-dir` | - | `None` | AI 模型權重母目錄（預設讀取 `<models-dir>/glm-ocr`；若未指定則依序檢查 `SCANORC_MODELS_DIR` 與專案內建 `models/`） |
 | `--model-dir` | - | `models/glm-ocr` | GLM-OCR 模型權重目錄（若指定則具最高優先權覆蓋 `--models-dir`） |
 | `--book-title` | - | `""` | 書名（選填，若未指定則自動由圖檔所在目錄推測並記錄於 JSON metadata） |
 | `--organize-pages` | - | `None` | 自動建立對應目錄（如 `01-一切從此開始`），並將 `Page-xxx.jpg` 檔案移入對應章節目錄（可指定目錄；未指定則預設整理輸入圖檔所在目錄） |
 | `--copy` | - | `False` | 配合 `--organize-pages` 使用：改為複製圖檔而非移動圖檔 |
+| `--auto-accept-guess` | - | `True` | 當候選目錄 (toc_guess) 品質符合門檻 (頁碼覆蓋率>=60%且順序正確) 時自動採納並寫入 toc.json |
+
+> [!TIP]
+> **強健的目錄解析能力**：`extract_toc.py` 支援傳統引導點線 (`...`)、破折號導引線（`——`、`—`、`―`、`─`、`~`）、直排跨行分離之純頁碼行配對、阿拉伯/中文數字前綴（如 `3.`、`4.`、`01.`）與標準化章節目錄命名，並內建直排底端頁碼補充偵測（Bottom-crop Fallback）。
 
 ---
 
@@ -394,6 +402,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--output` | `-o` | `output` | 成果儲存目錄（產出 HTML、EPUB 與裁切圖片） |
 | `--title` | - | `數位化掃描書本` | 書名 / 文件標題（**預設以 `Cover-01.jpg` 所在的目錄名稱作為 title**；若無則自動套用 toc.json 或預設值） |
 | `--toc` | - | `None` | 目錄結構 JSON 檔案路徑（自動生成目錄索引，並於對應頁面注入章節標題寫入 EPUB Outline 大綱） |
+| `--layout-direction` | `--direction` | `auto` | 書籍排版方向（`auto`: 優先讀取 toc.json，次之自動抽樣檢測；支援 `horizontal` 橫排、`vertical` 直排，自動套用至 HTML 與 EPUB CSS） |
 | `--cover` | `--cover-image` | `None` (自動搜尋) | 指定封面圖片路徑（**預設以 `Cover-01.jpg` 作為 EPUB 與 HTML 的封面**，亦相容 cover.*） |
 | `--compress-images` | - | `False` | 是否在編譯 EPUB 前自動將 `output/images` 目錄中的 JPG 與 PNG 重新壓縮與縮放（大幅縮減 EPUB 體積） |
 | `--image-quality` | - | `75` | images 圖檔壓縮品質（1~100，預設: 75） |
@@ -420,6 +429,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--title` | `-T` | `""` | 書名 / 文件標題（若未指定則自動從目錄名或 toc.json 讀取） |
 | `--toc` | - | `None` | 指定現有目錄結構 JSON 檔案路徑（若未指定且目錄中存在 `toc.json`，將自動優先沿用） |
 | `--force-toc` | - | `False` | 強制忽略既有 `toc.json`，一律重新以 AI 抽取目錄 |
+| `--layout-direction` | `--direction` | `auto` | 書籍排版方向（`auto`: 優先讀取 toc.json，次之自動抽樣檢測；支援 `horizontal` 橫排、`vertical` 直排） |
 | `--cover` | `--cover-image` | `None` | 指定 EPUB 封面圖檔路徑（未指定則自動在輸入或轉正目錄中偵測 Cover-*.jpg） |
 | `--compress-images` | `--no-compress-images` | `True` | 是否在打包 EPUB 前將 `images/` 目錄圖檔重新壓縮與縮放（**預設啟用**，大幅瘦身 EPUB） |
 | `--image-quality` | - | `75` | images 圖檔壓縮品質（1~100，預設: 75） |
@@ -427,7 +437,9 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--image-max-dim` | - | `None` | images 圖檔最大長寬限制（例如 1920，預設 None 不限制） |
 | `--dpi` | - | `None` | 輸出解析度 DPI（預設保持 1:1 原生尺寸無損輸出） |
 | `--margins` | - | `1` | 版心四周均勻留白邊距 (mm，預設: 1) |
-| `--quality` | - | `85` | 轉正裁切若輸出為 JPG 時的壓縮品質 (1~100，預設: 85) |
+| `--quality` | - | `50` | 轉正裁切若輸出為 JPG 時的壓縮品質 (1~100，預設: 50) |
+| `--scale` | - | `1.0` | 轉正裁切圖檔尺寸縮放比例 (預設: 1.0) |
+| `--unsharp` | - | `1x0.55+1.5+0.002` | 轉正裁切銳化濾鏡參數 (ImageMagick unsharp 語法，預設: 1x0.55+1.5+0.002) |
 | `--color-mode` | - | `color_grayscale` | 轉正色彩模式：`color_grayscale`、`mixed`、`black_and_white` |
 | `--workers` | - | `1` | 多進程並行 Worker 數（預設 1；16GB 顯卡可設 3~4） |
 | `--batch-size` | - | `2` | 單頁內 OCR 區塊批次大小（預設 2；16GB 顯卡可設 4） |
@@ -466,6 +478,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--output` | `-o` | `<html_dir>/<stem>.epub` | 輸出 EPUB 檔案路徑 |
 | `--images` | `--images-dir` | `images/` | 圖片資源目錄（預設自動搜尋 HTML 旁的 images/ 資料夾） |
 | `--toc` | - | `None` | 目錄結構 JSON 檔案路徑（未指定則自動在同目錄搜尋 `toc.json`，自動注入 `<h1>` 章節標題至 EPUB Outline 大綱） |
+| `--layout-direction` | `--direction` | `auto` | 版面排版方向（`auto`: 預設讀取 `toc.json` 的直橫排設定；支援 `horizontal` 橫排、`vertical` 直排，亦可手動指定套用至 EPUB 與 HTML CSS） |
 | `--title` | `-T` | 自動提取 | 書籍標題（預設自動自 HTML `<title>` 標籤中抽取） |
 | `--author` | `-a` | `None` | 書籍作者名稱（選填） |
 | `--lang` | `-l` | 自動提取 | 語系代碼（預設自動自 HTML `<html lang>` 讀取，若無則為 zh-TW） |
@@ -493,6 +506,10 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--output-root` | `-o` | `output_batch` | 批次成果總輸出目錄，每本書獨立存於 `<output-root>/<書名>/` |
 | `--pattern` | - | `*` | 子目錄過濾萬用字元（搭配 `--input-dir` 使用，例如: `Vol-*`） |
 | `--config-name` | - | `book_config.json` | 各書籍目錄內專屬偏好設定檔檔名（預設自動搜尋 `book_config.json`、`preference.json` 等） |
+| `--layout-direction` | `--direction` | `auto` | 書籍排版方向（`auto`: 優先讀取各書 `toc.json`，次之自動抽樣檢測；支援 `horizontal` 橫排、`vertical` 直排） |
+| `--quality` | - | `50` | 轉正裁切若輸出為 JPG 時的壓縮品質 (預設: 50) |
+| `--scale` | - | `1.0` | 轉正裁切圖檔尺寸縮放比例 (預設: 1.0) |
+| `--unsharp` | - | `1x0.55+1.5+0.002` | 轉正裁切銳化濾鏡參數 (ImageMagick unsharp 語法，預設: 1x0.55+1.5+0.002) |
 | `--skip-existing` | - | `False` | 斷點續傳：若該書輸出目錄已存在 `book.epub`（或 `book.html`）則自動略過 |
 | `--use-existing-toc` | `--no-use-existing-toc` | `True` | 若目錄中存在 `toc.json`，是否優先沿用並跳過 AI 抽取 |
 | `--force-toc` | - | `False` | 強制忽略既有 `toc.json`，一律重新以 AI 抽取目錄 |
@@ -513,8 +530,9 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | :--- | :---: | :---: | :--- |
 | `input` | `--input`, `-i` | 必填 | 輸入來源目錄路徑（**預設同時掃描 JPG 與 PNG，涵蓋所有層級之子目錄**） |
 | `--output` | `-o` | 必填 | 輸出目標新目錄路徑（將完整鏡像重建子目錄結構） |
-| `--quality` | `-q` | `[75]` | 壓縮品質（1~100；對 JPG 為編碼品質，對 PNG 為調色盤自適應量化品質；支援多個值如 `-q 50 75 85` 批次對比） |
-| `--scale` | `-s` | `['1.0']` | 尺寸縮放比例（如 `0.75` 或 `75%`；支援多個值如 `-s 1.0 0.8 0.5`，同時套用於 JPG 與 PNG） |
+| `--quality` | `-q` | `[50]` | 壓縮品質（1~100；對 JPG 為編碼品質，對 PNG 為調色盤自適應量化品質；預設: 50） |
+| `--scale` | `-s` | `['1.0']` | 尺寸縮放比例（如 `0.75` 或 `75%`；預設: 1.0） |
+| `--unsharp` | - | `1x0.55+1.5+0.002` | 影像銳化參數（ImageMagick unsharp 語法，例如 1x0.55+1.5+0.002，設為 none 或 off 關閉） |
 | `--max-dim` | `-m` | `None` | 限制圖片最大長寬（像素，如 1920，若超過則等比縮小） |
 | `--workers` | `-w` | `CPU核心數` | 並行 Worker 數 |
 | `--png-lossless` | - | `False` | 強制 PNG 保持無損全彩（不執行量化降階，僅套用 -s 縮放與 zlib 最佳化壓縮） |

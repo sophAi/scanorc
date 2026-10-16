@@ -208,18 +208,26 @@ def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[st
     """
     從 OCR 原始文本中抽取章節與頁碼項目。
     支援：
-    1. 傳統引導點線 (......) 或純空格/符號分隔之頁碼
-    2. 多行長標題自動合併 (章節名無頁碼時，自動串接次行次標題與頁碼)
-    3. 多種常見中文及英文章節、序言前綴 (第X章, Part X, Chapter X, 推薦序, 簡介等)
+    1. 傳統引導點線 (......) 或破折號 (—— / — / ― / ─) 或空格分隔之頁碼
+    2. 多行/跨行分離頁碼模式 (第一行標題，次行純頁碼數字，自動配對合併)
+    3. 多行長標題自動合併 (章節名無頁碼時，自動串接次行次標題與頁碼)
+    4. 多種常見中文及英文章節、序言、數字前綴 (第X章, Part X, Chapter X, 1., 01., 推薦序, 簡介等)
+    5. 自動過濾句尾標點之裝飾引言/引用句
     """
     chapter_prefix_pat = re.compile(
-        r"^(?:(第\s*([0-9]+|[一二三四五六七八九十百千兩]+)\s*[章節回卷部篇])|"
-        r"((?:Chapter|Part|Section|Unit)\s*([0-9]+|[A-Za-z]+|[IVXLCDM]+))|"
-        r"(推薦序|自序|總序|譯序|作者序|編者序|序言|序|前言|導讀|簡介|引言|跋|後記|附錄|結語|尾聲|附錄[A-Za-z0-9一二三四五六七八九十]*))\s*(.*)$",
+        r"^(?P<prefix>"
+        r"(?:第\s*([0-9]+|[一二三四五六七八九十百千兩]+)\s*[章節回卷部篇])|"
+        r"(?:(?:Chapter|Part|Section|Unit)\s*([0-9]+|[A-Za-z]+|[IVXLCDM]+))|"
+        r"(?:(?:[0-9]{1,3}|[一二三四五六七八九十]+)[\.．、\s]+)|"
+        r"(?:[\(（](?:[0-9]{1,3}|[一二三四五六七八九十]+)[\)）]\s*)|"
+        r"(?:推薦序|自序|總序|譯序|作者序|編者序|序言|序|前言|導讀|簡介|引言|跋|後記|附錄|結語|尾聲|附錄[A-Za-z0-9一二三四五六七八九十]*)"
+        r")\s*(?P<remainder>.*)$",
         re.IGNORECASE
     )
-    # 匹配行尾數字作為頁碼：中間允許 2 個以上引導符號或 1 個以上空格
-    line_pattern = re.compile(r"^(?P<raw_title>.+?)\s*(?:[·.．…・\-_|]{2,}|\s+)\s*(?P<page>\d+)\s*$")
+    # 匹配行尾數字作為頁碼：允許 1 個以上引導符號 (含點、破折號、波浪線等) 或 1 個以上空格
+    line_pattern = re.compile(r"^(?P<raw_title>.+?)\s*(?:[·.．…・\-_|—―─~～‧•]{1,}|\s+)\s*(?P<page>\d{1,4})\s*$")
+    # 匹配獨立純頁碼行 (例如 '123' 或 'P123')
+    pure_page_pat = re.compile(r"^[\(\[\{Pｐ頁]?\s*(\d{1,4})\s*[\)\]\}頁]?$")
 
     entries = []
     lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
@@ -229,7 +237,7 @@ def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[st
         nonlocal pending
         if not pending:
             return
-        ch = pending["chapter"]
+        ch = pending["chapter"].strip()
         parts = [p.strip() for p in pending["title_parts"] if p.strip()]
         if not parts:
             raw_ch_title = ch
@@ -242,9 +250,15 @@ def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[st
                     combined += " " + next_p
             raw_ch_title = combined.strip()
 
-        # 清除首尾殘留的引導點線與無效符號
-        raw_ch_title = re.sub(r"^[\s·.．…・\-_|]+", "", raw_ch_title).strip()
-        raw_ch_title = re.sub(r"[\s·.．…・\-_|]+$", "", raw_ch_title).strip()
+        # 清除首尾殘留的引導點線、破折號與無效符號
+        raw_ch_title = re.sub(r"^[\s·.．…・\-_|—―─~～‧•]+", "", raw_ch_title).strip()
+        raw_ch_title = re.sub(r"[\s·.．…・\-_|—―─~～‧•]+$", "", raw_ch_title).strip()
+
+        # 若既無章節前綴，又無有效頁碼，捨棄 (避免孤立廣告標語或引言變成條目)
+        if not ch and pending["page"] is None:
+            pending = None
+            return
+
         full_title = f"{ch} {raw_ch_title}".strip() if ch and raw_ch_title != ch else (raw_ch_title or ch)
 
         entries.append({
@@ -262,12 +276,20 @@ def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[st
         if line in ("目錄", "Contents", "目 錄", "CONTENTS", "目　錄"):
             continue
 
+        m_pure_page = pure_page_pat.match(line)
         m_end_page = line_pattern.match(line)
         m_prefix = chapter_prefix_pat.match(line)
 
+        # 1. 純數字行 (跨行分離之頁碼行)
+        if m_pure_page and pending and pending["page"] is None:
+            pending["page"] = int(m_pure_page.group(1))
+            finalize_pending()
+            continue
+
+        # 2. 行內直接帶有頁碼 (如 "標題 ...... 105" 或 "標題——105")
         if m_end_page:
             raw_title = m_end_page.group("raw_title").strip()
-            raw_title = re.sub(r"[\s·.．…・\-_|]+$", "", raw_title).strip()
+            raw_title = re.sub(r"[\s·.．…・\-_|—―─~～‧•]+$", "", raw_title).strip()
             page = int(m_end_page.group("page"))
 
             # 檢查此行本身是否含有章節前綴
@@ -275,21 +297,22 @@ def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[st
             if ch_m:
                 # 獨立的新章節行 (具前綴、標題、頁碼)
                 finalize_pending()
-                ch_str = ch_m.group(1) or ch_m.group(3) or ch_m.group(5) or ""
-                rem_title = ch_m.group(6).strip() if ch_m.group(6) else ""
+                ch_str = ch_m.group("prefix").strip()
+                rem_title = ch_m.group("remainder").strip()
                 pending = {
                     "chapter": ch_str,
                     "title_parts": [rem_title] if rem_title else [],
                     "page": page
                 }
                 finalize_pending()
-            elif pending:
-                # 屬於前一個未完章節的接續行 (提供次標題並補齊頁碼)
+            elif pending and not pending["title_parts"]:
+                # pending 只有章節前綴，此行補充次標題與頁碼
                 pending["title_parts"].append(raw_title)
                 pending["page"] = page
                 finalize_pending()
             else:
-                # 無章節前綴但有頁碼之獨立條目 (如 "成功故事回饋 505")
+                # 無章節前綴但有頁碼之獨立條目 (如 "成功故事回饋 505" 或一般節)
+                finalize_pending()
                 pending = {
                     "chapter": "",
                     "title_parts": [raw_title],
@@ -297,22 +320,31 @@ def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[st
                 }
                 finalize_pending()
 
+        # 3. 開頭為章節前綴，但行尾無頁碼 (例如多行標題的第一行或大章節名稱)
         elif m_prefix:
-            # 開頭為章節前綴，但行尾無頁碼 (例如多行標題的第一行)
             finalize_pending()
-            ch_str = m_prefix.group(1) or m_prefix.group(3) or m_prefix.group(5) or ""
-            rem_title = m_prefix.group(6).strip() if m_prefix.group(6) else ""
+            ch_str = m_prefix.group("prefix").strip()
+            rem_title = m_prefix.group("remainder").strip()
             pending = {
                 "chapter": ch_str,
                 "title_parts": [rem_title] if rem_title else [],
                 "page": None
             }
-        elif pending:
-            # 前一個章節標題的跨行接續行 (中間行，尚未帶頁碼)
+
+        # 4. 裝飾引言/引用句 (以句號結尾且有一定長度，略過)
+        elif line.endswith(("。", "…", "！", "!", "？", "?")) and len(line) > 10:
+            continue
+
+        # 5. 一般未帶頁碼標題行 (次行可能會有純頁碼行)
+        elif pending and not pending["title_parts"]:
             pending["title_parts"].append(line)
         else:
-            # 無頁碼亦無章節前綴之書名或裝飾標語 (例如 "笑傲股市", "歐尼爾投資致富經典")，略過
-            continue
+            finalize_pending()
+            pending = {
+                "chapter": "",
+                "title_parts": [line],
+                "page": None
+            }
 
     finalize_pending()
     return entries
@@ -359,16 +391,16 @@ def extract_guess_toc(
 
             if tail_match:
                 start_page = int(tail_match.group(1))
-                clean_title = re.sub(r"[\s·.．…・\-_|]+" + tail_match.group(1) + r"\s*$", "", remainder or line).strip()
+                clean_title = re.sub(r"[\s·.．…・\-_|—―─~～‧•]+" + tail_match.group(1) + r"\s*$", "", remainder or line).strip()
             elif all_digits:
                 start_page = int(all_digits[-1])
-                clean_title = re.sub(r"[\s·.．…・\-_|]+" + str(start_page) + r"\b", "", remainder or line).strip()
+                clean_title = re.sub(r"[\s·.．…・\-_|—―─~～‧•]+" + str(start_page) + r"\b", "", remainder or line).strip()
             else:
                 start_page = "none"
                 clean_title = remainder or line
 
             # 清理引導點線與無效符號
-            clean_title = re.sub(r"[·.．…・\-_|]{2,}", "", clean_title).strip()
+            clean_title = re.sub(r"[·.．…・\-_|—―─~～‧•]{2,}", "", clean_title).strip()
             if not clean_title and ch_num:
                 clean_title = ch_num
 
@@ -440,17 +472,21 @@ def format_chapter_dirname(entry: Dict[str, Any], total_entries: int) -> str:
 
     match = re.search(r"第\s*([0-9]+|[一二三四五六七八九十百千兩]+)\s*[章節回卷部篇]", ch_num)
     match_en = re.search(r"(?:Chapter|Unit|Section|Part)\s*([0-9]+)", ch_num, re.IGNORECASE)
+    match_num = re.search(r"^(\d+)", ch_num)
     if match:
         num = parse_chinese_number(match.group(1))
         prefix = f"{num:02d}" if num is not None else f"{(index - 1):02d}"
     elif match_en:
         num = int(match_en.group(1))
         prefix = f"{num:02d}"
+    elif match_num:
+        num = int(match_num.group(1))
+        prefix = f"{num:02d}"
     else:
         prefix = f"{(index - 1):02d}"
 
-    # 替換作業系統不允許或容易出錯的字元 (包含全半形冒號)
-    clean_title = re.sub(r'[\/:*?"<>|：]', "_", ch_title)
+    # 替換作業系統不允許或容易出錯的字元 (包含全半形冒號、逗號等)
+    clean_title = re.sub(r'[\/:*?"<>|：，,;；]', "_", ch_title)
     clean_title = re.sub(r"\s+", " ", clean_title).strip()
 
     if clean_title:
@@ -750,6 +786,40 @@ def main():
             raw_texts.append(f"--- File: {img_path.name} ---\n" + raw_ocr_text.strip())
 
             page_entries = parse_toc_text_raw(raw_ocr_text, source_filename=img_path.name)
+
+            # 若該頁有章節條目未能識別出起始頁碼 (例如直排目錄頁碼位於欄位最底端，與標題距離過遠未被整頁 OCR 捕獲)
+            missing_page_entries = [e for e in page_entries if e.get("start_page") is None]
+            if missing_page_entries:
+                try:
+                    img_obj = Image.open(img_path).convert("RGB")
+                    w, h = img_obj.size
+                    bottom_crop = img_obj.crop((0, int(h * 0.70), w, h))
+                    crop_messages = [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image"},
+                                {"type": "text", "text": "Text Recognition:"}
+                            ]
+                        }
+                    ]
+                    crop_prompt = processor.apply_chat_template(crop_messages, add_generation_prompt=True)
+                    crop_inputs = processor(images=[bottom_crop], text=[crop_prompt], return_tensors="pt").to(device)
+                    if "pixel_values" in crop_inputs and crop_inputs["pixel_values"].dtype != torch.float16 and device.startswith("cuda"):
+                        crop_inputs["pixel_values"] = crop_inputs["pixel_values"].to(torch.float16)
+                    with torch.no_grad():
+                        crop_outputs = model.generate(**crop_inputs, max_new_tokens=100)
+                    crop_text = processor.decode(crop_outputs[0][crop_inputs.input_ids.shape[1]:], skip_special_tokens=True)
+                    crop_numbers = [int(n) for n in re.findall(r"\b\d{1,4}\b", crop_text)]
+                    existing_pages = {e["start_page"] for e in page_entries if isinstance(e.get("start_page"), int)}
+                    cand_pages = [p for p in crop_numbers if p not in existing_pages and p > 0]
+                    if cand_pages:
+                        for m_entry, cand_p in zip(missing_page_entries, sorted(cand_pages)):
+                            m_entry["start_page"] = cand_p
+                            print(f"    [+] 從頁尾補全章節 '{m_entry['full_title']}' 起始頁碼: {cand_p}")
+                except Exception as ex:
+                    print(f"    [-] 頁尾頁碼補充偵測略過: {ex}", file=sys.stderr)
+
             print(f"    [+] 從 {img_path.name} 解析出 {len(page_entries)} 個章節條目")
             all_entries.extend(page_entries)
 
