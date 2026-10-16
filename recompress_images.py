@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Optional, Union
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, ImageChops
 try:
     from config_utils import attach_preference_and_template_support
 except ImportError:
@@ -66,6 +66,110 @@ def apply_unsharp_filter(im: Image.Image, unsharp: Optional[str]) -> Image.Image
     return im.filter(ImageFilter.UnsharpMask(radius=r_val, percent=p_val, threshold=th_val))
 
 
+def is_grayscale_image(
+    img_or_path: Union[Image.Image, Path, str],
+    is_cover: Optional[bool] = None,
+    chroma_threshold: int = 12,
+    high_chroma_threshold: int = 25,
+    max_chroma_pixels: int = 40,
+    max_high_chroma_pixels: int = 15,
+) -> bool:
+    """
+    智慧判斷圖檔是否實質為灰階色調：
+    1. 原生單通道 ('L', '1') 直接判定為 True。
+    2. 封面保護機制 (is_cover=True)：
+       只要存在任何非零色差 (max_diff > 0)，一律視為彩色圖，絕不降階為灰階；
+       唯有 max_diff == 0 (100% 絕對純黑白) 時才視為灰階。
+    3. 100% 絕對純灰階：
+       若 max_diff == 0，RGB 各通道完全一致，判定為 True。
+    4. 彩色小圖示與高彩度細節防護：
+       - 若微弱色差極低 (max_diff <= 5)，視為感光元件量化雜訊，判定為 True。
+       - 統計高彩度像素數量 (diff >= high_chroma_threshold，預設 25)：
+         若數量超過 max_high_chroma_pixels (預設 15 像素)，表示包含細小彩色標記、印章或雙色標題，判定為 False (保留彩色)。
+       - 統計中彩度像素數量 (diff >= chroma_threshold，預設 12)：
+         若數量超過 max_chroma_pixels (預設 40 像素)，表示有明顯色調或彩色區塊，判定為 False (保留彩色)。
+       - 若上述均未觸發，表示僅有零星雜訊或紙張微弱底色，判定為 True。
+    """
+    if isinstance(img_or_path, (str, Path)):
+        p = Path(img_or_path)
+        if is_cover is None:
+            name_lower = p.name.lower()
+            stem_lower = p.stem.lower()
+            is_cover = bool(
+                name_lower.startswith("cover")
+                or "cover" in stem_lower
+                or "backcover" in stem_lower
+            )
+        try:
+            with Image.open(p) as im_file:
+                return is_grayscale_image(
+                    im_file,
+                    is_cover=is_cover,
+                    chroma_threshold=chroma_threshold,
+                    high_chroma_threshold=high_chroma_threshold,
+                    max_chroma_pixels=max_chroma_pixels,
+                    max_high_chroma_pixels=max_high_chroma_pixels,
+                )
+        except Exception:
+            return False
+
+    im = img_or_path
+    if is_cover is None:
+        is_cover = False
+
+    if im.mode in ("L", "1"):
+        return True
+    if im.mode not in ("RGB", "RGBA"):
+        im = im.convert("RGB")
+
+    r, g, b = im.split()[:3]
+    d_rg = ImageChops.difference(r, g)
+    d_gb = ImageChops.difference(g, b)
+    d_rb = ImageChops.difference(r, b)
+
+    ext_rg = d_rg.getextrema()
+    ext_gb = d_gb.getextrema()
+    ext_rb = d_rb.getextrema()
+    max_diff = max(ext_rg[1], ext_gb[1], ext_rb[1])
+
+    # 1. 100% 絕對純灰階
+    if max_diff == 0:
+        return True
+
+    # 2. 封面保護機制：只要存在任何非零色差，一律保留彩色
+    if is_cover:
+        return False
+
+    # 3. 極微弱感光元件雜訊容許 (全圖最大通道差 <= 5)
+    if max_diff <= 5:
+        return True
+
+    # 4. 統計色差直方圖，防護彩色小圖示或高彩度細節
+    h_rg = d_rg.histogram()
+    h_gb = d_gb.histogram()
+    h_rb = d_rb.histogram()
+
+    # 高彩度像素 (diff >= high_chroma_threshold)
+    c_high = max(
+        sum(h_rg[high_chroma_threshold:]),
+        sum(h_gb[high_chroma_threshold:]),
+        sum(h_rb[high_chroma_threshold:])
+    )
+    if c_high > max_high_chroma_pixels:
+        return False
+
+    # 中彩度像素 (diff >= chroma_threshold)
+    c_mid = max(
+        sum(h_rg[chroma_threshold:]),
+        sum(h_gb[chroma_threshold:]),
+        sum(h_rb[chroma_threshold:])
+    )
+    if c_mid > max_chroma_pixels:
+        return False
+
+    return True
+
+
 def parse_scale_value(val_str: Union[str, float]) -> float:
     """解析縮放字串 (支援 0.75 或 75% 格式)"""
     if isinstance(val_str, (int, float)):
@@ -104,6 +208,7 @@ def _worker_task(args_tuple) -> Dict:
         preserve_metadata,
         png_lossless,
         unsharp,
+        auto_grayscale,
     ) = args_tuple
 
     src_p = Path(src_path_str)
@@ -181,6 +286,19 @@ def _worker_task(args_tuple) -> Dict:
                 if im.mode not in ("RGB", "L"):
                     im = im.convert("RGB")
 
+                converted_to_gray = False
+                if auto_grayscale and im.mode == "RGB":
+                    stem_lower = src_p.stem.lower()
+                    name_lower = src_p.name.lower()
+                    is_cover = bool(
+                        name_lower.startswith("cover")
+                        or "cover" in stem_lower
+                        or "backcover" in stem_lower
+                    )
+                    if is_grayscale_image(im, is_cover=is_cover):
+                        im = im.convert("L")
+                        converted_to_gray = True
+
                 # 若尺寸改變，執行高品質 Lanczos 重採樣
                 if (new_w, new_h) != (orig_w, orig_h):
                     im = im.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
@@ -196,17 +314,18 @@ def _worker_task(args_tuple) -> Dict:
                     "progressive": progressive,
                 }
 
-                # 採樣率設定
-                if subsampling == "444":
-                    save_kwargs["subsampling"] = 0
-                elif subsampling == "422":
-                    save_kwargs["subsampling"] = 1
-                elif subsampling == "420":
-                    save_kwargs["subsampling"] = 2
-                elif subsampling == "keep":
-                    orig_sub = im.info.get("subsampling")
-                    if orig_sub is not None:
-                        save_kwargs["subsampling"] = orig_sub
+                # 採樣率設定 (僅色彩模式為 RGB 等彩色模式時適用，灰階 L 模式無色度抽樣)
+                if im.mode != "L":
+                    if subsampling == "444":
+                        save_kwargs["subsampling"] = 0
+                    elif subsampling == "422":
+                        save_kwargs["subsampling"] = 1
+                    elif subsampling == "420":
+                        save_kwargs["subsampling"] = 2
+                    elif subsampling == "keep":
+                        orig_sub = im.info.get("subsampling")
+                        if orig_sub is not None:
+                            save_kwargs["subsampling"] = orig_sub
 
                 # 元資料保留
                 if preserve_metadata:
@@ -219,7 +338,8 @@ def _worker_task(args_tuple) -> Dict:
                             )
                         else:
                             save_kwargs["dpi"] = orig_dpi
-                    if "icc_profile" in im.info:
+                    # 若為 RGB 轉為 L，切勿嵌入原 RGB ICC profile
+                    if "icc_profile" in im.info and not converted_to_gray:
                         save_kwargs["icc_profile"] = im.info["icc_profile"]
                     if "exif" in im.info:
                         save_kwargs["exif"] = im.info["exif"]
@@ -246,6 +366,7 @@ def _worker_task(args_tuple) -> Dict:
             "orig_dim": (orig_w, orig_h),
             "new_dim": (new_w, new_h),
             "is_png": is_png,
+            "is_gray": (im.mode == "L"),
             "error": None,
         }
 
@@ -299,6 +420,7 @@ def recompress_directory(
     preserve_metadata: bool = True,
     png_lossless: bool = False,
     unsharp: Optional[str] = "1x0.55+1.5+0.002",
+    auto_grayscale: bool = True,
     dry_run: bool = False,
     verbose: bool = True,
 ) -> Dict:
@@ -342,6 +464,10 @@ def recompress_directory(
             print(f"[*] 影像銳化:    啟用 ({unsharp})")
         else:
             print(f"[*] 影像銳化:    關閉")
+        if auto_grayscale:
+            print(f"[*] 自動灰階:    啟用 (自動判斷無色彩圖檔改以灰階壓縮，保護封面與彩色細節)")
+        else:
+            print(f"[*] 自動灰階:    關閉 (保持原始色彩模式)")
         if max_dim:
             print(f"[*] 最大長寬:    {max_dim} px")
         print(f"[*] 並行 Worker: {workers}")
@@ -389,6 +515,7 @@ def recompress_directory(
                     preserve_metadata,
                     png_lossless,
                     unsharp,
+                    auto_grayscale,
                 ))
 
             if dry_run:
@@ -426,7 +553,7 @@ def recompress_directory(
                             rel_show = Path(res["dst"]).relative_to(preset_out_dir)
                             dim_show = f"[{res['orig_dim'][0]}x{res['orig_dim'][1]} -> {res['new_dim'][0]}x{res['new_dim'][1]}]"
                             ratio = (res["new_size"] - res["orig_size"]) / max(1, res["orig_size"]) * 100
-                            fmt_tag = "PNG" if res.get("is_png") else "JPG"
+                            fmt_tag = "PNG" if res.get("is_png") else ("JPG/Gray" if res.get("is_gray") else "JPG/Color")
                             print(
                                 f"    [{completed_cnt}/{total_files}] [{fmt_tag}] {rel_show} "
                                 f"({format_bytes(res['orig_size'])} -> {format_bytes(res['new_size'])}, {ratio:+.1f}%) {dim_show}"
@@ -600,6 +727,12 @@ def main():
         help="停用影像銳化濾鏡"
     )
     parser.add_argument(
+        "--auto-grayscale",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="自動偵測圖檔是否為灰階色調，若無彩色資訊則以灰階模式壓縮儲存以進一步節省空間 (預設: True，使用 --no-auto-grayscale 保持原樣)"
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="模擬執行模式 (僅列出檔案清單與目錄結構，不實際寫入)"
@@ -637,6 +770,7 @@ def main():
             preserve_metadata=not args.strip_metadata,
             png_lossless=args.png_lossless,
             unsharp=args.unsharp,
+            auto_grayscale=args.auto_grayscale,
             dry_run=args.dry_run,
             verbose=not args.quiet,
         )

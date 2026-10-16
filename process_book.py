@@ -227,6 +227,12 @@ def main():
         help="images 圖檔銳化參數 (ImageMagick unsharp 語法例如 1x0.55+1.5+0.002，預設: None 關閉)"
     )
     parser.add_argument(
+        "--auto-grayscale",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="自動偵測圖檔是否為灰階色調並以灰階模式壓縮儲存以進一步節省空間 (預設: True，使用 --no-auto-grayscale 保持原樣)"
+    )
+    parser.add_argument(
         "--organize-pages",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -333,6 +339,10 @@ def main():
         step1_cmd.extend(["--scale", str(args.scale)])
     if args.unsharp:
         step1_cmd.extend(["--unsharp", str(args.unsharp)])
+    if getattr(args, "auto_grayscale", True):
+        step1_cmd.append("--auto-grayscale")
+    else:
+        step1_cmd.append("--no-auto-grayscale")
     if args.skip_ocr:
         step1_cmd.extend(["--skip-orc", *args.skip_ocr])
 
@@ -504,6 +514,10 @@ def main():
             step3_cmd.extend(["--image-max-dim", str(args.image_max_dim)])
         if args.image_unsharp:
             step3_cmd.extend(["--image-unsharp", str(args.image_unsharp)])
+        if getattr(args, "auto_grayscale", True):
+            step3_cmd.append("--auto-grayscale")
+        else:
+            step3_cmd.append("--no-auto-grayscale")
 
     print(f"[*] 執行指令: {' '.join(step3_cmd)}")
     subprocess.run(step3_cmd, check=True)

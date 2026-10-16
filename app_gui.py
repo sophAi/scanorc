@@ -2125,6 +2125,11 @@ class MainWindow(QMainWindow):
         self.rc_dry_run.stateChanged.connect(self.update_command_preview)
         grid_flags.addWidget(self.rc_dry_run, 2, 0)
 
+        self.rc_auto_grayscale = QCheckBox("自動灰階色調最佳化 (--auto-grayscale)")
+        self.rc_auto_grayscale.setChecked(True)
+        self.rc_auto_grayscale.stateChanged.connect(self.update_command_preview)
+        grid_flags.addWidget(self.rc_auto_grayscale, 2, 1)
+
         form.addRow("進階開關與旗標:", grid_flags)
 
         layout.addLayout(form)
@@ -2669,6 +2674,8 @@ class MainWindow(QMainWindow):
                 cmd.append("--progressive")
             if self.rc_strip_metadata.isChecked():
                 cmd.append("--strip-metadata")
+            if not self.rc_auto_grayscale.isChecked():
+                cmd.append("--no-auto-grayscale")
             if self.rc_dry_run.isChecked():
                 cmd.append("--dry-run")
             return cmd

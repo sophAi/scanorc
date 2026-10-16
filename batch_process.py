@@ -194,6 +194,12 @@ def main():
     parser.add_argument("--image-max-dim", type=int, default=None, help="images 圖片長寬限制 (預設: None)")
     parser.add_argument("--image-unsharp", default=None, help="預設 images 圖片銳化參數 (預設: None)")
     parser.add_argument(
+        "--auto-grayscale",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="自動偵測圖檔是否為灰階色調並以灰階模式壓縮儲存以進一步節省空間 (預設: True，使用 --no-auto-grayscale 保持原樣)"
+    )
+    parser.add_argument(
         "--organize-pages",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -496,6 +502,13 @@ def main():
                 cmd.extend(["--image-unsharp", str(img_unsharp)])
         else:
             cmd.append("--no-compress-images")
+
+        # 自動灰階模式
+        auto_gray = cfg_data.get("auto_grayscale", args.auto_grayscale)
+        if auto_gray:
+            cmd.append("--auto-grayscale")
+        else:
+            cmd.append("--no-auto-grayscale")
 
         # 章節歸檔
         org_pages = cfg_data.get("organize_pages", args.organize_pages)

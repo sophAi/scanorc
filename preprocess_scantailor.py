@@ -23,6 +23,44 @@ from typing import List, Tuple, Optional
 from PIL import Image, ImageFilter
 
 from config_utils import attach_preference_and_template_support
+try:
+    from recompress_images import is_grayscale_image
+except ImportError:
+    from PIL import ImageChops
+
+    def is_grayscale_image(img_or_path, is_cover=False, **kwargs):
+        if isinstance(img_or_path, (str, Path)):
+            try:
+                with Image.open(img_or_path) as im:
+                    return is_grayscale_image(im, is_cover=is_cover, **kwargs)
+            except Exception:
+                return False
+        im = img_or_path
+        if is_cover is None:
+            is_cover = False
+        if im.mode in ("L", "1"):
+            return True
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGB")
+        r, g, b = im.split()[:3]
+        d_rg = ImageChops.difference(r, g)
+        d_gb = ImageChops.difference(g, b)
+        d_rb = ImageChops.difference(r, b)
+        max_diff = max(d_rg.getextrema()[1], d_gb.getextrema()[1], d_rb.getextrema()[1])
+        if max_diff == 0:
+            return True
+        if is_cover:
+            return False
+        if max_diff <= 5:
+            return True
+        h_rg, h_gb, h_rb = d_rg.histogram(), d_gb.histogram(), d_rb.histogram()
+        c_high = max(sum(h_rg[25:]), sum(h_gb[25:]), sum(h_rb[25:]))
+        if c_high > 15:
+            return False
+        c_mid = max(sum(h_rg[12:]), sum(h_gb[12:]), sum(h_rb[12:]))
+        if c_mid > 40:
+            return False
+        return True
 
 VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 
@@ -82,12 +120,14 @@ def apply_image_transform(
     target_format: str = "jpg",
     quality: int = 50,
     scale: float = 1.0,
-    unsharp: Optional[str] = "1x0.55+1.5+0.002"
+    unsharp: Optional[str] = "1x0.55+1.5+0.002",
+    auto_grayscale: bool = True
 ):
     """
     通用影像導出與處理函式：
-    支援尺寸縮放 (scale)、銳化遮色片 (unsharp，預設 1x0.55+1.5+0.002) 與 JPG 品質壓縮 (quality)。
-    優先使用 ImageMagick convert 執行高效精確之 -unsharp 濾鏡，若無則自動降級為 PIL UnsharpMask。
+    支援尺寸縮放 (scale)、銳化遮色片 (unsharp，預設 1x0.55+1.5+0.002)、
+    JPG 品質壓縮 (quality) 與自動灰階判定 (auto_grayscale，保護封面與彩色細節)。
+    優先使用 ImageMagick convert 執行高效精確之 -unsharp 與 -colorspace Gray 濾鏡，若無則自動降級為 PIL UnsharpMask。
     """
     fmt = target_format.lower()
     target_ext = f".{fmt}" if fmt != "jpeg" else ".jpg"
@@ -100,6 +140,22 @@ def apply_image_transform(
         shutil.copy2(src_path, target_path)
         return
 
+    # 灰階檢測 (針對 JPG 輸出)
+    is_gray = False
+    if auto_grayscale and fmt in ("jpg", "jpeg"):
+        try:
+            name_lower = target_path.name.lower()
+            src_name_lower = src_path.name.lower()
+            is_cover_target = bool(
+                "cover" in name_lower
+                or "cover" in src_name_lower
+                or "backcover" in name_lower
+                or "backcover" in src_name_lower
+            )
+            is_gray = is_grayscale_image(src_path, is_cover=is_cover_target)
+        except Exception:
+            is_gray = False
+
     # 1. 優先嘗試 ImageMagick (convert / magick)
     convert_bin = shutil.which("convert") or shutil.which("magick")
     if convert_bin:
@@ -110,6 +166,8 @@ def apply_image_transform(
         if has_unsharp:
             cmd.extend(["-unsharp", str(unsharp).strip()])
         if fmt in ("jpg", "jpeg"):
+            if is_gray:
+                cmd.extend(["-colorspace", "Gray"])
             cmd.extend(["-quality", str(quality)])
         cmd.append(str(target_path))
 
@@ -144,7 +202,9 @@ def apply_image_transform(
                 im = im.filter(ImageFilter.UnsharpMask(radius=r_val, percent=p_val, threshold=th_val))
 
             if fmt in ("jpg", "jpeg"):
-                if im.mode not in ("RGB", "L"):
+                if is_gray:
+                    im = im.convert("L")
+                elif im.mode not in ("RGB", "L"):
                     im = im.convert("RGB")
                 im.save(target_path, "JPEG", quality=quality)
             elif fmt == "png":
@@ -163,7 +223,8 @@ def convert_tif_to_target_format(
     target_format: str = "jpg",
     quality: int = 50,
     scale: float = 1.0,
-    unsharp: Optional[str] = "1x0.55+1.5+0.002"
+    unsharp: Optional[str] = "1x0.55+1.5+0.002",
+    auto_grayscale: bool = True
 ):
     """
     將 ScanTailor 輸出的 TIF 轉換為指定的 JPG / PNG / TIF 格式，並支援尺寸縮放與銳化
@@ -174,7 +235,8 @@ def convert_tif_to_target_format(
         target_format=target_format,
         quality=quality,
         scale=scale,
-        unsharp=unsharp
+        unsharp=unsharp,
+        auto_grayscale=auto_grayscale
     )
 
 
@@ -184,7 +246,8 @@ def export_image_to_target_format(
     target_format: str = "jpg",
     quality: int = 50,
     scale: float = 1.0,
-    unsharp: Optional[str] = "1x0.55+1.5+0.002"
+    unsharp: Optional[str] = "1x0.55+1.5+0.002",
+    auto_grayscale: bool = True
 ):
     """
     將原圖導出為指定的目標格式 (支援尺寸縮放與銳化)
@@ -195,7 +258,8 @@ def export_image_to_target_format(
         target_format=target_format,
         quality=quality,
         scale=scale,
-        unsharp=unsharp
+        unsharp=unsharp,
+        auto_grayscale=auto_grayscale
     )
 
 
@@ -351,7 +415,8 @@ def process_image_group(
             target_format=args.format,
             quality=args.quality,
             scale=args.scale,
-            unsharp=args.unsharp
+            unsharp=args.unsharp,
+            auto_grayscale=args.auto_grayscale
         )
         total_converted += 1
         print(f"    [*] [略過 ScanTailor 處理] {skip_img.name} -> 直接導出原始圖檔至目標目錄")
@@ -426,7 +491,8 @@ def process_image_group(
                     target_format=args.format,
                     quality=args.quality,
                     scale=args.scale,
-                    unsharp=args.unsharp
+                    unsharp=args.unsharp,
+                    auto_grayscale=args.auto_grayscale
                 )
                 total_converted += 1
 
@@ -514,6 +580,12 @@ def main():
         help="單一子目錄內分批處理之頁數大小 (預設: 0 表示整目錄一次處理以保持章節尺寸統一；圖檔過多時可設 100~200)"
     )
     parser.add_argument(
+        "--auto-grayscale",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="自動偵測圖檔是否為灰階色調，若無彩色資訊則改以灰階模式壓縮儲存以節省空間 (預設: True，使用 --no-auto-grayscale 保持原樣)"
+    )
+    parser.add_argument(
         "--skip-orc", "--skip-ocr", "--no-ocr",
         nargs="*",
         default=[],
@@ -553,7 +625,8 @@ def main():
     print(f"[*] 執行引擎: {scantailor_cmd[0]} ({cmd_type})")
     print(f"[*] 輸入來源: {args.input}")
     quality_desc = f", 品質: {args.quality}" if args.format.lower() in ("jpg", "jpeg") else ""
-    print(f"[*] 參數設定: {args.format.upper()} (解析度: {dpi_summary}, 邊距: {args.margins}mm, 色彩: {args.color_mode}{quality_desc}, 縮放: {args.scale}, 銳化: {args.unsharp})")
+    gray_desc = f", 自動灰階: {'啟用' if args.auto_grayscale else '關閉'}" if args.format.lower() in ("jpg", "jpeg") else ""
+    print(f"[*] 參數設定: {args.format.upper()} (解析度: {dpi_summary}, 邊距: {args.margins}mm, 色彩: {args.color_mode}{quality_desc}{gray_desc}, 縮放: {args.scale}, 銳化: {args.unsharp})")
     if skip_targets:
         print(f"[*] 略過設定: 發現 {len(skip_targets)} 個略過項目 (將繞過 ScanTailor 運算並直接導出原圖)")
     print(f"[*] 掃描統計: 發現 {len(image_groups)} 個書籍/章節目錄群組，共計 {total_images} 張圖片待處理")

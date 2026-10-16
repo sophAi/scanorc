@@ -1365,6 +1365,12 @@ def main():
         default=None,
         help="images 圖檔銳化參數 (ImageMagick unsharp 語法例如 1x0.55+1.5+0.002，預設: None 關閉)"
     )
+    parser.add_argument(
+        "--auto-grayscale",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="重新壓縮圖檔時自動判斷是否為灰階色調，若無彩色資訊則改以灰階模式壓縮儲存以節省空間 (預設: True，使用 --no-auto-grayscale 保持原樣)"
+    )
     parser.add_argument("--batch-size", type=int, default=2, help="單頁 OCR 區塊批次大小 (預設 2，16GB 顯卡可設 4~8)")
     parser.add_argument("--workers", type=int, default=1, help="多進程並行 Worker 數 (預設 1，16GB 顯卡可設 3~4)")
     parser.add_argument(
@@ -1671,6 +1677,7 @@ def main():
                     max_dim=args.image_max_dim,
                     workers=min(os.cpu_count() or 4, 16),
                     unsharp=args.image_unsharp,
+                    auto_grayscale=args.auto_grayscale,
                     verbose=True,
                 )
                 shutil.rmtree(images_dir)

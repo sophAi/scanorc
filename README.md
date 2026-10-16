@@ -370,6 +370,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--quality` | - | `50` | JPG 輸出壓縮品質 (1~100，預設 50，於畫面參數中即時顯示) |
 | `--scale` | - | `1.0` | 輸出圖檔尺寸縮放比例（例如 0.8 或 1.0，預設: 1.0） |
 | `--unsharp` | - | `1x0.55+1.5+0.002` | 影像銳化濾鏡參數（ImageMagick unsharp 語法，例如 1x0.55+1.5+0.002，設為 none 或 off 關閉） |
+| `--auto-grayscale` | `--no-auto-grayscale` | `True` | 自動偵測圖檔是否為灰階色調，若無彩色資訊則改以灰階模式壓縮儲存以節省空間（內建封面保護與彩色細節防護，預設: True） |
 | `--batch-size` | - | `0` | 單一目錄分批大小 (預設 0 表示整章節一次性處理以維持版心尺寸統一) |
 | `--skip-orc` | `--skip-ocr`, `--no-ocr` | `[]` | 略過 ScanTailor 幾何轉正與裁切處理的檔案清單（支援萬用字元如 `Cover-*.jpg`、`Content-*`、檔名、頁碼或 txt 清單，直接將原始圖檔導出至輸出目錄） |
 
@@ -408,6 +409,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--image-quality` | - | `75` | images 圖檔壓縮品質（1~100，預設: 75） |
 | `--image-scale` | - | `0.75` | images 圖檔尺寸縮放比例（例如 0.75 或 1.0，預設: 0.75） |
 | `--image-max-dim` | - | `None` | images 圖檔最大長寬像素限制（例如 1920，預設 None 不限制） |
+| `--auto-grayscale` | `--no-auto-grayscale` | `True` | 重新壓縮圖檔時自動偵測是否為灰階色調並以灰階模式壓縮儲存以節省空間（內建封面保護與彩色細節防護，預設: True） |
 | `--recursive` | `-r` | `True` | 是否遞迴讀取子目錄所有圖檔（**預設啟用**，若使用 `--no-recursive` 則僅讀取頂層目錄） |
 | `--cover-first` | - | `True` | 頁面編排順序：是否將封面/目錄頁（`Cover-*.jpg`）編排於內文頁（`Page-*.jpg`）之前（**預設啟用**；各群組內部均依自然數字順序排序） |
 | `--epub` | - | `False` | 是否在生成 HTML 後自動調用 Pandoc 編譯 MathML EPUB |
@@ -440,6 +442,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--quality` | - | `50` | 轉正裁切若輸出為 JPG 時的壓縮品質 (1~100，預設: 50) |
 | `--scale` | - | `1.0` | 轉正裁切圖檔尺寸縮放比例 (預設: 1.0) |
 | `--unsharp` | - | `1x0.55+1.5+0.002` | 轉正裁切銳化濾鏡參數 (ImageMagick unsharp 語法，預設: 1x0.55+1.5+0.002) |
+| `--auto-grayscale` | `--no-auto-grayscale` | `True` | 自動偵測圖檔是否為灰階色調並以灰階模式壓縮儲存以進一步節省空間（內建封面保護與彩色細節防護，預設: True） |
 | `--color-mode` | - | `color_grayscale` | 轉正色彩模式：`color_grayscale`、`mixed`、`black_and_white` |
 | `--workers` | - | `1` | 多進程並行 Worker 數（預設 1；16GB 顯卡可設 3~4） |
 | `--batch-size` | - | `2` | 單頁內 OCR 區塊批次大小（預設 2；16GB 顯卡可設 4） |
@@ -510,6 +513,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--quality` | - | `50` | 轉正裁切若輸出為 JPG 時的壓縮品質 (預設: 50) |
 | `--scale` | - | `1.0` | 轉正裁切圖檔尺寸縮放比例 (預設: 1.0) |
 | `--unsharp` | - | `1x0.55+1.5+0.002` | 轉正裁切銳化濾鏡參數 (ImageMagick unsharp 語法，預設: 1x0.55+1.5+0.002) |
+| `--auto-grayscale` | `--no-auto-grayscale` | `True` | 自動偵測圖檔是否為灰階色調並以灰階模式壓縮儲存以進一步節省空間（內建封面保護與彩色細節防護，預設: True） |
 | `--skip-existing` | - | `False` | 斷點續傳：若該書輸出目錄已存在 `book.epub`（或 `book.html`）則自動略過 |
 | `--use-existing-toc` | `--no-use-existing-toc` | `True` | 若目錄中存在 `toc.json`，是否優先沿用並跳過 AI 抽取 |
 | `--force-toc` | - | `False` | 強制忽略既有 `toc.json`，一律重新以 AI 抽取目錄 |
@@ -533,15 +537,19 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--quality` | `-q` | `[50]` | 壓縮品質（1~100；對 JPG 為編碼品質，對 PNG 為調色盤自適應量化品質；預設: 50） |
 | `--scale` | `-s` | `['1.0']` | 尺寸縮放比例（如 `0.75` 或 `75%`；預設: 1.0） |
 | `--unsharp` | - | `1x0.55+1.5+0.002` | 影像銳化參數（ImageMagick unsharp 語法，例如 1x0.55+1.5+0.002，設為 none 或 off 關閉） |
+| `--auto-grayscale` | `--no-auto-grayscale` | `True` | 自動偵測圖檔是否為灰階色調，若無彩色資訊則改以灰階模式壓縮儲存以進一步節省空間（內建封面保護與彩色細節防護，預設: True） |
 | `--max-dim` | `-m` | `None` | 限制圖片最大長寬（像素，如 1920，若超過則等比縮小） |
 | `--workers` | `-w` | `CPU核心數` | 並行 Worker 數 |
 | `--png-lossless` | - | `False` | 強制 PNG 保持無損全彩（不執行量化降階，僅套用 -s 縮放與 zlib 最佳化壓縮） |
 | `--subsampling` | - | `keep` | [JPG專用] 色度抽樣模式：`keep` (保留)、`444` (最高清)、`420` (最高壓縮) |
 | `--no-optimize` | - | `False` | 停用 Huffman / zlib 編碼最佳化 |
 | `--progressive` | - | `False` | [JPG專用] 啟用漸進式 JPEG 編碼 |
-| `--strip-metadata` | - | `False` | 移除 EXIF、DPI 與色彩設定檔（預設完整保留） |
+| `--strip-metadata` | - | `False` | 移除 EXIF、DPI 與色彩設定檔（預設完整保留；若由 RGB 轉灰階自動安全排除 RGB ICC 設定檔） |
 | `--dry-run` | - | `False` | 模擬執行模式（僅預覽檔案與目錄路徑，不實際寫入） |
 | `--quiet` | - | `False` | 精簡輸出 |
+
+> [!TIP]
+> **智慧灰階壓縮最佳化 (Auto-Grayscale)**：全系統在壓縮儲存 JPG 時，預設自動分析圖檔色彩資訊。若頁面實質上為黑白/灰階（即使原本以 24-bit 彩色格式儲存），自動改用單通道灰階（Grayscale JFIF）壓縮，可再額外縮減 5%~15% 檔案容量，徹底消除灰階閱讀器上的彩噪色斑；同時內建**封面絕對保護**（`Cover-*.jpg` 只要有任何非零色差一律維持全彩）與**高彩度細節防護**（精確識別細微紅色印章、彩色標註、雙色印刷標題等，絕不誤轉）。
 
 ---
 
