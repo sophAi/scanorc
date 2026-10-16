@@ -483,6 +483,20 @@ class DocumentConverter:
             self.glm.eval()
             print(f"[+] 所有模型就緒！目前 VRAM 佔用: {round(torch.cuda.memory_allocated() / (1024**2), 1)} MB")
 
+    @staticmethod
+    def _has_text_content(im: Image.Image, threshold: int = 210, min_ratio: float = 0.003) -> bool:
+        """
+        快速檢驗影像是否含有實質文字筆畫特徵 (非純白空頁，深色像素大於指定比例)
+        """
+        try:
+            import numpy as np
+            gray = im.convert("L")
+            arr = np.array(gray)
+            dark_ratio = float(np.mean(arr < threshold))
+            return dark_ratio >= min_ratio
+        except Exception:
+            return True
+
     def run_layout_analysis(
         self,
         image_path: str,
@@ -490,30 +504,61 @@ class DocumentConverter:
         layout_direction: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         self._ensure_models_loaded()
-        results = self.yolo.predict(image_path, imgsz=1024, conf=conf, device=self.device)
-        boxes_info = []
-
         im = Image.open(image_path)
         img_w, img_h = im.size
 
-        for r in results:
-            for box in r.boxes:
-                cls_id = int(box.cls[0].item())
-                conf_val = float(box.conf[0].item())
-                cls_name = self.yolo.names[cls_id]
+        def _parse_and_sanitize_boxes(results):
+            boxes = []
+            for r in results:
+                for box in r.boxes:
+                    cls_id = int(box.cls[0].item())
+                    conf_val = float(box.conf[0].item())
+                    cls_name = self.yolo.names[cls_id]
 
-                xyxy = [max(0, int(x.item())) for x in box.xyxy[0]]
-                xyxy[0] = min(img_w, xyxy[0])
-                xyxy[1] = min(img_h, xyxy[1])
-                xyxy[2] = min(img_w, xyxy[2])
-                xyxy[3] = min(img_h, xyxy[3])
+                    xyxy = [max(0, int(x.item())) for x in box.xyxy[0]]
+                    xyxy[0] = min(img_w, xyxy[0])
+                    xyxy[1] = min(img_h, xyxy[1])
+                    xyxy[2] = min(img_w, xyxy[2])
+                    xyxy[3] = min(img_h, xyxy[3])
+                    x1, y1, x2, y2 = xyxy
+                    bw = x2 - x1
+                    bh = y2 - y1
 
-                boxes_info.append({
-                    "cls_id": cls_id,
-                    "cls_name": cls_name,
-                    "conf": conf_val,
-                    "bbox": xyxy,
-                })
+                    # 校正誤判為 abandon 的主要文字區塊：
+                    # 真正的頁眉通常在極頂部 (y1 <= 10% 頁高 且高度 <= 160)；頁碼在極底端 (y2 >= 90% 頁高 且高度 <= 120)
+                    # 若為直排長條文字 (bh > 200) 或遠離天頭/地腳的孤立行，絕非頁眉/頁碼，校正為 title 或 plain text
+                    if cls_name == "abandon":
+                        is_near_top_edge = (y1 <= int(img_h * 0.10) and bh <= 160)
+                        is_near_bottom_edge = (y2 >= int(img_h * 0.90) and bh <= 120)
+                        if not is_near_top_edge and not is_near_bottom_edge:
+                            if bh > 200 or (bw > 200 and bh > 60):
+                                cls_name = "title" if bw <= 100 else "plain text"
+                                print(f"  [!] 區塊校正：長條文字 {xyxy} 遠離天頭/地腳 (H={bh})，由 abandon 校正為 {cls_name}")
+
+                    boxes.append({
+                        "cls_id": cls_id,
+                        "cls_name": cls_name,
+                        "conf": conf_val,
+                        "bbox": xyxy,
+                    })
+            return boxes
+
+        # 第一階段：以標準 conf (預設 0.25) 進行版面分析預測
+        results = self.yolo.predict(image_path, imgsz=1024, conf=conf, device=self.device)
+        boxes_info = _parse_and_sanitize_boxes(results)
+
+        # 檢查是否有任何非 abandon 的有效內容區塊
+        has_content = any(b["cls_name"] != "abandon" for b in boxes_info)
+
+        # 機制 1：動態兩階段 Confidence 重試 (若第一階段未抓到任何有效內容區塊且 conf > 0.15)
+        if not has_content and conf > 0.15:
+            retry_conf = 0.15
+            print(f"  [*] 第一階段未偵測到有效內文區塊，自動啟動第二階段寬鬆重試 (conf: {retry_conf:.2f})...")
+            retry_results = self.yolo.predict(image_path, imgsz=1024, conf=retry_conf, device=self.device)
+            retry_boxes = _parse_and_sanitize_boxes(retry_results)
+            if any(b["cls_name"] != "abandon" for b in retry_boxes):
+                boxes_info = retry_boxes
+                print(f"  [+] 第二階段重試成功偵測到 {len(boxes_info)} 個候選區塊")
 
         effective_direction = layout_direction or self.layout_direction
         if effective_direction == "auto" and detect_page_orientation is not None:
@@ -528,19 +573,42 @@ class DocumentConverter:
         return sorted_boxes
 
     def _filter_contained_boxes(self, boxes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not boxes:
+            return []
+
+        # 檢查本頁面是否真正含有表格 (table)
+        has_actual_table = any(b["cls_name"] == "table" for b in boxes)
+
         filtered = []
         for i, b1 in enumerate(boxes):
             is_contained = False
             for j, b2 in enumerate(boxes):
                 if i != j:
-                    if self._is_mostly_inside(b1["bbox"], b2["bbox"]) and b1["cls_name"] == b2["cls_name"]:
-                        is_contained = True
-                        break
+                    if self._is_mostly_inside(b1["bbox"], b2["bbox"]):
+                        # 情況 1：同類別包含 -> 捨棄較小的 b1
+                        if b1["cls_name"] == b2["cls_name"]:
+                            is_contained = True
+                            break
+                        # 情況 2：無表格時的 table_footnote / table_caption 與 plain text / title 高度重疊
+                        if not has_actual_table and b1["cls_name"] in ("table_footnote", "table_caption") and b2["cls_name"] in ("plain text", "title"):
+                            is_contained = True
+                            break
+                        # 情況 3：若重疊嚴重且 b2 具有更具體的正文屬性或更高置信度
+                        if b1["cls_name"] not in ("plain text", "title") and b2["cls_name"] in ("plain text", "title"):
+                            is_contained = True
+                            break
+                        elif b1["cls_name"] == "abandon" and b2["cls_name"] != "abandon":
+                            is_contained = True
+                            break
+                        elif b1["conf"] < b2["conf"] and self._is_mostly_inside(b2["bbox"], b1["bbox"]):
+                            # 兩者幾近完全一致 (相互包含)，保留置信度高者
+                            is_contained = True
+                            break
             if not is_contained:
                 filtered.append(b1)
         return filtered
 
-    def _is_mostly_inside(self, box1: List[int], box2: List[int]) -> bool:
+    def _is_mostly_inside(self, box1: List[int], box2: List[int], overlap_ratio: float = 0.80) -> bool:
         x1, y1, x2, y2 = box1
         X1, Y1, X2, Y2 = box2
         area1 = (x2 - x1) * (y2 - y1)
@@ -552,7 +620,7 @@ class DocumentConverter:
         inter_y2 = min(y2, Y2)
         if inter_x1 < inter_x2 and inter_y1 < inter_y2:
             inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
-            return (inter_area / area1) > 0.90
+            return (inter_area / area1) > overlap_ratio
         return False
 
     def _sort_reading_order(
@@ -806,9 +874,32 @@ class DocumentConverter:
             # 過濾已合併的區塊
             final_blocks = [b for b in html_blocks_draft if b is not None]
 
-            # 若此頁完全未識別出任何有效內容（例如空頁或純雜訊），自動轉為原圖嵌入
+            # 機制 2：若此頁完全未識別出任何有效內容，但檢測到包含實質文字筆畫特徵，啟動【保底整頁 OCR】
             if not final_blocks:
-                print(f"  [-] 該頁未偵測到任何內文區塊，自動將原圖嵌入為整頁插圖")
+                if self._has_text_content(orig_im):
+                    print(f"  [*] 該頁未分割出有效區塊，但包含文字特徵，啟動【保底整頁 OCR】補救辨識...")
+                    try:
+                        full_ocr_res = self.recognize_crops_batch([(orig_im, "text")])
+                        full_text = full_ocr_res[0].strip() if full_ocr_res else ""
+                        # 若辨識出實質文字 (大於等於 5 個字)
+                        if full_text and len(full_text) >= 5:
+                            print(f"  [+] 【保底整頁 OCR】補救成功！抽取 {len(full_text)} 字正文內容！")
+                            # 依據換行格式整理為段落
+                            raw_paras = [p.strip() for p in full_text.split("\n\n") if p.strip()]
+                            if not raw_paras:
+                                raw_paras = [full_text]
+                            for para in raw_paras:
+                                # 若首行為短標題 (小於等於 25 字且無標點符號結尾)，可標記為 title
+                                if para == raw_paras[0] and len(para) <= 25 and not para.endswith(("。", "！", "？", "，", "、", ".", "!", "?")):
+                                    final_blocks.append({"type": "title", "content": para})
+                                else:
+                                    final_blocks.append({"type": "text", "content": para})
+                    except Exception as e_full_ocr:
+                        print(f"  [-] 保底整頁 OCR 執行異常: {e_full_ocr}", file=sys.stderr)
+
+            # 若經保底整頁 OCR 後依然無有效文字內容（代表為純插圖、無字隔頁或空白頁），才自動轉為原圖嵌入
+            if not final_blocks:
+                print(f"  [-] 該頁確認無內文區塊，自動將原圖嵌入為整頁插圖")
                 dest_img_filename = f"{page_stem}_raw{Path(image_path).suffix.lower()}"
                 dest_img_path = os.path.join(images_out_dir, dest_img_filename)
                 shutil.copy2(image_path, dest_img_path)
