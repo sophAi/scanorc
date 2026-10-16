@@ -32,13 +32,15 @@ except ImportError:
         if isinstance(img_or_path, (str, Path)):
             try:
                 with Image.open(img_or_path) as im:
+                    if im.mode in ("L", "1", "LA"):
+                        return True
                     return is_grayscale_image(im, is_cover=is_cover, **kwargs)
             except Exception:
                 return False
         im = img_or_path
         if is_cover is None:
             is_cover = False
-        if im.mode in ("L", "1"):
+        if im.mode in ("L", "1", "LA"):
             return True
         if im.mode not in ("RGB", "RGBA"):
             im = im.convert("RGB")
@@ -140,19 +142,25 @@ def apply_image_transform(
         shutil.copy2(src_path, target_path)
         return
 
-    # 灰階檢測 (針對 JPG 輸出)
+    # 灰階色彩檢測 (針對 JPG 輸出)
     is_gray = False
-    if auto_grayscale and fmt in ("jpg", "jpeg"):
+    if fmt in ("jpg", "jpeg"):
         try:
-            name_lower = target_path.name.lower()
-            src_name_lower = src_path.name.lower()
-            is_cover_target = bool(
-                "cover" in name_lower
-                or "cover" in src_name_lower
-                or "backcover" in name_lower
-                or "backcover" in src_name_lower
-            )
-            is_gray = is_grayscale_image(src_path, is_cover=is_cover_target)
+            with Image.open(src_path) as test_im:
+                # 優先判斷：如果原始圖檔已經是 Gray Color space (如 L, 1, LA)，
+                # 則不需進行額外的色差或像素偵測，直接以灰階模式儲存，大幅節省時間
+                if test_im.mode in ("L", "1", "LA"):
+                    is_gray = True
+                elif auto_grayscale:
+                    name_lower = target_path.name.lower()
+                    src_name_lower = src_path.name.lower()
+                    is_cover_target = bool(
+                        "cover" in name_lower
+                        or "cover" in src_name_lower
+                        or "backcover" in name_lower
+                        or "backcover" in src_name_lower
+                    )
+                    is_gray = is_grayscale_image(test_im, is_cover=is_cover_target)
         except Exception:
             is_gray = False
 
@@ -203,7 +211,8 @@ def apply_image_transform(
 
             if fmt in ("jpg", "jpeg"):
                 if is_gray:
-                    im = im.convert("L")
+                    if im.mode != "L":
+                        im = im.convert("L")
                 elif im.mode not in ("RGB", "L"):
                     im = im.convert("RGB")
                 im.save(target_path, "JPEG", quality=quality)

@@ -76,7 +76,9 @@ def is_grayscale_image(
 ) -> bool:
     """
     智慧判斷圖檔是否實質為灰階色調：
-    1. 原生單通道 ('L', '1') 直接判定為 True。
+    1. 快速優先判斷 (Fast-path)：
+       若原始圖檔原生色彩空間已經是灰階 (單通道 'L', '1', 'LA')，
+       無需進行任何像素解碼或通道差值運算，直接判定為 True 節省時間。
     2. 封面保護機制 (is_cover=True)：
        只要存在任何非零色差 (max_diff > 0)，一律視為彩色圖，絕不降階為灰階；
        唯有 max_diff == 0 (100% 絕對純黑白) 時才視為灰階。
@@ -92,16 +94,19 @@ def is_grayscale_image(
     """
     if isinstance(img_or_path, (str, Path)):
         p = Path(img_or_path)
-        if is_cover is None:
-            name_lower = p.name.lower()
-            stem_lower = p.stem.lower()
-            is_cover = bool(
-                name_lower.startswith("cover")
-                or "cover" in stem_lower
-                or "backcover" in stem_lower
-            )
         try:
             with Image.open(p) as im_file:
+                # 優先判斷：如果原始圖檔已經是 Gray Color space (L, 1, LA)，直接回傳 True，避免解碼與像素運算
+                if im_file.mode in ("L", "1", "LA"):
+                    return True
+                if is_cover is None:
+                    name_lower = p.name.lower()
+                    stem_lower = p.stem.lower()
+                    is_cover = bool(
+                        name_lower.startswith("cover")
+                        or "cover" in stem_lower
+                        or "backcover" in stem_lower
+                    )
                 return is_grayscale_image(
                     im_file,
                     is_cover=is_cover,
@@ -117,7 +122,8 @@ def is_grayscale_image(
     if is_cover is None:
         is_cover = False
 
-    if im.mode in ("L", "1"):
+    # 優先判斷：若影像本身已是灰階色彩空間 (L, 1, LA)，直接回傳 True
+    if im.mode in ("L", "1", "LA"):
         return True
     if im.mode not in ("RGB", "RGBA"):
         im = im.convert("RGB")
@@ -282,22 +288,30 @@ def _worker_task(args_tuple) -> Dict:
 
             else:
                 # ---------------- JPG / JPEG 處理流程 ----------------
-                # 色彩模式防呆處理 (若為 CMYK 或 RGBA 轉為 RGB，若是單色灰階保留 L)
-                if im.mode not in ("RGB", "L"):
-                    im = im.convert("RGB")
-
                 converted_to_gray = False
-                if auto_grayscale and im.mode == "RGB":
-                    stem_lower = src_p.stem.lower()
-                    name_lower = src_p.name.lower()
-                    is_cover = bool(
-                        name_lower.startswith("cover")
-                        or "cover" in stem_lower
-                        or "backcover" in stem_lower
-                    )
-                    if is_grayscale_image(im, is_cover=is_cover):
+                # 優先判斷：如果原始圖檔已經是 Gray Color space (如 L, 1, LA)，
+                # 則完全不需要額外的色差或像素偵測，直接保持或轉換為灰階 (L 模式) 儲存，大幅節省時間
+                if im.mode in ("L", "1", "LA"):
+                    if im.mode != "L":
                         im = im.convert("L")
-                        converted_to_gray = True
+                    converted_to_gray = True
+                else:
+                    # 原圖為彩色模式 (RGB, RGBA, CMYK, P 等)
+                    if auto_grayscale:
+                        stem_lower = src_p.stem.lower()
+                        name_lower = src_p.name.lower()
+                        is_cover = bool(
+                            name_lower.startswith("cover")
+                            or "cover" in stem_lower
+                            or "backcover" in stem_lower
+                        )
+                        if is_grayscale_image(im, is_cover=is_cover):
+                            im = im.convert("L")
+                            converted_to_gray = True
+                        elif im.mode not in ("RGB", "L"):
+                            im = im.convert("RGB")
+                    elif im.mode not in ("RGB", "L"):
+                        im = im.convert("RGB")
 
                 # 若尺寸改變，執行高品質 Lanczos 重採樣
                 if (new_w, new_h) != (orig_w, orig_h):
