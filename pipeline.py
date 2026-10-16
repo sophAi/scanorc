@@ -560,6 +560,17 @@ class DocumentConverter:
                 boxes_info = retry_boxes
                 print(f"  [+] 第二階段重試成功偵測到 {len(boxes_info)} 個候選區塊")
 
+        # 無表格時校正誤判的 table_footnote / table_caption 為 plain text
+        has_table_in_boxes = any(b["cls_name"] == "table" for b in boxes_info)
+        if not has_table_in_boxes:
+            for b in boxes_info:
+                if b["cls_name"] in ("table_footnote", "table_caption"):
+                    b_h = b["bbox"][3] - b["bbox"][1]
+                    b_w = b["bbox"][2] - b["bbox"][0]
+                    if b_h > 100 or b_w > 100:
+                        b["cls_name"] = "plain text"
+                        b["cls_id"] = 1
+
         effective_direction = layout_direction or self.layout_direction
         if effective_direction == "auto" and detect_page_orientation is not None:
             try:
@@ -569,8 +580,122 @@ class DocumentConverter:
                 effective_direction = "horizontal"
 
         filtered_boxes = self._filter_contained_boxes(boxes_info)
-        sorted_boxes = self._sort_reading_order(filtered_boxes, layout_direction=effective_direction)
+        merged_boxes = self._merge_adjacent_text_columns(filtered_boxes, img_w=img_w, img_h=img_h, layout_direction=effective_direction)
+        sorted_boxes = self._sort_reading_order(merged_boxes, layout_direction=effective_direction)
         return sorted_boxes
+
+    def _merge_adjacent_text_columns(
+        self,
+        boxes: List[Dict[str, Any]],
+        img_w: int,
+        img_h: int,
+        layout_direction: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        直排書籍相鄰正文欄位智慧合併 (BBox Column Merging)。
+        針對直排版面中被 YOLO 分割割裂、或因置信度偏低而漏檢中間數列正文的情況，
+        將 Y 軸高度重疊且 X 軸相鄰 (中間無標題、插圖等阻礙元素) 的正文區塊合併為單一區塊，
+        既能補全漏檢的正文內容，又能使長寬比恢復正常。
+        """
+        if not boxes or layout_direction != "vertical":
+            return boxes
+
+        current_boxes = list(boxes)
+        merged = True
+        while merged:
+            merged = False
+            n = len(current_boxes)
+            for i in range(n):
+                b1 = current_boxes[i]
+                if b1["cls_name"] != "plain text":
+                    continue
+                x1_a, y1_a, x2_a, y2_a = b1["bbox"]
+                h_a = y2_a - y1_a
+
+                for j in range(i + 1, n):
+                    b2 = current_boxes[j]
+                    if b2["cls_name"] != "plain text":
+                        continue
+                    x1_b, y1_b, x2_b, y2_b = b2["bbox"]
+                    h_b = y2_b - y1_b
+
+                    # 必須為實質正文高度 (例如高度 >= 200px)
+                    if h_a < 200 or h_b < 200:
+                        continue
+
+                    # Y 軸高度重疊率檢定 (重疊高度需達兩者較小高度的 65% 以上)
+                    inter_y = max(0, min(y2_a, y2_b) - max(y1_a, y1_b))
+                    min_h = min(h_a, h_b)
+                    if min_h <= 0 or (inter_y / min_h) < 0.65:
+                        continue
+
+                    # 左右欄排序
+                    left_b = b1 if x1_a <= x1_b else b2
+                    right_b = b2 if x1_a <= x1_b else b1
+                    lx1, ly1, lx2, ly2 = left_b["bbox"]
+                    rx1, ry1, rx2, ry2 = right_b["bbox"]
+
+                    # 水平間距限制 (不超過 350px 或頁寬 25%)
+                    gap_x = rx1 - lx2
+                    max_gap = max(350, int(img_w * 0.25))
+                    if gap_x > max_gap:
+                        continue
+
+                    # 檢查中間是否有阻擋元素 (title, figure, table 等非 plain text / abandon 元素)
+                    has_barrier = False
+                    for k, bk in enumerate(current_boxes):
+                        if k in (i, j) or bk["cls_name"] in ("abandon", "plain text"):
+                            continue
+                        kx1, ky1, kx2, ky2 = bk["bbox"]
+                        # 判斷 bk 是否橫亙在 lx2 與 rx1 之間且 Y 軸重疊
+                        if kx2 > lx2 and kx1 < rx1:
+                            k_inter_y = max(0, min(max(ly2, ry2), ky2) - max(min(ly1, ry1), ky1))
+                            if k_inter_y > 30:
+                                has_barrier = True
+                                break
+                    if has_barrier:
+                        continue
+
+                    # 執行合併
+                    new_bbox = [min(lx1, rx1), min(ly1, ry1), max(lx2, rx2), max(ly2, ry2)]
+                    new_box = {
+                        "cls_id": 1,
+                        "cls_name": "plain text",
+                        "conf": max(b1["conf"], b2["conf"]),
+                        "bbox": new_bbox,
+                    }
+                    print(f"  [+] 直排相鄰正文欄位智慧合併: {b1['bbox']} + {b2['bbox']} -> {new_bbox}")
+                    new_list = [b for idx, b in enumerate(current_boxes) if idx not in (i, j)]
+                    new_list.append(new_box)
+                    current_boxes = new_list
+                    merged = True
+                    break
+                if merged:
+                    break
+
+        return current_boxes
+
+    @staticmethod
+    def _pad_cushion(im: Image.Image, max_ratio: float = 4.0) -> Image.Image:
+        """
+        對極端細長比的直排裁切圖片進行白底兩側緩衝補白 (Aspect Ratio Cushion)，
+        避免 CogViT 視覺編碼器因水平 Patch 數過少 (小於 4 個 patch) 導致注意力機制崩潰與 \\x00 死循環。
+        注意：橫排單行文字 (w > h) 水平 patch 充足，不需垂直補白 (補白過多空白反會干擾文字定位)。
+        max_ratio: 最大允許長寬比 (預設 4.0，即高度不超過寬度的 4 倍)。
+        """
+        w, h = im.size
+        if w <= 0 or h <= 0:
+            return im
+
+        # 僅針對直排狹長條 (高度遠大於寬度，如 h/w > max_ratio) 進行水平兩側補白
+        if h > w and (h / max(1, w)) > max_ratio:
+            target_w = max(w, int(h / max_ratio))
+            new_im = Image.new("RGB", (target_w, h), (255, 255, 255))
+            offset_x = (target_w - w) // 2
+            new_im.paste(im, (offset_x, 0))
+            return new_im
+
+        return im
 
     def _filter_contained_boxes(self, boxes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not boxes:
@@ -585,7 +710,16 @@ class DocumentConverter:
             for j, b2 in enumerate(boxes):
                 if i != j:
                     if self._is_mostly_inside(b1["bbox"], b2["bbox"]):
-                        # 情況 1：同類別包含 -> 捨棄較小的 b1
+                        # 情況 0：若兩者互相包含 (幾近完全一致之重複框)
+                        if self._is_mostly_inside(b2["bbox"], b1["bbox"]):
+                            # 保留置信度高者；若置信度相同，保留序號較小者
+                            if (b1["conf"] < b2["conf"]) or (b1["conf"] == b2["conf"] and i > j):
+                                is_contained = True
+                                break
+                            else:
+                                continue
+
+                        # 情況 1：同類別包含 (b1 嚴格小於 b2) -> 捨棄較小的 b1
                         if b1["cls_name"] == b2["cls_name"]:
                             is_contained = True
                             break
@@ -598,10 +732,6 @@ class DocumentConverter:
                             is_contained = True
                             break
                         elif b1["cls_name"] == "abandon" and b2["cls_name"] != "abandon":
-                            is_contained = True
-                            break
-                        elif b1["conf"] < b2["conf"] and self._is_mostly_inside(b2["bbox"], b1["bbox"]):
-                            # 兩者幾近完全一致 (相互包含)，保留置信度高者
                             is_contained = True
                             break
             if not is_contained:
@@ -642,7 +772,9 @@ class DocumentConverter:
 
     def recognize_crops_batch(self, crop_items: List[Tuple[Image.Image, str]]) -> List[str]:
         """
-        將多個裁切區塊以 batch_size 分批送入 GLM-OCR 進行平行推論。
+        對多個裁切區塊進行 GLM-OCR 推論。
+        採用單圖獨立安全前向推論 (Single-crop Forward Pass)，徹底杜絕多圖 Batch Padding 造成的
+        注意力機制坍塌、\\x00 空字符死循環與跨區塊連鎖污染。
         crop_items: List of (PIL.Image, task_type: 'text' | 'formula' | 'table')
         """
         if not crop_items:
@@ -657,46 +789,37 @@ class DocumentConverter:
         }
 
         all_results = []
-        total_items = len(crop_items)
 
-        for i in range(0, total_items, self.batch_size):
-            chunk = crop_items[i : i + self.batch_size]
+        for crop_img, task_type in crop_items:
+            prompt_text = task_prompts.get(task_type, "Text Recognition:")
 
-            batch_imgs = []
-            batch_prompts = []
-            has_table = False
+            # 極端長寬比白色緩衝補白 (Aspect Ratio Cushion)
+            cushioned_img = self._pad_cushion(crop_img, max_ratio=4.0)
 
-            for crop_img, task_type in chunk:
-                if task_type == "table":
-                    has_table = True
-                prompt_text = task_prompts.get(task_type, "Text Recognition:")
+            w, h = cushioned_img.size
+            ocr_img = cushioned_img.copy()
+            if max(w, h) > self.max_ocr_dim:
+                ocr_img.thumbnail((self.max_ocr_dim, self.max_ocr_dim), Image.Resampling.LANCZOS)
 
-                w, h = crop_img.size
-                ocr_img = crop_img.copy()
-                if max(w, h) > self.max_ocr_dim:
-                    ocr_img.thumbnail((self.max_ocr_dim, self.max_ocr_dim), Image.Resampling.LANCZOS)
-
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image"},
-                            {"type": "text", "text": prompt_text}
-                        ]
-                    }
-                ]
-                p = self.processor.apply_chat_template(messages, add_generation_prompt=True)
-                batch_imgs.append(ocr_img)
-                batch_prompts.append(p)
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": prompt_text}
+                    ]
+                }
+            ]
+            p = self.processor.apply_chat_template(messages, add_generation_prompt=True)
 
             inputs = self.processor(
-                images=batch_imgs,
-                text=batch_prompts,
-                padding=True,
+                images=[ocr_img],
+                text=[p],
+                padding=False,
                 return_tensors="pt"
             ).to(self.device)
 
-            max_tokens = 1024 if has_table else 512
+            max_tokens = 1024 if task_type == "table" else 512
             gen_kwargs = {
                 "max_new_tokens": max_tokens,
             }
@@ -708,10 +831,11 @@ class DocumentConverter:
             with torch.no_grad():
                 outputs = self.glm.generate(**inputs, **gen_kwargs)
 
-            # 解碼各批次結果
-            for out_seq in outputs:
-                text_res = self.processor.decode(out_seq[inputs.input_ids.shape[1]:], skip_special_tokens=True)
-                all_results.append(clean_math_syntax(text_res.strip()))
+            # 解碼各結果並嚴格過濾 ASCII 控制字符 (0x00 ~ 0x1F，保留 \n 與 \t)
+            raw_text = self.processor.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+            cleaned_text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw_text).strip()
+            cleaned_text = clean_math_syntax(cleaned_text)
+            all_results.append(cleaned_text)
 
         return all_results
 
@@ -833,9 +957,9 @@ class DocumentConverter:
                     items_to_ocr.append((crop_im, "text", {"type": "text", "draft_idx": len(html_blocks_draft)}))
                     html_blocks_draft.append({"type": "text", "content": ""})
 
-            # 批次 OCR 推論
+            # 區塊 OCR 推論 (單圖安全推論模式)
             if items_to_ocr:
-                print(f"  [*] 進行 Batch OCR 辨識 (共 {len(items_to_ocr)} 個區塊, batch_size={self.batch_size})...")
+                print(f"  [*] 進行 OCR 辨識 (共 {len(items_to_ocr)} 個區塊, 安全單圖推論模式)...")
                 crops_and_types = [(item[0], item[1]) for item in items_to_ocr]
                 ocr_results = self.recognize_crops_batch(crops_and_types)
 
@@ -844,10 +968,14 @@ class DocumentConverter:
                     draft_idx = meta["draft_idx"]
                     b_type = meta["type"]
 
+                    if not res_text.strip():
+                        html_blocks_draft[draft_idx] = None
+                        continue
+
                     if b_type == "figure_caption":
                         print(f"  [+] [圖說] {res_text}")
                         # 若前一個是 figure 則綁定
-                        if draft_idx > 0 and html_blocks_draft[draft_idx - 1]["type"] == "figure":
+                        if draft_idx > 0 and html_blocks_draft[draft_idx - 1] is not None and html_blocks_draft[draft_idx - 1]["type"] == "figure":
                             html_blocks_draft[draft_idx - 1]["caption"] = res_text
                             html_blocks_draft[draft_idx] = None  # 標記移除
                         else:
@@ -1462,7 +1590,7 @@ def main():
         default=True,
         help="重新壓縮圖檔時自動判斷是否為灰階色調，若無彩色資訊則改以灰階模式壓縮儲存以節省空間 (預設: True，使用 --no-auto-grayscale 保持原樣)"
     )
-    parser.add_argument("--batch-size", type=int, default=2, help="單頁 OCR 區塊批次大小 (預設 2，16GB 顯卡可設 4~8)")
+    parser.add_argument("--batch-size", type=int, default=2, help="單頁 OCR 批次參數 (保留向後相容性；為杜絕 Batch Padding 造成之注意力坍塌與死循環，內部已全面採用單圖獨立安全前向推論；多工加速請使用 --workers)")
     parser.add_argument("--workers", type=int, default=1, help="多進程並行 Worker 數 (預設 1，16GB 顯卡可設 3~4)")
     parser.add_argument(
         "--recursive", "-r",
