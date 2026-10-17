@@ -1,0 +1,937 @@
+#!/usr/bin/env python3
+"""
+ScanORC: OCR Raw 檔直接組裝 HTML / EPUB 工具 (raw_to_html.py)
+由 raw_pages/ 目錄中的各頁純文字結構化 JSON 檔與 toc.json，直接快速生成語意結構化 HTML 與 EPUB。
+
+特色：
+  1. 極速輕量：無需 GPU 或 AI 模型（零 VRAM 佔用），可在 0.1~1 秒內完成整本書的 HTML / EPUB 組裝。
+  2. 完美支援目錄索引 (TOC)：自動讀取 toc.json，生成章節錨點、點狀引導線與 EPUB Outline 標籤。
+  3. 雙向排版相容：原生支援直排 (vertical-rl) 與橫排 (horizontal-tb) CSS 樣式與閱讀模式。
+  4. 獨立指令與模組兼備：可作為獨立 CLI 指令執行，亦可供 pipeline.py 等模組直接呼叫。
+"""
+
+import os
+import re
+import sys
+import json
+import shutil
+import argparse
+import subprocess
+from pathlib import Path
+from typing import Optional, List, Dict, Tuple, Union, Any
+
+from config_utils import attach_preference_and_template_support
+
+VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
+
+
+def natural_sort_key(s: Union[str, Path]) -> List[Any]:
+    """檔名自然數字排序鍵 (例如 Cover-05 排在 Cover-06 前面，Page-2 排在 Page-10 前面)"""
+    name = Path(s).name if isinstance(s, Path) else str(s)
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", name)]
+
+
+def classify_book_image(p: Union[str, Path]) -> int:
+    """
+    分類書本頁面類型：
+    0: 封面/目錄 (Cover, 封面, front_cover 等)
+    1: 正文頁面 (Page-xxx, p-xxx, p0xx, 純數字檔名, 頁等)
+    2: 其他/未知頁面 (其他插頁等)
+    3: 封底/後記 (BackCover, 封底等)
+    """
+    stem = Path(p).stem.lower()
+    if re.search(r"(back[-_]?cover|封底)", stem):
+        return 3
+    if re.search(r"(^cover|^封面|^front[-_]?cover|^content)", stem):
+        return 0
+    if re.search(r"(^page|^p[-_]?\d+|^\d+$|頁|页)", stem):
+        return 1
+    return 2
+
+
+def book_page_sort_key(p: Union[str, Path], cover_first: bool = True) -> Tuple[int, List[Any], str]:
+    """
+    頁面全域排序鍵：
+    預設編排順序：Cover-*.json (優先) -> Page-*.json -> 其他 -> BackCover
+    若 cover_first 為 False：Page-*.json (優先) -> Cover-*.json -> 其他 -> BackCover
+    """
+    c_type = classify_book_image(p)
+    if cover_first:
+        priority_map = {0: 0, 1: 1, 2: 2, 3: 3}
+    else:
+        priority_map = {1: 0, 0: 1, 2: 2, 3: 3}
+    priority = priority_map.get(c_type, 2)
+    return (priority, natural_sort_key(p), str(p))
+
+
+def clean_math_syntax(text: str) -> str:
+    """
+    清理並標準化 LaTeX 數學語法：
+    1. 去除行內公式 $ ... $ 內部頭尾的空白字元。
+    2. 將公式末尾包含的句點或逗號移至公式外，例如 `$x.$` -> `$x$.`
+    """
+    if not text:
+        return ""
+
+    def fix_inline_math(match):
+        inner = match.group(1).strip()
+        trailing_punct = ""
+        if inner and inner[-1] in ".，,。；;":
+            trailing_punct = inner[-1]
+            inner = inner[:-1].strip()
+        return f"${inner}${trailing_punct}"
+
+    cleaned = re.sub(r"(?<!\$)\$(?!\$)([^\$\n]+?)(?<!\$)\$(?!\$)", fix_inline_math, text)
+    return cleaned
+
+
+def resolve_page_filename(page_num: int, existing_filenames: Optional[List[str]] = None) -> str:
+    """
+    根據頁碼推算目標圖檔檔名 (例如 50 -> Page-050.jpg)
+    若提供既有圖檔清單，則優先比對現有檔案
+    """
+    if existing_filenames:
+        target_name_3d = f"Page-{page_num:03d}.jpg".lower()
+        for fn in existing_filenames:
+            if Path(fn).name.lower() == target_name_3d:
+                return Path(fn).name
+
+        for fn in existing_filenames:
+            name = Path(fn).name
+            nums = re.findall(r"\d+", name)
+            if nums and int(nums[-1]) == page_num:
+                return name
+
+    return f"Page-{page_num:03d}.jpg"
+
+
+def find_default_cover_image(search_dirs: List[Path]) -> Optional[Path]:
+    """
+    自動搜尋預設封面圖檔 Cover-01.jpg (相容 cover-01.jpg, Cover-01.png, Cover-01.webp 等)
+    若無 Cover-01.jpg 則嘗試尋找通用 cover.* 圖檔
+    """
+    cover01_pattern = re.compile(r"^[Cc]over[-_]?0*1\.(jpg|jpeg|png|webp|tif|tiff)$", re.IGNORECASE)
+    fallback_pattern = re.compile(r"^[Cc]over\.(jpg|jpeg|png|webp|tif|tiff)$", re.IGNORECASE)
+
+    # 第一階段：嚴格優先比對 Cover-01.jpg
+    for d in search_dirs:
+        if not d.exists():
+            continue
+        if d.is_file():
+            if cover01_pattern.match(d.name):
+                return d.resolve()
+            continue
+        try:
+            for f in sorted(d.iterdir()):
+                if f.is_file() and cover01_pattern.match(f.name):
+                    return f.resolve()
+        except OSError:
+            pass
+        for root, _, files in os.walk(d):
+            for f in sorted(files):
+                if cover01_pattern.match(f):
+                    return (Path(root) / f).resolve()
+
+    # 第二階段：比對 cover.jpg
+    for d in search_dirs:
+        if not d.exists():
+            continue
+        if d.is_file():
+            if fallback_pattern.match(d.name):
+                return d.resolve()
+            continue
+        try:
+            for f in sorted(d.iterdir()):
+                if f.is_file() and fallback_pattern.match(f.name):
+                    return f.resolve()
+        except OSError:
+            pass
+        for root, _, files in os.walk(d):
+            for f in sorted(files):
+                if fallback_pattern.match(f):
+                    return (Path(root) / f).resolve()
+
+    return None
+
+
+def normalize_layout_direction(val: Optional[str]) -> str:
+    """標準化排版方向字串"""
+    if not val:
+        return "auto"
+    s = str(val).strip().lower()
+    if s in ("vertical", "vert", "vertical-rl", "v"):
+        return "vertical"
+    if s in ("horizontal", "horizon", "horizontal-tb", "h"):
+        return "horizontal"
+    return "auto"
+
+
+def save_atomic_json(target_path: Union[str, Path], data: Any):
+    """
+    以原子操作安全寫入 JSON 檔案，先寫至 .tmp 檔再 rename，避免中斷造成損壞檔。
+    """
+    target_p = Path(target_path)
+    target_p.parent.mkdir(parents=True, exist_ok=True)
+    tmp_p = target_p.with_suffix(".json.tmp")
+    with open(tmp_p, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp_p.replace(target_p)
+
+
+def get_cached_page_result(raw_file: Union[str, Path], output_dir: Union[str, Path]) -> Optional[Dict[str, Any]]:
+    """
+    檢查並載入已存在的 raw_pages/{stem}.json 快取。
+    若檔案存在、JSON 格式正確，且其中引用的插圖檔案皆實體存在，傳回快取資料；否則傳回 None。
+    """
+    rf = Path(raw_file)
+    if not rf.exists() or rf.stat().st_size == 0:
+        return None
+    try:
+        with open(rf, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or "blocks" not in data:
+            return None
+        # 驗證插圖完整性：若引用的插圖檔案遺失，視為快取失效需重跑
+        images_dir = Path(output_dir) / "images"
+        for b in data.get("blocks", []):
+            if isinstance(b, dict) and b.get("type") == "figure":
+                img_src = b.get("img_src", "")
+                if img_src:
+                    fig_name = Path(img_src).name
+                    if not (images_dir / fig_name).exists():
+                        return None
+        return data
+    except Exception:
+        return None
+
+
+def render_html(
+    page_results: List[Dict[str, Any]],
+    title: str = "Scanned Book",
+    toc_data: Optional[Dict[str, Any]] = None,
+    cover_image: Optional[Union[str, Path]] = None,
+    layout_direction: str = "horizontal",
+) -> str:
+    """
+    將所有頁面的結構化識別結果組裝為出版級 HTML5。
+    支援目錄導覽、插圖/圖說、表格、MathML 公式與直排/橫排排版。
+    """
+    body_content = []
+    available_page_files = [p["page_id"] for p in page_results]
+
+    # 1. 插入封面區塊 (Cover)
+    cover_filename = Path(cover_image).name if cover_image else None
+    if cover_filename:
+        body_content.append('<section class="book-cover-page" id="book-cover">')
+        body_content.append('  <figure class="book-figure fullpage-figure cover-figure">')
+        body_content.append(f'    <img src="images/{cover_filename}" alt="封面: {title}" class="cover-image">')
+        body_content.append('  </figure>')
+        body_content.append('</section>\n<hr class="page-divider">\n')
+
+    # 2. 建立章節對應至起始頁面的映射 (EPUB outline 核心)
+    page_chapter_map: Dict[str, List[Dict[str, Any]]] = {}
+    if toc_data and "toc" in toc_data and toc_data["toc"]:
+        toc_entries = toc_data["toc"]
+        page_numbers: List[Tuple[Optional[int], str]] = []
+        for p_file in available_page_files:
+            nums = re.findall(r"\d+", p_file)
+            p_num = int(nums[-1]) if nums else None
+            page_numbers.append((p_num, p_file))
+
+        for c_idx, entry in enumerate(toc_entries, start=1):
+            start_p_val = entry.get("start_page")
+            try:
+                start_p = int(start_p_val) if start_p_val is not None and str(start_p_val).strip().lower() != "none" else None
+            except (ValueError, TypeError):
+                start_p = None
+
+            end_p_val = entry.get("end_page")
+            try:
+                end_p = int(end_p_val) if end_p_val is not None and str(end_p_val).strip().lower() != "none" else start_p
+            except (ValueError, TypeError):
+                end_p = start_p
+
+            target_file = None
+            if start_p is not None:
+                # 優先 1: 精確比對頁碼
+                for p_num, p_file in page_numbers:
+                    if p_num is not None and p_num == start_p:
+                        target_file = p_file
+                        break
+                # 優先 2: 落在章節頁碼範圍內的第一個頁面
+                if not target_file and end_p is not None:
+                    for p_num, p_file in page_numbers:
+                        if p_num is not None and start_p <= p_num <= end_p:
+                            target_file = p_file
+                            break
+                # 優先 3: 依檔名規則推算 fallback
+                if not target_file:
+                    target_file = resolve_page_filename(start_p, available_page_files)
+
+            entry_info = dict(entry)
+            entry_info["_chapter_index"] = c_idx
+            if target_file:
+                if target_file not in page_chapter_map:
+                    page_chapter_map[target_file] = []
+                page_chapter_map[target_file].append(entry_info)
+
+    # 3. 插入目錄索引導覽區塊 (TOC)
+    if toc_data and "toc" in toc_data and toc_data["toc"]:
+        toc_entries = toc_data["toc"]
+        toc_title = toc_data.get("book_title", title)
+
+        body_content.append('<h1 id="toc-heading" class="chapter-heading">目錄</h1>')
+        body_content.append('<nav id="toc" class="book-toc" role="doc-toc">')
+        body_content.append(f'  <h2 class="toc-title">目錄 ({toc_title})</h2>')
+        body_content.append('  <ul class="toc-list">')
+
+        for c_idx, entry in enumerate(toc_entries, start=1):
+            start_p_val = entry.get("start_page")
+            try:
+                start_p = int(start_p_val) if start_p_val is not None and str(start_p_val).strip().lower() != "none" else None
+            except (ValueError, TypeError):
+                start_p = None
+
+            full_t = entry.get("full_title", entry.get("title", ""))
+            target_file = resolve_page_filename(start_p, available_page_files) if start_p is not None else ""
+
+            body_content.append('    <li class="toc-item">')
+            if start_p is not None and target_file:
+                body_content.append(f'      <a href="#chapter-{c_idx}" class="toc-link">')
+                body_content.append(f'        <span class="toc-chapter">{full_t}</span>')
+                body_content.append('        <span class="toc-dots"></span>')
+                body_content.append(f'        <span class="toc-page">第 {start_p} 頁 ({target_file})</span>')
+                body_content.append('      </a>')
+            else:
+                body_content.append('      <span class="toc-link noclick">')
+                body_content.append(f'        <span class="toc-chapter">{full_t}</span>')
+                body_content.append('      </span>')
+            body_content.append('    </li>')
+
+        body_content.append('  </ul>')
+        body_content.append('</nav>\n<hr class="page-divider">\n')
+
+    # 4. 插入各頁內文
+    for p_res in page_results:
+        page_id = p_res["page_id"]
+        if cover_filename and Path(page_id).name.lower() == cover_filename.lower():
+            # 封面已於文檔開頭作為獨立封面展示，略過在內文中重複輸出
+            continue
+        page_stem = p_res.get("page_stem", Path(page_id).stem)
+
+        # 若此頁為章節起始頁，先插入 <h1> 章節標題 (Pandoc EPUB Outline 自動識別)
+        if page_id in page_chapter_map:
+            for chap in page_chapter_map[page_id]:
+                chap_idx = chap.get("_chapter_index", 1)
+                full_t = chap.get("full_title", chap.get("title", f"第 {chap_idx} 章"))
+                body_content.append(f'<h1 id="chapter-{chap_idx}" class="chapter-heading">{full_t}</h1>\n')
+
+        body_content.append(f'<section class="book-page" id="{page_id}">')
+        body_content.append(f'  <a id="{page_stem}" class="page-anchor-target"></a>')
+        body_content.append(f'  <div class="page-anchor"><small>File: {page_id}</small></div>')
+
+        for b in p_res.get("blocks", []):
+            b_type = b.get("type")
+            if b_type == "title":
+                body_content.append(f'  <h2 class="book-title">{b["content"]}</h2>')
+            elif b_type == "text":
+                paragraphs = b.get("content", "").split("\n")
+                for p in paragraphs:
+                    p = p.strip()
+                    if p:
+                        body_content.append(f'  <p>{p}</p>')
+            elif b_type == "figure":
+                cap = b.get("caption", "")
+                is_full = b.get("is_full_page", False)
+                css_class = "book-figure fullpage-figure" if is_full else "book-figure"
+                fig_html = f'  <figure class="{css_class}">\n    <img src="{b["img_src"]}" alt="{cap}">\n'
+                if cap and not is_full:
+                    fig_html += f'    <figcaption>{cap}</figcaption>\n'
+                fig_html += '  </figure>'
+                body_content.append(fig_html)
+            elif b_type == "caption":
+                body_content.append(f'  <p class="book-caption">{b.get("text", "")}</p>')
+            elif b_type == "table":
+                body_content.append(f'  <div class="table-container">\n    {b.get("content", "")}\n  </div>')
+            elif b_type == "formula":
+                body_content.append(f'  <div class="math-block">\n    {b.get("content", "")}\n  </div>')
+
+        body_content.append('</section>\n<hr class="page-divider">\n')
+
+    body_html_str = "\n".join(body_content)
+
+    body_class = ' class="layout-vertical"' if layout_direction == "vertical" else ''
+    vertical_css = """
+    body.layout-vertical {
+      writing-mode: vertical-rl;
+      -webkit-writing-mode: vertical-rl;
+      -epub-writing-mode: vertical-rl;
+      text-orientation: upright;
+      -webkit-text-orientation: upright;
+      max-width: none;
+      height: 90vh;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 30px 40px;
+    }
+    body.layout-vertical .book-page {
+      display: inline-block;
+      vertical-align: top;
+      height: 85vh;
+      margin: 0 1.5em;
+      writing-mode: vertical-rl;
+      -webkit-writing-mode: vertical-rl;
+      -epub-writing-mode: vertical-rl;
+    }
+    body.layout-vertical p {
+      margin: 0 0.8em;
+      text-indent: 2em;
+      line-height: 2.0;
+    }
+    body.layout-vertical h1,
+    body.layout-vertical h2,
+    body.layout-vertical h3 {
+      margin: 0 1.2em;
+      line-height: 1.4;
+    }
+    body.layout-vertical .book-cover-page {
+      display: inline-block;
+      vertical-align: top;
+      height: 85vh;
+      margin: 0 2em;
+    }
+    body.layout-vertical .book-toc {
+      display: inline-block;
+      vertical-align: top;
+      height: 85vh;
+      margin: 0 2em;
+      overflow-y: auto;
+    }
+""" if layout_direction == "vertical" else ""
+
+    full_html = f"""<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{title}</title>
+  <!-- KaTeX for formula rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+          onload="renderMathInElement(document.body, {{
+            delimiters: [
+              {{left: '$$', right: '$$', display: true}},
+              {{left: '$', right: '$', display: false}},
+              {{left: '\\\\[', right: '\\\\]', display: true}},
+              {{left: '\\\\(', right: '\\\\)', display: false}}
+            ],
+            throwOnError: false
+          }});"></script>
+  <style>
+    :root {{
+      --primary-color: #2c3e50;
+      --bg-color: #fdfdfd;
+      --text-color: #2b2b2b;
+      --border-color: #e5e5e5;
+    }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Hiragino Sans GB", "Microsoft JhengHei", "Noto Serif CJK TC", serif;
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      line-height: 1.85;
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 30px 24px;
+    }}
+    h1, h2, h3, h4 {{
+      color: var(--primary-color);
+      font-weight: 700;
+      margin-top: 1.6em;
+      margin-bottom: 0.6em;
+      line-height: 1.35;
+    }}
+    h2.book-title {{
+      border-bottom: 2px solid var(--border-color);
+      padding-bottom: 0.3em;
+    }}
+    h1.chapter-heading {{
+      font-size: 1.85rem;
+      font-weight: 700;
+      color: var(--primary-color);
+      margin: 44px 0 20px 0;
+      padding-bottom: 10px;
+      border-bottom: 2px solid var(--accent-color, #3498db);
+      page-break-before: always;
+      break-before: page;
+    }}
+    p {{
+      margin: 0.9em 0;
+      text-align: justify;
+      word-break: break-word;
+    }}
+    .page-anchor {{
+      text-align: right;
+      color: #999;
+      margin-bottom: 8px;
+    }}
+    .page-anchor-target {{
+      display: block;
+      position: relative;
+      top: -20px;
+      visibility: hidden;
+    }}
+    .book-toc {{
+      margin: 2em 0 3em 0;
+      padding: 24px 28px;
+      background: #fafbfc;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+    }}
+    .toc-title {{
+      margin-top: 0;
+      margin-bottom: 20px;
+      text-align: center;
+      border-bottom: 2px solid var(--border-color);
+      padding-bottom: 12px;
+      color: var(--primary-color);
+    }}
+    .toc-list {{
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }}
+    .toc-item {{
+      margin: 12px 0;
+    }}
+    .toc-link {{
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      text-decoration: none;
+      color: var(--text-color);
+      font-size: 1.05em;
+      transition: color 0.15s ease;
+    }}
+    .toc-link:hover {{
+      color: #2980b9;
+    }}
+    .toc-chapter {{
+      font-weight: 500;
+    }}
+    .toc-dots {{
+      flex: 1;
+      border-bottom: 1px dotted #bbb;
+      margin: 0 12px;
+      min-width: 20px;
+    }}
+    .toc-page {{
+      font-variant-numeric: tabular-nums;
+      color: #666;
+      font-size: 0.95em;
+      white-space: nowrap;
+    }}
+    .book-cover-page {{
+      margin: 0 auto 3em auto;
+      text-align: center;
+      page-break-after: always;
+      break-after: page;
+    }}
+    .cover-figure {{
+      margin: 0 auto;
+      max-width: 100%;
+    }}
+    .cover-image {{
+      max-height: 85vh;
+      max-width: 100%;
+      height: auto;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+      border-radius: 4px;
+      display: inline-block;
+    }}
+    .book-figure {{
+      margin: 2em auto;
+      text-align: center;
+    }}
+    .book-figure img {{
+      max-width: 96%;
+      height: auto;
+      border: 1px solid var(--border-color);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+      border-radius: 6px;
+      padding: 4px;
+      background: #fff;
+    }}
+    .fullpage-figure {{
+      margin: 1.5em auto;
+      text-align: center;
+    }}
+    .fullpage-figure img {{
+      max-width: 100%;
+      height: auto;
+      border: 1px solid var(--border-color);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+      border-radius: 6px;
+      display: block;
+      margin: 0 auto;
+      padding: 0;
+      background: #fff;
+    }}
+    .book-figure figcaption, .book-caption {{
+      margin-top: 10px;
+      font-size: 0.95em;
+      color: #666;
+      font-weight: 500;
+    }}
+    .table-container {{
+      margin: 2em 0;
+      overflow-x: auto;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1em 0;
+      font-size: 0.98em;
+    }}
+    th, td {{
+      border: 1px solid #ccc;
+      padding: 10px 14px;
+      text-align: center;
+    }}
+    th {{
+      background-color: #f7f9fa;
+      font-weight: 600;
+    }}
+    .math-block {{
+      margin: 1.6em 0;
+      text-align: center;
+      overflow-x: auto;
+      padding: 8px 0;
+    }}
+    .page-divider {{
+      border: 0;
+      height: 1px;
+      background: var(--border-color);
+      margin: 40px 0;
+    }}
+    {vertical_css}
+  </style>
+</head>
+<body{body_class}>
+{body_html_str}
+</body>
+</html>
+"""
+    return full_html
+
+
+def build_epub_with_pandoc(
+    html_path: str,
+    epub_path: str,
+    title: str = "Scanned Book",
+    cover_image: Optional[str] = None,
+    split_level: int = 1,
+    layout_direction: str = "horizontal",
+):
+    """呼叫 Pandoc 編譯 MathML EPUB3 電子書"""
+    pandoc_bin = "/opt/anaconda3/bin/pandoc"
+    if not os.path.exists(pandoc_bin):
+        pandoc_bin = "pandoc"
+
+    html_dir = os.path.dirname(os.path.abspath(html_path))
+    html_file = os.path.basename(html_path)
+    abs_epub_path = os.path.abspath(epub_path)
+
+    cmd = [
+        pandoc_bin,
+        "-f", "html+tex_math_dollars",
+        html_file,
+        "-o", abs_epub_path,
+        "--resource-path=.",
+        "--mathml",
+        "--toc",
+        "--toc-depth=3",
+        f"--split-level={split_level}",
+        "--metadata", f"title={title}",
+        "--metadata", "language=zh-TW",
+    ]
+    if layout_direction == "vertical":
+        cmd.extend([
+            "--metadata", "page-progression-direction=rtl",
+            "--metadata", "dir=rtl",
+        ])
+    if cover_image and os.path.exists(cover_image):
+        cmd.append(f"--epub-cover-image={os.path.abspath(cover_image)}")
+
+    print(f"[*] 執行 Pandoc 編譯 MathML EPUB (工作目錄: {html_dir}):\n    {' '.join(cmd)}")
+    subprocess.run(cmd, cwd=html_dir, check=True)
+    print(f"[+] EPUB 生成成功 (含原生 MathML 渲染與章節 Outline): {abs_epub_path}")
+
+
+def raw_pages_to_html(
+    raw_dir: Union[str, Path],
+    output_html: Optional[Union[str, Path]] = None,
+    toc_path: Optional[Union[str, Path]] = None,
+    title: Optional[str] = None,
+    cover_image: Optional[Union[str, Path]] = None,
+    layout_direction: str = "auto",
+    compile_epub: bool = False,
+    cover_first: bool = True,
+) -> Path:
+    """
+    核心 API：讀取 raw_pages 目錄中的 JSON 檔案並組裝生成 HTML (與選擇性 EPUB)。
+    """
+    raw_path = Path(raw_dir).resolve()
+    if not raw_path.exists():
+        raise FileNotFoundError(f"找不到指定的 raw_pages 目錄: {raw_path}")
+
+    # 若傳入的是 output 根目錄，自動探測其底下的 raw_pages
+    if raw_path.is_dir() and (raw_path / "raw_pages").is_dir():
+        raw_path = raw_path / "raw_pages"
+
+    # 收集 raw_pages 中的所有 JSON 檔案 (排除 .tmp 暫存檔)
+    json_files = [
+        f for f in raw_path.iterdir()
+        if f.is_file() and f.suffix.lower() == ".json" and not f.name.endswith(".tmp")
+    ]
+
+    if not json_files:
+        raise ValueError(f"目錄 '{raw_path}' 中未找到任何 OCR raw 檔 (*.json)！")
+
+    # 排序 JSON 檔案 (Cover 優先，其次依自然數字排序)
+    sorted_json_files = sorted(json_files, key=lambda f: book_page_sort_key(f, cover_first=cover_first))
+
+    # 讀取各頁 JSON 內容
+    page_results = []
+    for jf in sorted_json_files:
+        try:
+            with open(jf, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and "blocks" in data:
+                page_results.append(data)
+            else:
+                print(f"[-] 警告: 檔案 '{jf.name}' 不符合 raw page 格式，已略過", file=sys.stderr)
+        except Exception as e:
+            print(f"[-] 警告: 讀取 '{jf.name}' 失敗 ({e})，已略過", file=sys.stderr)
+
+    if not page_results:
+        raise ValueError(f"目錄 '{raw_path}' 中無有效的 raw page 結構內容！")
+
+    print(f"[*] 成功讀取 {len(page_results)} 個頁面 raw 檔 (來源目錄: {raw_path})")
+
+    # 解析 toc.json
+    toc_data = None
+    resolved_toc = None
+    if toc_path:
+        p_toc = Path(toc_path).resolve()
+        if p_toc.exists():
+            resolved_toc = p_toc
+    if not resolved_toc:
+        # 自動探尋候選目錄中的 toc.json
+        cand_dirs = [raw_path.parent, raw_path, Path.cwd()]
+        for d in cand_dirs:
+            if (d / "toc.json").exists():
+                resolved_toc = (d / "toc.json").resolve()
+                break
+
+    if resolved_toc and resolved_toc.exists():
+        try:
+            with open(resolved_toc, "r", encoding="utf-8") as f:
+                toc_data = json.load(f)
+            chap_count = len(toc_data.get("toc", []))
+            print(f"[*] 成功套用目錄索引: {resolved_toc} (共 {chap_count} 個章節)")
+        except Exception as e:
+            print(f"[-] 警告: 讀取目錄索引失敗 '{resolved_toc}': {e}", file=sys.stderr)
+
+    # 推導書名 (Title)
+    resolved_title = title
+    if not resolved_title:
+        if toc_data and toc_data.get("book_title"):
+            resolved_title = toc_data["book_title"]
+        elif raw_path.parent.name and raw_path.parent.name.lower() != "output":
+            resolved_title = raw_path.parent.name
+        elif raw_path.parent.parent.name:
+            resolved_title = raw_path.parent.parent.name
+        else:
+            resolved_title = "數位化掃描書本"
+    print(f"[*] 書名設定: '{resolved_title}'")
+
+    # 決定輸出路徑
+    if output_html:
+        out_p = Path(output_html).resolve()
+        if out_p.is_dir() or out_p.suffix.lower() != ".html":
+            out_p.mkdir(parents=True, exist_ok=True)
+            out_html_path = out_p / "book.html"
+        else:
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            out_html_path = out_p
+    else:
+        out_html_path = raw_path.parent / "book.html"
+
+    # 解析封面圖檔
+    resolved_cover = None
+    if cover_image:
+        cov_p = Path(cover_image).resolve()
+        if cov_p.exists():
+            resolved_cover = cov_p
+    if not resolved_cover:
+        search_dirs = [
+            out_html_path.parent / "images",
+            raw_path.parent / "images",
+            raw_path.parent,
+            Path.cwd(),
+        ]
+        resolved_cover = find_default_cover_image(search_dirs)
+
+    if resolved_cover and resolved_cover.exists():
+        print(f"[*] 套用封面圖檔: {resolved_cover}")
+        # 確保封面複製至輸出目錄 images/ 下，防止 HTML 引用破圖
+        dest_images_dir = out_html_path.parent / "images"
+        dest_images_dir.mkdir(parents=True, exist_ok=True)
+        dest_cover = dest_images_dir / resolved_cover.name
+        if not dest_cover.exists() or dest_cover.resolve() != resolved_cover.resolve():
+            try:
+                shutil.copy2(resolved_cover, dest_cover)
+            except Exception:
+                pass
+
+    # 解析排版方向
+    eff_direction = normalize_layout_direction(layout_direction)
+    if eff_direction == "auto":
+        if toc_data and toc_data.get("layout_direction"):
+            eff_direction = normalize_layout_direction(toc_data.get("layout_direction"))
+        else:
+            eff_direction = "horizontal"
+    ori_text = "直排 (豎排 / vertical-rl)" if eff_direction == "vertical" else "橫排 (horizontal)"
+    print(f"[*] 設定排版方向: {ori_text}")
+
+    # 執行 HTML 渲染
+    html_content = render_html(
+        page_results=page_results,
+        title=resolved_title,
+        toc_data=toc_data,
+        cover_image=resolved_cover,
+        layout_direction=eff_direction,
+    )
+
+    with open(out_html_path, "w", encoding="utf-8") as f:
+        f.write(html_content)
+    print(f"\n[+] 完整 HTML 檔案生成完畢 (含 TOC 索引與章節 Outline): {out_html_path}")
+
+    # 選擇性生成 EPUB
+    if compile_epub:
+        epub_out_path = out_html_path.with_suffix(".epub")
+        build_epub_with_pandoc(
+            html_path=str(out_html_path),
+            epub_path=str(epub_out_path),
+            title=resolved_title,
+            cover_image=str(resolved_cover) if resolved_cover else None,
+            split_level=1,
+            layout_direction=eff_direction,
+        )
+
+    return out_html_path
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="ScanORC: OCR Raw 檔直接組裝 HTML / EPUB 工具 (無需 GPU / 模型，秒級重新組裝)"
+    )
+    parser.add_argument(
+        "raw_dir",
+        nargs="?",
+        default=None,
+        help="raw_pages 目錄路徑或 output 目錄 (預設: output/raw_pages)"
+    )
+    parser.add_argument(
+        "--input", "-i", "--raw-dir",
+        dest="input_dir",
+        default=None,
+        help="指定 raw_pages 目錄路徑"
+    )
+    parser.add_argument(
+        "--output", "-o",
+        default=None,
+        help="輸出 HTML 檔案路徑 (例如 output/book.html，預設輸出於 raw_pages 上層目錄之 book.html)"
+    )
+    parser.add_argument(
+        "--toc",
+        default=None,
+        help="目錄索引 JSON 檔案路徑 (例如 toc.json，未指定時自動於 raw_pages 母目錄搜尋)"
+    )
+    parser.add_argument(
+        "--title", "-T",
+        default=None,
+        help="書名 / 文檔標題 (未指定時優先從 toc.json 自動取得)"
+    )
+    parser.add_argument(
+        "--cover", "--cover-image",
+        default=None,
+        help="指定封面圖片路徑 (未指定時自動於 images 目錄尋找 Cover-01.jpg)"
+    )
+    parser.add_argument(
+        "--layout-direction", "--direction",
+        default="auto",
+        choices=["auto", "horizontal", "vertical", "horizon", "vertical-rl", "horizontal-tb"],
+        help="排版方向 (預設 auto 優先繼承 toc.json；支援 horizontal 橫排、vertical 直排)"
+    )
+    parser.add_argument(
+        "--vertical",
+        dest="layout_direction",
+        action="store_const",
+        const="vertical",
+        default=argparse.SUPPRESS,
+        help="快捷選項：強制設定為直排模式 (豎排 / vertical-rl / RTL 翻頁)"
+    )
+    parser.add_argument(
+        "--horizontal",
+        dest="layout_direction",
+        action="store_const",
+        const="horizontal",
+        default=argparse.SUPPRESS,
+        help="快捷選項：強制設定為橫排模式 (horizontal / LTR 翻頁)"
+    )
+    parser.add_argument(
+        "--epub",
+        action="store_true",
+        help="生成 HTML 後是否同步調用 Pandoc 編譯為標準 MathML EPUB3 電子書"
+    )
+    parser.add_argument(
+        "--cover-first",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="頁面編排順序：是否將 Cover-*.json 編排於 Page-*.json 之前 (預設: True)"
+    )
+
+    args = attach_preference_and_template_support(parser, "raw_to_html")
+
+    # 決定 raw 目錄
+    target_raw_dir = args.input_dir or args.raw_dir
+    if not target_raw_dir:
+        cand_dirs = [Path("output/raw_pages"), Path("output"), Path("raw_pages")]
+        for cd in cand_dirs:
+            if cd.exists():
+                target_raw_dir = str(cd)
+                break
+        if not target_raw_dir:
+            target_raw_dir = "output/raw_pages"
+
+    try:
+        raw_pages_to_html(
+            raw_dir=target_raw_dir,
+            output_html=args.output,
+            toc_path=args.toc,
+            title=args.title,
+            cover_image=args.cover,
+            layout_direction=args.layout_direction,
+            compile_epub=args.epub,
+            cover_first=args.cover_first,
+        )
+        print("[🎉] HTML / EPUB 組裝作業順利完成！")
+    except Exception as e:
+        print(f"\n[-] 錯誤: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -50,6 +50,7 @@ cp -a recompress_images.py "$STAGING_DIR/opt/scanorc/"
 cp -a download_models.py "$STAGING_DIR/opt/scanorc/"
 cp -a config_utils.py "$STAGING_DIR/opt/scanorc/"
 cp -a orientation_detector.py "$STAGING_DIR/opt/scanorc/"
+cp -a raw_to_html.py "$STAGING_DIR/opt/scanorc/"
 cp -a requirements.txt "$STAGING_DIR/opt/scanorc/"
 cp -a LICENSE "$STAGING_DIR/opt/scanorc/"
 
@@ -73,6 +74,7 @@ cp -a "$SCRIPT_DIR/wrappers/scanorc-pipeline" "$STAGING_DIR/usr/bin/"
 cp -a "$SCRIPT_DIR/wrappers/scanorc-setup" "$STAGING_DIR/usr/bin/"
 cp -a "$SCRIPT_DIR/wrappers/scanorc-recompress" "$STAGING_DIR/usr/bin/"
 cp -a "$SCRIPT_DIR/wrappers/scanorc-html2epub" "$STAGING_DIR/usr/bin/"
+cp -a "$SCRIPT_DIR/wrappers/scanorc-raw2html" "$STAGING_DIR/usr/bin/"
 
 # 3. 複製桌面整合檔案 (.desktop 與圖示)
 echo "[4/6] 產生桌面捷徑與多解析度圖示..."

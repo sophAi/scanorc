@@ -36,6 +36,12 @@ except ImportError:
         GlmOcrForConditionalGeneration = None
 
 from config_utils import attach_preference_and_template_support
+from raw_to_html import (
+    render_html,
+    build_epub_with_pandoc,
+    save_atomic_json,
+    get_cached_page_result,
+)
 
 try:
     from recompress_images import recompress_directory
@@ -252,7 +258,7 @@ def collect_book_images(
             if not is_ancestor_or_same:
                 norm_exclude.append(ed_r)
             else:
-                for sub in ["images", "images_opt_tmp", "pipeline_temp", "html"]:
+                for sub in ["images", "images_opt_tmp", "pipeline_temp", "html", "raw_pages"]:
                     norm_exclude.append(ed_r / sub)
 
     def is_excluded(path: Path) -> bool:
@@ -290,7 +296,7 @@ def collect_book_images(
                     dirs[:] = [
                         dn for dn in dirs
                         if not dn.startswith(".")
-                        and dn not in ("images_opt_tmp", "deb_dist", "build", "dist", "__pycache__")
+                        and dn not in ("images_opt_tmp", "deb_dist", "build", "dist", "__pycache__", "raw_pages")
                         and not is_excluded(Path(root) / dn)
                     ]
                     if is_excluded(Path(root)):
@@ -844,15 +850,19 @@ class DocumentConverter:
         image_path: str,
         output_dir: str,
         page_id: str = None,
-        skip_ocr: bool = False
+        skip_ocr: bool = False,
+        force_ocr: bool = False,
+        raw_pages_dir: Optional[Union[str, Path]] = None,
     ) -> Dict[str, Any]:
         """
         完整處理單一頁面：
-        1. 若指定 skip_ocr=True，直接以最高畫質整頁原始圖檔嵌入，跳過版面分析與 OCR 推論
-        2. 版面分析與元素分類 (DocLayout-YOLO)
-        3. 插圖原圖最高解析度自動裁切
-        4. 聚合文字/公式/表格區塊進行 Batch OCR 推論 (GLM-OCR)
-        5. 若 OCR 過程發生非預期失敗，自動優雅降級為全頁原始圖檔嵌入
+        1. 檢查是否存在有效之 raw_pages/{stem}.json 快取 (若未啟用 force_ocr 且快取完整則秒級跳過)
+        2. 若指定 skip_ocr=True，直接以最高畫質整頁原始圖檔嵌入，跳過版面分析與 OCR 推論
+        3. 版面分析與元素分類 (DocLayout-YOLO)
+        4. 插圖原圖最高解析度自動裁切
+        5. 聚合文字/公式/表格區塊進行 Batch OCR 推論 (GLM-OCR)
+        6. 將結果以原子寫入存為 raw_pages/{stem}.json 快取檔
+        7. 若 OCR 過程發生非預期失敗，自動優雅降級為全頁原始圖檔嵌入並寫入快取
         """
         if page_id is None:
             page_id = Path(image_path).name
@@ -860,6 +870,17 @@ class DocumentConverter:
 
         images_out_dir = os.path.join(output_dir, "images")
         os.makedirs(images_out_dir, exist_ok=True)
+
+        raw_dir = Path(raw_pages_dir) if raw_pages_dir else (Path(output_dir) / "raw_pages")
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_file = raw_dir / f"{page_stem}.json"
+
+        # 0. 檢查斷點續傳快取
+        if not force_ocr:
+            cached_res = get_cached_page_result(raw_file, output_dir)
+            if cached_res is not None:
+                print(f"[*] 頁面 {page_id}: 讀取既有 raw 檔快取 (raw_pages/{raw_file.name})，略過 OCR 辨識")
+                return cached_res
 
         # 1. 主動跳過 OCR 模式 (使用者指定全頁圖片頁或免 OCR 頁)
         if skip_ocr:
@@ -870,7 +891,7 @@ class DocumentConverter:
             dest_img_path = os.path.join(images_out_dir, dest_img_filename)
             shutil.copy2(image_path, dest_img_path)
             print(f"  [+] 成功將原始圖檔嵌入為整頁插圖: images/{dest_img_filename}")
-            return {
+            res = {
                 "page_id": page_id,
                 "page_stem": page_stem,
                 "blocks": [{
@@ -880,6 +901,8 @@ class DocumentConverter:
                     "is_full_page": True
                 }]
             }
+            save_atomic_json(raw_file, res)
+            return res
 
         orig_im = Image.open(image_path).convert("RGB")
         img_w, img_h = orig_im.size
@@ -1038,18 +1061,21 @@ class DocumentConverter:
                     "is_full_page": True
                 }]
 
-            return {
+            res = {
                 "page_id": page_id,
                 "page_stem": page_stem,
                 "blocks": final_blocks
             }
+            save_atomic_json(raw_file, res)
+            print(f"  [+] 已儲存頁面 raw 檔快取: raw_pages/{raw_file.name}")
+            return res
 
         except Exception as e:
             print(f"  [-] 警告：頁面 '{page_id}' OCR 辨識失敗或難度過高 ({e})，自動降級為整頁原始圖檔嵌入！", file=sys.stderr)
             dest_img_filename = f"{page_stem}_raw{Path(image_path).suffix.lower()}"
             dest_img_path = os.path.join(images_out_dir, dest_img_filename)
             shutil.copy2(image_path, dest_img_path)
-            return {
+            res = {
                 "page_id": page_id,
                 "page_stem": page_stem,
                 "blocks": [{
@@ -1059,6 +1085,8 @@ class DocumentConverter:
                     "is_full_page": True
                 }]
             }
+            save_atomic_json(raw_file, res)
+            return res
 
     def render_html(
         self,
@@ -1068,458 +1096,47 @@ class DocumentConverter:
         cover_image: Optional[Union[str, Path]] = None,
         layout_direction: str = "horizontal",
     ) -> str:
-        body_content = []
-
-        available_page_files = [p["page_id"] for p in page_results]
-
-        # 插入封面區塊 (Cover)
-        cover_filename = Path(cover_image).name if cover_image else None
-        if cover_filename:
-            body_content.append('<section class="book-cover-page" id="book-cover">')
-            body_content.append('  <figure class="book-figure fullpage-figure cover-figure">')
-            body_content.append(f'    <img src="images/{cover_filename}" alt="封面: {title}" class="cover-image">')
-            body_content.append('  </figure>')
-            body_content.append('</section>\n<hr class="page-divider">\n')
-
-        # 建立章節對應至起始頁面的映射 (EPUB outline 核心)
-        page_chapter_map: Dict[str, List[Dict[str, Any]]] = {}
-        if toc_data and "toc" in toc_data and toc_data["toc"]:
-            toc_entries = toc_data["toc"]
-            page_numbers: List[Tuple[Optional[int], str]] = []
-            for p_file in available_page_files:
-                nums = re.findall(r"\d+", p_file)
-                p_num = int(nums[-1]) if nums else None
-                page_numbers.append((p_num, p_file))
-
-            for c_idx, entry in enumerate(toc_entries, start=1):
-                start_p_val = entry.get("start_page")
-                try:
-                    start_p = int(start_p_val) if start_p_val is not None and str(start_p_val).strip().lower() != "none" else None
-                except (ValueError, TypeError):
-                    start_p = None
-
-                end_p_val = entry.get("end_page")
-                try:
-                    end_p = int(end_p_val) if end_p_val is not None and str(end_p_val).strip().lower() != "none" else start_p
-                except (ValueError, TypeError):
-                    end_p = start_p
-
-                target_file = None
-                if start_p is not None:
-                    # 優先 1: 精確比對頁碼
-                    for p_num, p_file in page_numbers:
-                        if p_num is not None and p_num == start_p:
-                            target_file = p_file
-                            break
-                    # 優先 2: 落在章節頁碼範圍內的第一個頁面
-                    if not target_file and end_p is not None:
-                        for p_num, p_file in page_numbers:
-                            if p_num is not None and start_p <= p_num <= end_p:
-                                target_file = p_file
-                                break
-                    # 優先 3: 依檔名規則推算 fallback
-                    if not target_file:
-                        target_file = resolve_page_filename(start_p, available_page_files)
-
-                entry_info = dict(entry)
-                entry_info["_chapter_index"] = c_idx
-                if target_file:
-                    if target_file not in page_chapter_map:
-                        page_chapter_map[target_file] = []
-                    page_chapter_map[target_file].append(entry_info)
-
-        # 插入目錄索引導覽區塊 (TOC)
-        if toc_data and "toc" in toc_data and toc_data["toc"]:
-            toc_entries = toc_data["toc"]
-            toc_title = toc_data.get("book_title", title)
-
-            body_content.append('<h1 id="toc-heading" class="chapter-heading">目錄</h1>')
-            body_content.append('<nav id="toc" class="book-toc" role="doc-toc">')
-            body_content.append(f'  <h2 class="toc-title">目錄 ({toc_title})</h2>')
-            body_content.append('  <ul class="toc-list">')
-
-            for c_idx, entry in enumerate(toc_entries, start=1):
-                start_p_val = entry.get("start_page")
-                try:
-                    start_p = int(start_p_val) if start_p_val is not None and str(start_p_val).strip().lower() != "none" else None
-                except (ValueError, TypeError):
-                    start_p = None
-
-                full_t = entry.get("full_title", entry.get("title", ""))
-                target_file = resolve_page_filename(start_p, available_page_files) if start_p is not None else ""
-
-                body_content.append('    <li class="toc-item">')
-                if start_p is not None and target_file:
-                    body_content.append(f'      <a href="#chapter-{c_idx}" class="toc-link">')
-                    body_content.append(f'        <span class="toc-chapter">{full_t}</span>')
-                    body_content.append('        <span class="toc-dots"></span>')
-                    body_content.append(f'        <span class="toc-page">第 {start_p} 頁 ({target_file})</span>')
-                    body_content.append('      </a>')
-                else:
-                    body_content.append('      <span class="toc-link noclick">')
-                    body_content.append(f'        <span class="toc-chapter">{full_t}</span>')
-                    body_content.append('      </span>')
-                body_content.append('    </li>')
-
-            body_content.append('  </ul>')
-            body_content.append('</nav>\n<hr class="page-divider">\n')
-
-        for p_res in page_results:
-            page_id = p_res["page_id"]
-            if cover_filename and Path(page_id).name.lower() == cover_filename.lower():
-                # 封面已於文檔開頭作為獨立封面展示，略過在內文中重複輸出
-                continue
-            page_stem = p_res.get("page_stem", Path(page_id).stem)
-
-            # 若此頁為章節起始頁，先插入 <h1> 章節標題 (Pandoc EPUB Outline 自動識別)
-            if page_id in page_chapter_map:
-                for chap in page_chapter_map[page_id]:
-                    chap_idx = chap.get("_chapter_index", 1)
-                    full_t = chap.get("full_title", chap.get("title", f"第 {chap_idx} 章"))
-                    body_content.append(f'<h1 id="chapter-{chap_idx}" class="chapter-heading">{full_t}</h1>\n')
-
-            body_content.append(f'<section class="book-page" id="{page_id}">')
-            body_content.append(f'  <a id="{page_stem}" class="page-anchor-target"></a>')
-            body_content.append(f'  <div class="page-anchor"><small>File: {page_id}</small></div>')
-
-            for b in p_res["blocks"]:
-                b_type = b["type"]
-                if b_type == "title":
-                    body_content.append(f'  <h2 class="book-title">{b["content"]}</h2>')
-                elif b_type == "text":
-                    paragraphs = b["content"].split("\n")
-                    for p in paragraphs:
-                        p = p.strip()
-                        if p:
-                            body_content.append(f'  <p>{p}</p>')
-                elif b_type == "figure":
-                    cap = b.get("caption", "")
-                    is_full = b.get("is_full_page", False)
-                    css_class = "book-figure fullpage-figure" if is_full else "book-figure"
-                    fig_html = f'  <figure class="{css_class}">\n    <img src="{b["img_src"]}" alt="{cap}">\n'
-                    if cap and not is_full:
-                        fig_html += f'    <figcaption>{cap}</figcaption>\n'
-                    fig_html += '  </figure>'
-                    body_content.append(fig_html)
-                elif b_type == "caption":
-                    body_content.append(f'  <p class="book-caption">{b["text"]}</p>')
-                elif b_type == "table":
-                    body_content.append(f'  <div class="table-container">\n    {b["content"]}\n  </div>')
-                elif b_type == "formula":
-                    body_content.append(f'  <div class="math-block">\n    {b["content"]}\n  </div>')
-
-        body_html_str = "\n".join(body_content)
-
-        body_class = ' class="layout-vertical"' if layout_direction == "vertical" else ''
-        vertical_css = """
-    body.layout-vertical {
-      writing-mode: vertical-rl;
-      -webkit-writing-mode: vertical-rl;
-      -epub-writing-mode: vertical-rl;
-      text-orientation: upright;
-      -webkit-text-orientation: upright;
-      max-width: none;
-      height: 90vh;
-      overflow-x: auto;
-      overflow-y: hidden;
-      padding: 30px 40px;
-    }
-    body.layout-vertical .book-page {
-      display: inline-block;
-      vertical-align: top;
-      height: 85vh;
-      margin: 0 1.5em;
-      writing-mode: vertical-rl;
-      -webkit-writing-mode: vertical-rl;
-      -epub-writing-mode: vertical-rl;
-    }
-    body.layout-vertical p {
-      margin: 0 0.8em;
-      text-indent: 2em;
-      line-height: 2.0;
-    }
-    body.layout-vertical h1,
-    body.layout-vertical h2,
-    body.layout-vertical h3 {
-      margin: 0 1.2em;
-      line-height: 1.4;
-    }
-    body.layout-vertical .book-cover-page {
-      display: inline-block;
-      vertical-align: top;
-      height: 85vh;
-      margin: 0 2em;
-    }
-    body.layout-vertical .book-toc {
-      display: inline-block;
-      vertical-align: top;
-      height: 85vh;
-      margin: 0 2em;
-      overflow-y: auto;
-    }
-""" if layout_direction == "vertical" else ""
-
-        full_html = f"""<!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{title}</title>
-  <!-- KaTeX for formula rendering -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
-          onload="renderMathInElement(document.body, {{
-            delimiters: [
-              {{left: '$$', right: '$$', display: true}},
-              {{left: '$', right: '$', display: false}},
-              {{left: '\\\\[', right: '\\\\]', display: true}},
-              {{left: '\\\\(', right: '\\\\)', display: false}}
-            ],
-            throwOnError: false
-          }});"></script>
-  <style>
-    :root {{
-      --primary-color: #2c3e50;
-      --bg-color: #fdfdfd;
-      --text-color: #2b2b2b;
-      --border-color: #e5e5e5;
-    }}
-    body {{
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Hiragino Sans GB", "Microsoft JhengHei", "Noto Serif CJK TC", serif;
-      background-color: var(--bg-color);
-      color: var(--text-color);
-      line-height: 1.85;
-      max-width: 880px;
-      margin: 0 auto;
-      padding: 30px 24px;
-    }}
-    h1, h2, h3, h4 {{
-      color: var(--primary-color);
-      font-weight: 700;
-      margin-top: 1.6em;
-      margin-bottom: 0.6em;
-      line-height: 1.35;
-    }}
-    h2.book-title {{
-      border-bottom: 2px solid var(--border-color);
-      padding-bottom: 0.3em;
-    }}
-    h1.chapter-heading {{
-      font-size: 1.85rem;
-      font-weight: 700;
-      color: var(--primary-color);
-      margin: 44px 0 20px 0;
-      padding-bottom: 10px;
-      border-bottom: 2px solid var(--accent-color, #3498db);
-      page-break-before: always;
-      break-before: page;
-    }}
-    p {{
-      margin: 0.9em 0;
-      text-align: justify;
-      word-break: break-word;
-    }}
-    .page-anchor {{
-      text-align: right;
-      color: #999;
-      margin-bottom: 8px;
-    }}
-    .page-anchor-target {{
-      display: block;
-      position: relative;
-      top: -20px;
-      visibility: hidden;
-    }}
-    .book-toc {{
-      margin: 2em 0 3em 0;
-      padding: 24px 28px;
-      background: #fafbfc;
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-    }}
-    .toc-title {{
-      margin-top: 0;
-      margin-bottom: 20px;
-      text-align: center;
-      border-bottom: 2px solid var(--border-color);
-      padding-bottom: 12px;
-      color: var(--primary-color);
-    }}
-    .toc-list {{
-      list-style: none;
-      padding: 0;
-      margin: 0;
-    }}
-    .toc-item {{
-      margin: 12px 0;
-    }}
-    .toc-link {{
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      text-decoration: none;
-      color: var(--text-color);
-      font-size: 1.05em;
-      transition: color 0.15s ease;
-    }}
-    .toc-link:hover {{
-      color: #2980b9;
-    }}
-    .toc-chapter {{
-      font-weight: 500;
-    }}
-    .toc-dots {{
-      flex: 1;
-      border-bottom: 1px dotted #bbb;
-      margin: 0 12px;
-      min-width: 20px;
-    }}
-    .toc-page {{
-      font-variant-numeric: tabular-nums;
-      color: #666;
-      font-size: 0.95em;
-      white-space: nowrap;
-    }}
-    .book-cover-page {{
-      margin: 0 auto 3em auto;
-      text-align: center;
-      page-break-after: always;
-      break-after: page;
-    }}
-    .cover-figure {{
-      margin: 0 auto;
-      max-width: 100%;
-    }}
-    .cover-image {{
-      max-height: 85vh;
-      max-width: 100%;
-      height: auto;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.15);
-      border-radius: 4px;
-      display: inline-block;
-    }}
-    .book-figure {{
-      margin: 2em auto;
-      text-align: center;
-    }}
-    .book-figure img {{
-      max-width: 96%;
-      height: auto;
-      border: 1px solid var(--border-color);
-      box-shadow: 0 4px 12px rgba(0,0,0,0.06);
-      border-radius: 6px;
-      padding: 4px;
-      background: #fff;
-    }}
-    .fullpage-figure {{
-      margin: 1.5em auto;
-      text-align: center;
-    }}
-    .fullpage-figure img {{
-      max-width: 100%;
-      height: auto;
-      border: 1px solid var(--border-color);
-      box-shadow: 0 4px 12px rgba(0,0,0,0.06);
-      border-radius: 6px;
-      display: block;
-      margin: 0 auto;
-      padding: 0;
-      background: #fff;
-    }}
-    .book-figure figcaption, .book-caption {{
-      margin-top: 10px;
-      font-size: 0.95em;
-      color: #666;
-      font-weight: 500;
-    }}
-    .table-container {{
-      margin: 2em 0;
-      overflow-x: auto;
-    }}
-    table {{
-      width: 100%;
-      border-collapse: collapse;
-      margin: 1em 0;
-      font-size: 0.98em;
-    }}
-    th, td {{
-      border: 1px solid #ccc;
-      padding: 10px 14px;
-      text-align: center;
-    }}
-    th {{
-      background-color: #f7f9fa;
-      font-weight: 600;
-    }}
-    .math-block {{
-      margin: 1.6em 0;
-      text-align: center;
-      overflow-x: auto;
-      padding: 8px 0;
-    }}
-    .page-divider {{
-      border: 0;
-      height: 1px;
-      background: var(--border-color);
-      margin: 40px 0;
-    }}
-    {vertical_css}
-  </style>
-</head>
-<body{body_class}>
-{body_html_str}
-</body>
-</html>
-"""
-        return full_html
-
-
-def build_epub_with_pandoc(
-    html_path: str,
-    epub_path: str,
-    title: str = "Scanned Book",
-    cover_image: Optional[str] = None,
-    split_level: int = 1,
-    layout_direction: str = "horizontal",
-):
-    pandoc_bin = "/opt/anaconda3/bin/pandoc"
-    if not os.path.exists(pandoc_bin):
-        pandoc_bin = "pandoc"
-
-    html_dir = os.path.dirname(os.path.abspath(html_path))
-    html_file = os.path.basename(html_path)
-    abs_epub_path = os.path.abspath(epub_path)
-
-    cmd = [
-        pandoc_bin,
-        "-f", "html+tex_math_dollars",
-        html_file,
-        "-o", abs_epub_path,
-        "--resource-path=.",
-        "--mathml",
-        "--toc",
-        "--toc-depth=3",
-        f"--split-level={split_level}",
-        "--metadata", f"title={title}",
-        "--metadata", "language=zh-TW",
-    ]
-    if layout_direction == "vertical":
-        cmd.extend([
-            "--metadata", "page-progression-direction=rtl",
-            "--metadata", "dir=rtl",
-        ])
-    if cover_image and os.path.exists(cover_image):
-        cmd.append(f"--epub-cover-image={os.path.abspath(cover_image)}")
-
-    print(f"[*] 執行 Pandoc 編譯 MathML EPUB (工作目錄: {html_dir}):\n    {' '.join(cmd)}")
-    subprocess.run(cmd, cwd=html_dir, check=True)
-    print(f"[+] EPUB 生成成功 (含原生 MathML 渲染與章節 Outline): {abs_epub_path}")
+        """
+        將所有頁面的結構化識別結果組裝為出版級 HTML5（委託 raw_to_html.render_html）
+        """
+        return render_html(
+            page_results=page_results,
+            title=title,
+            toc_data=toc_data,
+            cover_image=cover_image,
+            layout_direction=layout_direction,
+        )
 
 
 def _worker_process_page(args_tuple):
     """多進程 Worker 任務函數"""
-    task_idx, img_path, output_dir, batch_size, skip_ocr, models_dir, yolo_weights, glm_model_dir, layout_direction, repetition_penalty, no_repeat_ngram_size = args_tuple
+    (
+        task_idx,
+        img_path,
+        output_dir,
+        batch_size,
+        skip_ocr,
+        force_ocr,
+        raw_pages_dir,
+        models_dir,
+        yolo_weights,
+        glm_model_dir,
+        layout_direction,
+        repetition_penalty,
+        no_repeat_ngram_size,
+    ) = args_tuple
+
+    # 優先檢查快取命中：若已存在有效 raw 檔且未強制重跑，直接回傳，完全不載入 AI 模型或佔用 VRAM
+    page_stem = Path(img_path).stem
+    raw_dir = Path(raw_pages_dir) if raw_pages_dir else (Path(output_dir) / "raw_pages")
+    raw_file = raw_dir / f"{page_stem}.json"
+    if not force_ocr:
+        cached = get_cached_page_result(raw_file, output_dir)
+        if cached is not None:
+            print(f"[*] Worker 任務 #{task_idx+1}: 頁面 {Path(img_path).name} 快取命中 ({raw_file.name})，略過 OCR")
+            cached["_task_idx"] = task_idx
+            return cached
+
     # 每個子進程獨立初始化 Converter (套用傳入之模型目錄與版面排版方向)
     converter = DocumentConverter(
         models_dir=models_dir,
@@ -1530,7 +1147,13 @@ def _worker_process_page(args_tuple):
         repetition_penalty=repetition_penalty,
         no_repeat_ngram_size=no_repeat_ngram_size,
     )
-    res = converter.process_page(img_path, output_dir, skip_ocr=skip_ocr)
+    res = converter.process_page(
+        img_path,
+        output_dir,
+        skip_ocr=skip_ocr,
+        force_ocr=force_ocr,
+        raw_pages_dir=raw_pages_dir,
+    )
     res["_task_idx"] = task_idx
     return res
 
@@ -1662,6 +1285,16 @@ def main():
         default=10,
         help="禁止連續重複的 n-gram 大小 (預設: 10，防止長引導點/破折號無限重複)"
     )
+    parser.add_argument(
+        "--raw-pages-dir",
+        default=None,
+        help="OCR raw 頁面資料快取目錄 (JSON 檔儲存路徑，預設: <output>/raw_pages)"
+    )
+    parser.add_argument(
+        "--force-ocr",
+        action="store_true",
+        help="強制重新執行 OCR 推論，忽略已存在的 raw_pages 快取 JSON 檔"
+    )
     args = attach_preference_and_template_support(parser, "pipeline")
 
     os.makedirs(args.output, exist_ok=True)
@@ -1744,6 +1377,7 @@ def main():
         out_path / "images",
         out_path / "images_opt_tmp",
         out_path / "pipeline_temp",
+        out_path / "raw_pages",
     ]
     resolved_samples = [
         Path(s).resolve()
@@ -1813,10 +1447,32 @@ def main():
         ori_text = "直排 (豎排 / vertical-rl)" if resolved_layout_direction == "vertical" else "橫排 (horizontal)"
         print(f"[*] 設定書籍版面排版方向: {ori_text}")
 
-    all_page_results = []
+    raw_pages_dir = Path(args.raw_pages_dir).resolve() if args.raw_pages_dir else (Path(args.output).resolve() / "raw_pages")
+    raw_pages_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.workers > 1:
-        print(f"[*] 啟動多進程並行處理 (Worker 數: {args.workers})...")
+    # 檢查已完成快取之頁面 (斷點續傳)
+    cached_map = {}
+    uncached_indices = []
+    if not args.force_ocr:
+        for idx, img_p in enumerate(image_files):
+            stem = img_p.stem
+            rf = raw_pages_dir / f"{stem}.json"
+            c_res = get_cached_page_result(rf, args.output)
+            if c_res is not None:
+                c_res["_task_idx"] = idx
+                cached_map[idx] = c_res
+            else:
+                uncached_indices.append(idx)
+    else:
+        uncached_indices = list(range(len(image_files)))
+
+    print(f"[*] 頁面快取狀態: 共 {len(image_files)} 頁，已快取 {len(cached_map)} 頁，待推論 {len(uncached_indices)} 頁 (快取目錄: {raw_pages_dir})")
+
+    if not uncached_indices:
+        print("[🚀] 全書所有頁面之 OCR raw 檔均已齊全！免載入 AI 模型，直接進入 HTML / EPUB 組裝階段！")
+        all_page_results = [cached_map[i] for i in range(len(image_files))]
+    elif args.workers > 1:
+        print(f"[*] 啟動多進程並行處理 (Worker 數: {args.workers}，待處理 {len(uncached_indices)} 頁)...")
         import torch.multiprocessing as mp
         # 設置 spawn 模式以安全共享 CUDA
         try:
@@ -1827,10 +1483,12 @@ def main():
         tasks = [
             (
                 idx,
-                str(img_path),
+                str(image_files[idx]),
                 args.output,
                 args.batch_size,
-                should_skip_ocr(img_path, skip_targets),
+                should_skip_ocr(image_files[idx], skip_targets),
+                args.force_ocr,
+                str(raw_pages_dir),
                 args.models_dir,
                 args.yolo_weights,
                 args.glm_model_dir,
@@ -1838,12 +1496,13 @@ def main():
                 args.repetition_penalty,
                 args.no_repeat_ngram_size,
             )
-            for idx, img_path in enumerate(image_files)
+            for idx in uncached_indices
         ]
         with mp.Pool(processes=args.workers) as pool:
-            all_page_results = pool.map(_worker_process_page, tasks)
-        # 確保結果嚴格依照任務與編排順序排序
-        all_page_results.sort(key=lambda x: x["_task_idx"])
+            worker_results = pool.map(_worker_process_page, tasks)
+        for res in worker_results:
+            cached_map[res["_task_idx"]] = res
+        all_page_results = [cached_map[i] for i in range(len(image_files))]
     else:
         converter = DocumentConverter(
             models_dir=args.models_dir,
@@ -1854,20 +1513,22 @@ def main():
             repetition_penalty=args.repetition_penalty,
             no_repeat_ngram_size=args.no_repeat_ngram_size,
         )
-        for idx, img_path in enumerate(image_files):
+        for idx in uncached_indices:
+            img_path = image_files[idx]
             p_res = converter.process_page(
                 str(img_path),
                 args.output,
-                skip_ocr=should_skip_ocr(img_path, skip_targets)
+                skip_ocr=should_skip_ocr(img_path, skip_targets),
+                force_ocr=args.force_ocr,
+                raw_pages_dir=raw_pages_dir,
             )
             p_res["_task_idx"] = idx
-            all_page_results.append(p_res)
+            cached_map[idx] = p_res
+        all_page_results = [cached_map[i] for i in range(len(image_files))]
 
     html_out_path = os.path.join(args.output, "book.html")
-    # 初始化一個臨時實例來 render HTML
-    temp_conv = DocumentConverter.__new__(DocumentConverter)
-    full_html = temp_conv.render_html(
-        all_page_results,
+    full_html = render_html(
+        page_results=all_page_results,
         title=args.title,
         toc_data=toc_data,
         cover_image=actual_cover,

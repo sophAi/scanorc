@@ -73,13 +73,15 @@ flowchart TD
     end
     B4 --> C["乾淨標準化圖檔 (preprocessed_samples/)"]
     C --> D["模組 2: pipeline.py"]
-    subgraph S2 ["AI 核心辨識流水線"]
+    subgraph S2 ["AI 核心辨識流水線 (支援中斷續傳快取)"]
         D --> D1["DocLayout-YOLO (版面元素分區)"]
         D1 --> D2["插圖高解析自動裁切提取 (images/)"]
-        D1 --> D3["GLM-OCR 0.9B (多進程批次識別)"]
-        D3 --> D4["文字 / LaTeX 公式 / 表格 Markdown 整合"]
+        D1 --> D3["GLM-OCR 0.9B (單圖安全推論 / 多工並行)"]
+        D3 --> D4["每頁純文字 Raw 結構化快取 (raw_pages/*.json)"]
     end
     D4 --> E["語意結構化 HTML (book.html)"]
+    D4 -.-> D5["獨立組裝工具: raw_to_html.py (免 GPU / 秒級輸出)"]
+    D5 --> E
     E --> F["Pandoc MathML 編譯器"]
     F --> G["標準 EPUB3 電子書 (book.epub)"]
 ```
@@ -162,7 +164,12 @@ sudo apt install ./deb_dist/scanorc_*.deb
 安裝後系統將註冊以下全域指令與桌面圖示：
 * `scanorc-gui`：啟動 ScanORC 桌面圖形控制台（應用程式選單亦有「ScanORC」捷徑圖示）。
 * `scanorc`：一鍵執行端到端書籍數位化處理 (`process_book.py`)。
+* `scanorc-raw2html`：由 `raw_pages/` 與 `toc.json` 免 GPU 極速秒級組裝 HTML / EPUB (`raw_to_html.py`)。
+* `scanorc-pipeline`：AI 版面分析、OCR 辨識與斷點續傳快取流水線 (`pipeline.py`)。
 * `scanorc-batch`：批次多書數位化調度器 (`batch_process.py`)。
+* `scanorc-toc`：目錄頁結構化抽取工具 (`extract_toc.py`)。
+* `scanorc-html2epub`：HTML 與 images 目錄秒轉 EPUB 工具 (`html_to_epub.py`)。
+* `scanorc-recompress`：圖片批次重新壓縮與縮放工具 (`recompress_images.py`)。
 * `scanorc-models`：一鍵下載/更新 AI 模型權重至 `/opt/models`。
 * `scanorc-setup`：自動化建立/更新 ScanORC 專屬 Python 深度學習環境（`sudo scanorc-setup` 建立全機共用環境，或 `scanorc-setup --user` 建立個人環境）。
 
@@ -426,6 +433,15 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--models-dir` | - | `None` | AI 模型權重母目錄（自動解析子目錄內 YOLO 權重與 GLM 模型；亦可透過 `SCANORC_MODELS_DIR` 環境變數指定） |
 | `--yolo-weights` | - | `None` | 明確指定 DocLayout-YOLO 權重檔案 (.pt) 路徑（優先級高於 `--models-dir`） |
 | `--glm-model-dir` | - | `None` | 明確指定 GLM-OCR 模型目錄路徑（優先級高於 `--models-dir`） |
+| `--raw-pages-dir` | - | `None` (預設 `<output>/raw_pages`) | OCR 各頁純文字 JSON 結構快取存放目錄 |
+| `--force-ocr` | - | `False` | 強制忽略既有 `raw_pages/` 快取，一律重新調用 AI 模型推論 |
+
+> [!TIP]
+> **全自動斷點續傳快取 (Breakpoint Resume Cache)**：
+> 1. **每頁獨立原子寫入**：每當單一頁面完成版面分析與 OCR 識別，立即以原子操作寫入 `<output>/raw_pages/<stem>.json`。
+> 2. **意外中斷無痛恢復**：因電力、顯存或人為中斷重新執行時，`pipeline.py` 會自動統計快取命中率，自動跳過已辨識完成的頁面。
+> 3. **全書齊全 0 延遲秒級直出 (0 VRAM / 0s Latency)**：若全書所有頁面之 raw 檔均已齊全，將**完全略過 DocLayout-YOLO 與 GLM-OCR 模型載入**，零顯存佔用直接在 0.1 秒內秒級組裝 HTML 與 EPUB。
+> 4. **插圖實體存在性防護**：載入快取時會自動檢驗 `type == "figure"` 引用的插圖檔案是否實體存在。若圖片被誤刪，快取自動失效重跑 OCR 重新裁切。
 
 ---
 
@@ -507,7 +523,30 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 
 ---
 
-### 7. `batch_process.py`（多書籍目錄批次數位化調度器）
+### 7. `raw_to_html.py`（OCR Raw 檔純文字直接組裝 HTML / EPUB 工具）
+
+| 參數 | 簡寫 | 預設值 | 說明 |
+| :--- | :---: | :---: | :--- |
+| `raw_dir` | `--input`, `-i`, `--raw-dir` | `output/raw_pages` | 各頁結構化 JSON 存放目錄（亦支援傳入 output 目錄自動解析） |
+| `--output` | `-o` | `<raw_dir>/../book.html` | 輸出 HTML 檔案路徑 |
+| `--toc` | - | `None` | 目錄結構 JSON 檔案路徑（未指定則自動在同層或上層目錄搜尋 `toc.json`） |
+| `--title` | `-T` | 自動提取 | 書名 / 文件標題（未指定時優先自 toc.json 讀取） |
+| `--cover` | `--cover-image` | `None` (自動搜尋) | 封面圖檔路徑（未指定則自動尋找 Cover-01.jpg 並複製確保不破圖） |
+| `--layout-direction` | `--direction` | `auto` | 排版方向（`auto`: 優先繼承 toc.json；支援 `horizontal` 橫排、`vertical` 直排） |
+| `--vertical` | - | - | 快捷選項：強制設定為直排模式 (豎排 / vertical-rl / RTL 翻頁) |
+| `--horizontal` | - | - | 快捷選項：強制設定為橫排模式 (horizontal / LTR 翻頁) |
+| `--cover-first` | `--no-cover-first` | `True` | 頁面編排順序：是否將 Cover-*.json 編排於 Page-*.json 之前 |
+| `--epub` | - | `False` | 生成 HTML 後是否同步調用 Pandoc 編譯為標準 MathML EPUB3 電子書 |
+| `--preference` | `-p`, `--config` | `None` | 載入 JSON 偏好設定檔並套用所有參數 |
+| `--template` | `-t`, `--dump-config` | `None` | 匯出包含此腳本全部參數預設值之標準 JSON 範本檔 |
+
+> [!TIP]
+> **極速輕量與純文字版面調整**：
+> `raw_to_html.py` 為純 Python 標準庫實作（免載入 PyTorch、YOLO 或 GLM，佔用 0 VRAM），執行時間僅需 **0.05 秒**。當使用者需要微調版面方向、替換封面、修改章節錨點或手動修正 `raw_pages/*.json` 中的文字/圖表設定時，可直接透過本工具在 0.1 秒內秒級重新生成 HTML 與 EPUB，完全免去耗時的 AI 模型推論。
+
+---
+
+### 8. `batch_process.py`（多書籍目錄批次數位化調度器）
 
 | 參數 | 簡寫 | 預設值 | 說明 |
 | :--- | :---: | :---: | :--- |
@@ -535,7 +574,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 
 ---
 
-### 8. `images_compressed.py` / `recompress_images.py`（JPG 與 PNG 批次重新壓縮與縮放工具）
+### 9. `images_compressed.py` / `recompress_images.py`（JPG 與 PNG 批次重新壓縮與縮放工具）
 
 | 參數 | 簡寫 | 預設值 | 說明 |
 | :--- | :---: | :---: | :--- |
@@ -598,7 +637,8 @@ scanorc/
 ├── recompress_jpg.py        # images_compressed.py 之捷徑符號連結
 ├── preprocess_scantailor.py # 出版級轉正、留白裁切與版心標準化前處理引擎
 ├── extract_toc.py           # 目錄頁結構化抽取工具 (方案 A: GLM-OCR -> JSON)
-├── pipeline.py              # DocLayout-YOLO + GLM-OCR 端到端轉換流水線
+├── pipeline.py              # DocLayout-YOLO + GLM-OCR 端到端轉換流水線 (含斷點續傳快取)
+├── raw_to_html.py           # [獨立組裝] OCR Raw 檔與 TOC 索引直接組裝 HTML/EPUB (免 GPU)
 ├── bin/                     # [自帶] 免安裝 ScanTailor-CLI 可攜版與執行庫 (方案 A - 作法 1)
 │   ├── scantailor-cli       # 可攜式啟動腳本 (自動配置庫路徑)
 │   ├── scantailor-cli-bin   # 原始 C++ 二進位檔
@@ -611,7 +651,8 @@ scanorc/
 └── output/                  # [Ignored] 預設轉換產物輸出目錄
     ├── book.html            # 語意 HTML5
     ├── book.epub            # MathML EPUB3 電子書
-    └── images/              # 自動提取之插圖
+    ├── images/              # 自動提取之插圖
+    └── raw_pages/           # 每頁 OCR 純文字 JSON 結構快取檔 (*.json)
 ```
 
 ---
