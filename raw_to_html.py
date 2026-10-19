@@ -444,7 +444,9 @@ def render_html(
             b_type = b.get("type")
             if b_type == "title":
                 title_text = clean_math_syntax(b.get("content", ""))
-                body_content.append(f'  <h2 class="book-title">{title_text}</h2>')
+                clean_t = re.sub(r"```(?:markdown)?\s*```", "", title_text).strip()
+                if clean_t:
+                    body_content.append(f'  <h2 class="book-title">{clean_t}</h2>')
             elif b_type == "text":
                 content = clean_math_syntax(b.get("content", ""))
                 # 檢查正文中是否包含獨立顯示公式塊 ($$ ... $$ 或 \[ ... \])，避免被 \n 切散為多個 <p>

@@ -521,9 +521,10 @@ class DocumentConverter:
                         is_near_top_edge = (y1 <= int(img_h * 0.10) and bh <= 160)
                         is_near_bottom_edge = (y2 >= int(img_h * 0.90) and bh <= 120)
                         if not is_near_top_edge and not is_near_bottom_edge:
-                            if bh > 200 or (bw > 200 and bh > 60):
+                            # 必須具備足夠的字元寬度 (直排單字寬度通常 >= 45px)，避免將純直線/斜紋切邊裝飾誤校正為文字
+                            if (bh > 200 and bw >= 45) or (bw > 200 and bh > 60):
                                 cls_name = "plain text"
-                                print(f"  [!] 區塊校正：長條文字 {xyxy} 遠離天頭/地腳 (H={bh})，由 abandon 校正為 {cls_name}")
+                                print(f"  [!] 區塊校正：長條文字 {xyxy} 遠離天頭/地腳 (H={bh}, W={bw})，由 abandon 校正為 {cls_name}")
 
                     boxes.append({
                         "cls_id": cls_id,
@@ -591,6 +592,18 @@ class DocumentConverter:
 
         filtered_boxes = self._filter_contained_boxes(boxes_info, img_h=img_h)
         merged_boxes = self._merge_adjacent_text_columns(filtered_boxes, img_w=img_w, img_h=img_h, layout_direction=effective_direction)
+        # 直排章節標題語意校正：若直排版面中有單列頂部起排且較短的文字區塊，校正為 title
+        if effective_direction == "vertical":
+            for b in merged_boxes:
+                if b["cls_name"] == "plain text":
+                    bx1, by1, bx2, by2 = b["bbox"]
+                    bw = bx2 - bx1
+                    bh = by2 - by1
+                    if bw <= 140 and by1 <= int(img_h * 0.08) and bh <= int(img_h * 0.65):
+                        b["cls_name"] = "title"
+                        b["cls_id"] = 0
+                        print(f"  [+] 直排標題語意校正: {b['bbox']} -> title")
+
         sorted_boxes = self._sort_reading_order(merged_boxes, layout_direction=effective_direction)
         return sorted_boxes
 
@@ -649,6 +662,15 @@ class DocumentConverter:
                     gap_x = rx1 - lx2
                     max_gap = max(350, int(img_w * 0.25))
                     if gap_x > max_gap:
+                        continue
+
+                    # 若其中一欄為頂部起排的單列標題 (寬度 <= 140px, y1 接近天頭, 且高度短於正文)，
+                    # 且兩者間存在顯著留白間距 (gap_x >= 120px)，應視為獨立標題，不予合併
+                    rw = rx2 - rx1
+                    lw = lx2 - lx1
+                    if (rw <= 140 and ry1 <= int(img_h * 0.08) and (ry2 - ry1) < (ly2 - ly1) * 0.75 and gap_x >= 120):
+                        continue
+                    if (lw <= 140 and ly1 <= int(img_h * 0.08) and (ly2 - ly1) < (ry2 - ry1) * 0.75 and gap_x >= 120):
                         continue
 
                     # 檢查中間是否有阻擋元素 (title, figure, table 等非 plain text / abandon 元素)
@@ -738,8 +760,14 @@ class DocumentConverter:
                             else:
                                 continue
 
-                        # 情況 1：同類別包含 (b1 嚴格小於 b2) -> 捨棄較小的 b1
+                        # 情況 1：同類別包含 (b1 大部分在 b2 內) -> 讓 b2 吸收 b1 外擴邊界後捨棄 b1
                         if b1["cls_name"] == b2["cls_name"]:
+                            b2["bbox"] = [
+                                min(b1["bbox"][0], b2["bbox"][0]),
+                                min(b1["bbox"][1], b2["bbox"][1]),
+                                max(b1["bbox"][2], b2["bbox"][2]),
+                                max(b1["bbox"][3], b2["bbox"][3]),
+                            ]
                             is_contained = True
                             break
                         # 情況 2：無表格時的 table_footnote / table_caption 與 plain text / title 高度重疊
@@ -888,6 +916,9 @@ class DocumentConverter:
 
                 raw_text = self.processor.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
                 cleaned_text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw_text).strip()
+                # 徹底過濾無文字時 GLM-OCR 回覆的空 Markdown 代碼塊標記
+                if re.sub(r"```(?:markdown)?\s*```", "", cleaned_text).strip() == "":
+                    cleaned_text = ""
 
                 if cleaned_text and "\x00" not in raw_text:
                     best_cleaned_text = cleaned_text
