@@ -128,30 +128,129 @@ def extract_html_title(html_content: str, fallback: str = "Scanned Book") -> str
 
 
 def build_epub_with_pandoc(html_path: Path, epub_path: Path, title: str):
+    try:
+        from raw_to_html import build_epub_with_pandoc as _raw_build_epub
+        _raw_build_epub(html_path, epub_path, title=title, layout_direction="auto")
+        return
+    except Exception as e:
+        print(f"[*] 嘗試 raw_to_html.build_epub_with_pandoc 失敗 ({e})，使用內建 Pandoc 流程")
+
     pandoc_bin = "/opt/anaconda3/bin/pandoc"
     if not os.path.exists(pandoc_bin):
-        pandoc_bin = "pandoc"
+        pandoc_bin = shutil.which("pandoc") or "pandoc"
 
     html_dir = html_path.parent
     html_file = html_path.name
     abs_epub_path = epub_path.resolve()
 
+    # 檢查直排設定
+    is_vertical = False
+    toc_candidate = html_dir / "toc.json"
+    if not toc_candidate.exists():
+        toc_candidate = html_dir.parent / "toc.json"
+    if toc_candidate.exists():
+        try:
+            import json
+            with open(toc_candidate, "r", encoding="utf-8") as f:
+                tdata = json.load(f)
+                tdir = str(tdata.get("layout_direction", "")).strip().lower()
+                if tdir in ("vertical", "vert", "vertical-rl"):
+                    is_vertical = True
+        except Exception:
+            pass
+    if not is_vertical and html_path.exists():
+        try:
+            h_content = html_path.read_text(encoding="utf-8", errors="replace")
+            if "layout-vertical" in h_content or "vertical-rl" in h_content:
+                is_vertical = True
+        except Exception:
+            pass
+
+    auto_css_path = html_dir / f"__epub_auto_style_{html_path.stem}.css"
+    base_epub_css = """
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Hiragino Sans GB", "Microsoft JhengHei", "Noto Serif CJK TC", serif;
+  line-height: 1.85;
+  color: #2b2b2b;
+}
+.page-anchor {
+  text-align: right;
+  color: #888;
+  font-size: 0.75rem;
+  margin-bottom: 6px;
+  user-select: none;
+}
+.page-anchor small {
+  font-size: 0.85em;
+}
+.book-figure {
+  margin: 1.5em auto;
+  text-align: center;
+}
+.book-figure img {
+  max-width: 96%;
+  height: auto;
+}
+.fullpage-figure img {
+  max-width: 100%;
+}
+"""
+    if is_vertical:
+        base_epub_css += """
+html, body {
+  writing-mode: vertical-rl;
+  -webkit-writing-mode: vertical-rl;
+  -epub-writing-mode: vertical-rl;
+  text-orientation: mixed;
+  -webkit-text-orientation: mixed;
+}
+body {
+  padding: 20px 30px;
+}
+p {
+  margin: 0 0.8em;
+  text-indent: 2em;
+  line-height: 2.0;
+}
+.page-anchor {
+  text-align: right;
+  color: #888;
+  font-size: 0.75rem;
+  margin: 0 0.5em 0 0;
+}
+"""
+    auto_css_path.write_text(base_epub_css, encoding="utf-8")
+
     cmd = [
         pandoc_bin,
-        "-f", "html+tex_math_dollars",
+        "-f", "html+tex_math_dollars+tex_math_single_backslash+tex_math_double_backslash",
         html_file,
         "-o", str(abs_epub_path),
         "--resource-path=.",
+        f"--css={auto_css_path.name}",
         "--mathml",
         "--toc",
         "--toc-depth=3",
         "--metadata", f"title={title}",
         "--metadata", "language=zh-TW",
     ]
+    if is_vertical:
+        cmd.extend([
+            "--metadata", "page-progression-direction=rtl",
+            "--metadata", "dir=rtl",
+        ])
+
     print(f"[*] 執行 Pandoc 重新編譯 MathML EPUB (工作目錄: {html_dir}):")
     print(f"    {' '.join(cmd)}")
-    subprocess.run(cmd, cwd=html_dir, check=True)
-    print(f"[+] EPUB 生成成功: {abs_epub_path}")
+    try:
+        subprocess.run(cmd, cwd=html_dir, check=True)
+        print(f"[+] EPUB 生成成功: {abs_epub_path}")
+    finally:
+        if auto_css_path.exists():
+            try:
+                auto_css_path.unlink()
+            except Exception:
+                pass
 
 
 def list_html_pages(html_path: Path):
@@ -355,7 +454,7 @@ def main():
 
         replacement_inner = f"""
   <a id="{p_stem}" class="page-anchor-target"></a>
-  <div class="page-anchor"><small>File: {p_id} (已手動替換為原圖)</small></div>
+  <div class="page-anchor"><small>{p_id} (已手動替換為原圖)</small></div>
   <figure class="book-figure fullpage-figure">
     <img src="images/{dest_filename}" alt="{p_id}">
   </figure>

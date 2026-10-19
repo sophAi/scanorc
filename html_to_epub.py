@@ -435,6 +435,19 @@ def convert_html_to_epub(
         verbose=verbose,
     )
 
+    # 清除 HTML 中可能存在的舊版 "File: " 前綴，只保留頁面檔名
+    cleaned_html, file_prefix_cleaned = re.subn(
+        r'(<div\s+class=["\']page-anchor["\'][^>]*>\s*(?:<small>)?)\s*File:\s*',
+        r'\1',
+        updated_html,
+        flags=re.IGNORECASE,
+    )
+    if file_prefix_cleaned > 0:
+        updated_html = cleaned_html
+        injected = True
+        if verbose:
+            print(f"[*] 已自動移除 HTML 中 {file_prefix_cleaned} 處 'File: ' 頁面錨點前綴")
+
     compile_target_name = html_name
     temp_html_path = None
     if injected:
@@ -547,6 +560,7 @@ def convert_html_to_epub(
     body {
       writing-mode: vertical-rl;
       -webkit-writing-mode: vertical-rl;
+      -epub-writing-mode: vertical-rl;
       text-orientation: mixed;
     }
 """
@@ -564,6 +578,7 @@ def convert_html_to_epub(
     body, body.layout-vertical {
       writing-mode: horizontal-tb !important;
       -webkit-writing-mode: horizontal-tb !important;
+      -epub-writing-mode: horizontal-tb !important;
     }
 """
         style_end = updated_html.find("</style>")
@@ -578,12 +593,176 @@ def convert_html_to_epub(
     if actual_cover:
         cmd.append(f"--epub-cover-image={str(actual_cover)}")
 
+    # 構造 EPUB 內嵌專屬樣式表 (Pandoc 於 HTML 轉 EPUB 時會解構 AST 並剝離 <head> 內的 <style>，必須透過 --css 傳入)
+    auto_css_path = html_dir / f"__epub_auto_style_{h_path.stem}.css"
+    base_epub_css = """/* ScanORC Base EPUB Styles */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Hiragino Sans GB", "Microsoft JhengHei", "Noto Serif CJK TC", serif;
+  line-height: 1.85;
+  color: #2b2b2b;
+}
+p {
+  margin: 0.8em 0;
+  text-align: justify;
+}
+h1, h2, h3, h4 {
+  font-weight: bold;
+  line-height: 1.35;
+}
+h1.chapter-heading {
+  font-size: 1.85rem;
+  font-weight: 700;
+  color: #1a202c;
+  margin: 44px 0 20px 0;
+  padding-bottom: 10px;
+  border-bottom: 2px solid #3498db;
+  page-break-before: always;
+  break-before: page;
+}
+.page-anchor {
+  text-align: right;
+  color: #888;
+  font-size: 0.75rem;
+  margin-bottom: 6px;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+.page-anchor small {
+  font-size: 0.85em;
+}
+.book-figure {
+  margin: 1.5em auto;
+  text-align: center;
+}
+.book-figure img {
+  max-width: 96%;
+  height: auto;
+}
+.fullpage-figure {
+  margin: 0;
+  text-align: center;
+}
+.fullpage-figure img {
+  max-width: 100%;
+  max-height: 98vh;
+  object-fit: contain;
+}
+.book-cover-page {
+  text-align: center;
+  margin: 0 auto;
+}
+.book-cover-page img {
+  max-width: 100%;
+  max-height: 98vh;
+  object-fit: contain;
+}
+.book-caption {
+  margin-top: 8px;
+  font-size: 0.9em;
+  color: #666;
+  font-weight: 500;
+}
+.table-container {
+  margin: 1.5em 0;
+  overflow-x: auto;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+}
+th, td {
+  border: 1px solid #ddd;
+  padding: 8px 12px;
+  text-align: left;
+}
+th {
+  background-color: #f7f9fa;
+  font-weight: 600;
+}
+.math-block {
+  margin: 1.5em 0;
+  text-align: center;
+}
+"""
+    if is_vertical:
+        vertical_epub_css = """
+/* ScanORC Vertical-RL Styles */
+html, body {
+  writing-mode: vertical-rl;
+  -webkit-writing-mode: vertical-rl;
+  -epub-writing-mode: vertical-rl;
+  text-orientation: mixed;
+  -webkit-text-orientation: mixed;
+}
+body {
+  padding: 20px 30px;
+}
+p {
+  margin: 0 0.8em;
+  text-indent: 2em;
+  line-height: 2.0;
+}
+h1, h2, h3 {
+  margin: 0 1.2em;
+  line-height: 1.4;
+  font-weight: bold;
+}
+.page-anchor {
+  text-align: right;
+  color: #888;
+  font-size: 0.75rem;
+  margin: 0 0.5em 0 0;
+}
+.book-figure, .fullpage-figure {
+  margin: 0 1.5em;
+  display: inline-block;
+  vertical-align: top;
+}
+.book-figure img {
+  max-width: 100%;
+  max-height: 85vh;
+  height: auto;
+  object-fit: contain;
+}
+.fullpage-figure img {
+  max-width: 100%;
+  max-height: 92vh;
+  object-fit: contain;
+}
+.book-cover-page {
+  margin: 0 2em;
+  display: inline-block;
+  vertical-align: top;
+}
+.book-cover-page img {
+  max-width: 100%;
+  max-height: 92vh;
+  object-fit: contain;
+}
+"""
+        base_epub_css += vertical_epub_css
+    elif clean_dir in ("horizontal", "horizon", "horizontal-tb"):
+        horizontal_override_css = """
+/* Force Horizontal-TB */
+html, body, body.layout-vertical {
+  writing-mode: horizontal-tb !important;
+  -webkit-writing-mode: horizontal-tb !important;
+  -epub-writing-mode: horizontal-tb !important;
+}
+"""
+        base_epub_css += horizontal_override_css
+
     if css_path:
         c_path = Path(css_path).resolve()
         if c_path.exists():
-            cmd.append(f"--css={str(c_path)}")
+            custom_css = c_path.read_text(encoding="utf-8", errors="replace")
+            base_epub_css += "\n" + custom_css
         elif verbose:
             print(f"[-] 警告：指定的 CSS 檔案不存在: {css_path}")
+
+    auto_css_path.write_text(base_epub_css, encoding="utf-8")
+    cmd.append(f"--css={auto_css_path.name}")
 
     if verbose:
         print(f"\n[*] 執行 Pandoc 指令 (工作目錄: {html_dir}):")
@@ -617,6 +796,11 @@ def convert_html_to_epub(
         if temp_html_path and temp_html_path.exists():
             try:
                 temp_html_path.unlink()
+            except Exception:
+                pass
+        if auto_css_path and auto_css_path.exists():
+            try:
+                auto_css_path.unlink()
             except Exception:
                 pass
 

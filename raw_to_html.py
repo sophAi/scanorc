@@ -378,7 +378,7 @@ def render_html(
 
         body_content.append(f'<section class="book-page" id="{page_id}">')
         body_content.append(f'  <a id="{page_stem}" class="page-anchor-target"></a>')
-        body_content.append(f'  <div class="page-anchor"><small>File: {page_id}</small></div>')
+        body_content.append(f'  <div class="page-anchor"><small>{page_id}</small></div>')
 
         for b in p_res.get("blocks", []):
             b_type = b.get("type")
@@ -433,8 +433,8 @@ def render_html(
       writing-mode: vertical-rl;
       -webkit-writing-mode: vertical-rl;
       -epub-writing-mode: vertical-rl;
-      text-orientation: upright;
-      -webkit-text-orientation: upright;
+      text-orientation: mixed;
+      -webkit-text-orientation: mixed;
       max-width: none;
       height: 90vh;
       overflow-x: auto;
@@ -460,6 +460,12 @@ def render_html(
     body.layout-vertical h3 {
       margin: 0 1.2em;
       line-height: 1.4;
+    }
+    body.layout-vertical .page-anchor {
+      text-align: right;
+      color: #888;
+      font-size: 0.75rem;
+      margin: 0 0.5em 0 0;
     }
     body.layout-vertical .book-cover-page {
       display: inline-block;
@@ -539,8 +545,13 @@ def render_html(
     }}
     .page-anchor {{
       text-align: right;
-      color: #999;
-      margin-bottom: 8px;
+      color: #888;
+      font-size: 0.75rem;
+      margin-bottom: 6px;
+      letter-spacing: 0.02em;
+    }}
+    .page-anchor small {{
+      font-size: 0.85em;
     }}
     .page-anchor-target {{
       display: block;
@@ -698,9 +709,10 @@ def build_epub_with_pandoc(
     title: str = "Scanned Book",
     cover_image: Optional[str] = None,
     split_level: int = 1,
-    layout_direction: str = "horizontal",
+    layout_direction: str = "auto",
+    css_path: Optional[str] = None,
 ):
-    """呼叫 Pandoc 編譯 MathML EPUB3 電子書"""
+    """呼叫 Pandoc 編譯 MathML EPUB3 電子書 (支援原生直排/橫排排版、MathML 與頁碼標籤樣式)"""
     pandoc_bin = "/opt/anaconda3/bin/pandoc"
     if not os.path.exists(pandoc_bin):
         pandoc_bin = "pandoc"
@@ -709,12 +721,160 @@ def build_epub_with_pandoc(
     html_file = os.path.basename(html_path)
     abs_epub_path = os.path.abspath(epub_path)
 
+    # 判斷是否為直排 (豎排 / vertical-rl) 排版
+    clean_dir = str(layout_direction).strip().lower()
+    is_vertical = False
+    if clean_dir in ("vertical", "vert", "vertical-rl"):
+        is_vertical = True
+    elif clean_dir in ("horizontal", "horizon", "horizontal-tb"):
+        is_vertical = False
+    else:  # auto: 檢測 HTML 檔案中是否包含直排標記
+        try:
+            with open(html_path, "r", encoding="utf-8", errors="replace") as f_chk:
+                html_snippet = f_chk.read(5000)
+            if "vertical-rl" in html_snippet or "layout-vertical" in html_snippet:
+                is_vertical = True
+        except Exception:
+            is_vertical = False
+
+    # 構造 EPUB 內嵌專屬樣式表 (Pandoc EPUB 不讀取 HTML <style> 標籤，必須透過 --css 傳入)
+    auto_css_path = Path(html_dir) / f"__epub_auto_style_{Path(html_file).stem}.css"
+    base_epub_css = """
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Hiragino Sans GB", "Microsoft JhengHei", "Noto Serif CJK TC", serif;
+  line-height: 1.85;
+  color: #2b2b2b;
+}
+.page-anchor {
+  text-align: right;
+  color: #888;
+  font-size: 0.75rem;
+  margin-bottom: 6px;
+  user-select: none;
+}
+.page-anchor small {
+  font-size: 0.85em;
+}
+.book-figure {
+  margin: 1.5em auto;
+  text-align: center;
+}
+.book-figure img {
+  max-width: 96%;
+  height: auto;
+}
+.fullpage-figure img {
+  max-width: 100%;
+}
+.book-caption {
+  margin-top: 8px;
+  font-size: 0.9em;
+  color: #666;
+  font-weight: 500;
+}
+.table-container {
+  margin: 1.5em 0;
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+}
+th, td {
+  border: 1px solid #ccc;
+  padding: 8px 12px;
+  text-align: center;
+}
+th {
+  background-color: #f7f9fa;
+  font-weight: 600;
+}
+.math-block {
+  margin: 1.5em 0;
+  text-align: center;
+}
+"""
+    if is_vertical:
+        vertical_epub_css = """
+html, body {
+  writing-mode: vertical-rl;
+  -webkit-writing-mode: vertical-rl;
+  -epub-writing-mode: vertical-rl;
+  text-orientation: mixed;
+  -webkit-text-orientation: mixed;
+}
+body {
+  padding: 20px 30px;
+}
+p {
+  margin: 0 0.8em;
+  text-indent: 2em;
+  line-height: 2.0;
+}
+h1, h2, h3 {
+  margin: 0 1.2em;
+  line-height: 1.4;
+  font-weight: bold;
+}
+.page-anchor {
+  text-align: right;
+  color: #888;
+  font-size: 0.75rem;
+  margin: 0 0.5em 0 0;
+}
+.book-figure, .fullpage-figure {
+  margin: 0 1.5em;
+  display: inline-block;
+  vertical-align: top;
+}
+.book-figure img {
+  max-width: 100%;
+  max-height: 85vh;
+  height: auto;
+  object-fit: contain;
+}
+.fullpage-figure img {
+  max-width: 100%;
+  max-height: 92vh;
+  object-fit: contain;
+}
+.book-cover-page {
+  margin: 0 2em;
+  display: inline-block;
+  vertical-align: top;
+}
+.book-cover-page img {
+  max-width: 100%;
+  max-height: 92vh;
+  object-fit: contain;
+}
+"""
+        base_epub_css += vertical_epub_css
+    elif clean_dir in ("horizontal", "horizon", "horizontal-tb"):
+        horizontal_override_css = """
+/* Force Horizontal-TB */
+html, body, body.layout-vertical {
+  writing-mode: horizontal-tb !important;
+  -webkit-writing-mode: horizontal-tb !important;
+  -epub-writing-mode: horizontal-tb !important;
+}
+"""
+        base_epub_css += horizontal_override_css
+
+    if css_path and Path(css_path).exists():
+        custom_css = Path(css_path).read_text(encoding="utf-8", errors="replace")
+        base_epub_css += "\n" + custom_css
+
+    auto_css_path.write_text(base_epub_css, encoding="utf-8")
+
     cmd = [
         pandoc_bin,
         "-f", "html+tex_math_dollars+tex_math_single_backslash+tex_math_double_backslash",
         html_file,
         "-o", abs_epub_path,
         "--resource-path=.",
+        f"--css={auto_css_path.name}",
         "--mathml",
         "--toc",
         "--toc-depth=3",
@@ -722,7 +882,7 @@ def build_epub_with_pandoc(
         "--metadata", f"title={title}",
         "--metadata", "language=zh-TW",
     ]
-    if layout_direction == "vertical":
+    if is_vertical:
         cmd.extend([
             "--metadata", "page-progression-direction=rtl",
             "--metadata", "dir=rtl",
@@ -731,8 +891,15 @@ def build_epub_with_pandoc(
         cmd.append(f"--epub-cover-image={os.path.abspath(cover_image)}")
 
     print(f"[*] 執行 Pandoc 編譯 MathML EPUB (工作目錄: {html_dir}):\n    {' '.join(cmd)}")
-    subprocess.run(cmd, cwd=html_dir, check=True)
-    print(f"[+] EPUB 生成成功 (含原生 MathML 渲染與章節 Outline): {abs_epub_path}")
+    try:
+        subprocess.run(cmd, cwd=html_dir, check=True)
+        print(f"[+] EPUB 生成成功 (含原生 MathML 渲染與章節 Outline): {abs_epub_path}")
+    finally:
+        if auto_css_path.exists():
+            try:
+                auto_css_path.unlink()
+            except Exception:
+                pass
 
 
 def raw_pages_to_html(
