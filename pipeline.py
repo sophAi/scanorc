@@ -41,6 +41,8 @@ from raw_to_html import (
     build_epub_with_pandoc,
     save_atomic_json,
     get_cached_page_result,
+    clean_math_syntax,
+    normalize_formula_content,
 )
 
 try:
@@ -65,25 +67,7 @@ except ImportError:
         return "auto"
 
 
-def clean_math_syntax(text: str) -> str:
-    """
-    清理並標準化 LaTeX 數學語法：
-    1. 去除行內公式 $ ... $ 內部頭尾的空白字元（Pandoc 與標準 TeX 語法嚴格禁止 $ 緊接空格）。
-    2. 將公式末尾包含的句點或逗號移至公式外，例如 `$x.$` -> `$x$.`
-    """
-    if not text:
-        return ""
 
-    def fix_inline_math(match):
-        inner = match.group(1).strip()
-        trailing_punct = ""
-        if inner and inner[-1] in ".，,。；;":
-            trailing_punct = inner[-1]
-            inner = inner[:-1].strip()
-        return f"${inner}${trailing_punct}"
-
-    cleaned = re.sub(r"(?<!\$)\$(?!\$)([^\$\n]+?)(?<!\$)\$(?!\$)", fix_inline_math, text)
-    return cleaned
 
 
 def resolve_page_filename(page_num: int, existing_filenames: Optional[List[str]] = None) -> str:
@@ -1090,8 +1074,7 @@ class DocumentConverter:
 
                     elif b_type == "formula":
                         print(f"  [+] [公式完成] {res_text[:50]}...")
-                        if not res_text.startswith("$$"):
-                            res_text = f"$$\n{res_text}\n$$"
+                        res_text = normalize_formula_content(res_text)
                         html_blocks_draft[draft_idx]["content"] = res_text
 
                     elif b_type == "title":

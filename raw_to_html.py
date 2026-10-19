@@ -67,8 +67,10 @@ def book_page_sort_key(p: Union[str, Path], cover_first: bool = True) -> Tuple[i
 def clean_math_syntax(text: str) -> str:
     """
     清理並標準化 LaTeX 數學語法：
-    1. 去除行內公式 $ ... $ 內部頭尾的空白字元。
+    1. 去除行內公式 $ ... $ 內部頭尾的空白字元（符合 Pandoc 與標準 TeX 語法）。
     2. 將公式末尾包含的句點或逗號移至公式外，例如 `$x.$` -> `$x$.`
+    3. 保留非公式的貨幣金額（如 $100 到 $200），避免誤將貨幣符號當作公式處理。
+    4. 標準化 \\( ... \\) 行內公式為 $ ... $。
     """
     if not text:
         return ""
@@ -81,8 +83,51 @@ def clean_math_syntax(text: str) -> str:
             inner = inner[:-1].strip()
         return f"${inner}${trailing_punct}"
 
-    cleaned = re.sub(r"(?<!\$)\$(?!\$)([^\$\n]+?)(?<!\$)\$(?!\$)", fix_inline_math, text)
+    def fix_paren_math(match):
+        inner = match.group(1).strip()
+        trailing_punct = ""
+        if inner and inner[-1] in ".，,。；;":
+            trailing_punct = inner[-1]
+            inner = inner[:-1].strip()
+        return f"${inner}${trailing_punct}"
+
+    # 1. 處理 $ ... $ 行內公式 (結尾 $ 後不可緊接數字，避免金額被誤抓)
+    cleaned = re.sub(r"(?<!\$)\$(?!\$)\s*([^\$\n]+?)\s*(?<!\$)\$(?!\$|\d)", fix_inline_math, text)
+
+    # 2. 處理 \( ... \) 行內公式，標準化為 $ ... $
+    cleaned = re.sub(r"\\\(\s*([^\n\\]+?)\s*\\\)", fix_paren_math, cleaned)
+
     return cleaned
+
+
+def normalize_formula_content(content: str) -> str:
+    """
+    清理並標準化獨立公式 (isolate_formula) 區塊內容：
+    1. 剝離可能多重巢狀包裹的定界符 (如 $$, \\[, \\(, $)
+    2. 統一以標準的 $$ ... $$ 格式包覆，確保在 HTML (KaTeX) 與 EPUB (Pandoc MathML) 中均能 100% 正確渲染
+    """
+    if not content:
+        return ""
+    c = content.strip()
+    while True:
+        stripped = False
+        if c.startswith("$$") and c.endswith("$$") and len(c) >= 4:
+            c = c[2:-2].strip()
+            stripped = True
+        elif (c.startswith(r"\[") or c.startswith("\\[")) and (c.endswith(r"\]") or c.endswith("\\]")) and len(c) >= 4:
+            c = c[2:-2].strip()
+            stripped = True
+        elif (c.startswith(r"\(") or c.startswith("\\(")) and (c.endswith(r"\)") or c.endswith("\\)")) and len(c) >= 4:
+            c = c[2:-2].strip()
+            stripped = True
+        elif c.startswith("$") and c.endswith("$") and len(c) >= 2 and not c.startswith("$$"):
+            c = c[1:-1].strip()
+            stripped = True
+        if not stripped:
+            break
+    if not c:
+        return ""
+    return f"$$\n{c}\n$$"
 
 
 def resolve_page_filename(page_num: int, existing_filenames: Optional[List[str]] = None) -> str:
@@ -338,15 +383,29 @@ def render_html(
         for b in p_res.get("blocks", []):
             b_type = b.get("type")
             if b_type == "title":
-                body_content.append(f'  <h2 class="book-title">{b["content"]}</h2>')
+                title_text = clean_math_syntax(b.get("content", ""))
+                body_content.append(f'  <h2 class="book-title">{title_text}</h2>')
             elif b_type == "text":
-                paragraphs = b.get("content", "").split("\n")
-                for p in paragraphs:
-                    p = p.strip()
-                    if p:
-                        body_content.append(f'  <p>{p}</p>')
+                content = clean_math_syntax(b.get("content", ""))
+                # 檢查正文中是否包含獨立顯示公式塊 ($$ ... $$ 或 \[ ... \])，避免被 \n 切散為多個 <p>
+                math_pattern = re.compile(r"(\$\$.*?\$\$|\\\[.*?\\\])", re.DOTALL)
+                parts = math_pattern.split(content)
+                for part in parts:
+                    if not part.strip():
+                        continue
+                    if (part.startswith("$$") and part.endswith("$$") and len(part) >= 4) or \
+                       ((part.startswith(r"\[") or part.startswith("\\[")) and (part.endswith(r"\]") or part.endswith("\\]"))):
+                        norm_f = normalize_formula_content(part)
+                        if norm_f:
+                            body_content.append(f'  <div class="math-block">\n    {norm_f}\n  </div>')
+                    else:
+                        paragraphs = part.split("\n")
+                        for p in paragraphs:
+                            p = p.strip()
+                            if p:
+                                body_content.append(f'  <p>{p}</p>')
             elif b_type == "figure":
-                cap = b.get("caption", "")
+                cap = clean_math_syntax(b.get("caption", ""))
                 is_full = b.get("is_full_page", False)
                 css_class = "book-figure fullpage-figure" if is_full else "book-figure"
                 fig_html = f'  <figure class="{css_class}">\n    <img src="{b["img_src"]}" alt="{cap}">\n'
@@ -355,11 +414,14 @@ def render_html(
                 fig_html += '  </figure>'
                 body_content.append(fig_html)
             elif b_type == "caption":
-                body_content.append(f'  <p class="book-caption">{b.get("text", "")}</p>')
+                cap_text = clean_math_syntax(b.get("text", ""))
+                body_content.append(f'  <p class="book-caption">{cap_text}</p>')
             elif b_type == "table":
                 body_content.append(f'  <div class="table-container">\n    {b.get("content", "")}\n  </div>')
             elif b_type == "formula":
-                body_content.append(f'  <div class="math-block">\n    {b.get("content", "")}\n  </div>')
+                norm_formula = normalize_formula_content(b.get("content", ""))
+                if norm_formula:
+                    body_content.append(f'  <div class="math-block">\n    {norm_formula}\n  </div>')
 
         body_content.append('</section>\n<hr class="page-divider">\n')
 
@@ -649,7 +711,7 @@ def build_epub_with_pandoc(
 
     cmd = [
         pandoc_bin,
-        "-f", "html+tex_math_dollars",
+        "-f", "html+tex_math_dollars+tex_math_single_backslash+tex_math_double_backslash",
         html_file,
         "-o", abs_epub_path,
         "--resource-path=.",

@@ -458,7 +458,7 @@ def convert_html_to_epub(
     # 7. 組裝 Pandoc 命令
     cmd = [
         pandoc_exec,
-        "-f", "html+tex_math_dollars",
+        "-f", "html+tex_math_dollars+tex_math_single_backslash+tex_math_double_backslash",
         compile_target_name,
         "-o", str(out_epub),
     ]
