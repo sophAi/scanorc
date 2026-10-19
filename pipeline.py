@@ -452,8 +452,8 @@ class DocumentConverter:
         max_ocr_dim: int = 1024,
         batch_size: int = 2,
         layout_direction: str = "auto",
-        repetition_penalty: float = 1.1,
-        no_repeat_ngram_size: int = 10,
+        repetition_penalty: Optional[float] = None,
+        no_repeat_ngram_size: Optional[int] = None,
     ):
         self.resolved_yolo, self.resolved_glm = resolve_model_paths(models_dir, yolo_weights, glm_model_dir)
         self.device = device if torch.cuda.is_available() else "cpu"
@@ -538,7 +538,7 @@ class DocumentConverter:
                         is_near_bottom_edge = (y2 >= int(img_h * 0.90) and bh <= 120)
                         if not is_near_top_edge and not is_near_bottom_edge:
                             if bh > 200 or (bw > 200 and bh > 60):
-                                cls_name = "title" if bw <= 100 else "plain text"
+                                cls_name = "plain text"
                                 print(f"  [!] 區塊校正：長條文字 {xyxy} 遠離天頭/地腳 (H={bh})，由 abandon 校正為 {cls_name}")
 
                     boxes.append({
@@ -585,7 +585,27 @@ class DocumentConverter:
             except Exception:
                 effective_direction = "horizontal"
 
-        filtered_boxes = self._filter_contained_boxes(boxes_info)
+        # 頁眉頁腳與角落裝飾智慧過濾：
+        # 若本頁面在下方具有實質主體內容 (如 y1 >= 12% 頁高 或 y2 >= 20% 頁高)，
+        # 且頂部天頭區域 (y2 <= 8% 頁高 且 bh <= 160) 出現橫排文字條 (bw > bh) 或微小角落插圖 (bw <= 200, bh <= 200)，
+        # 該元素屬於書籍天頭固定頁眉 (書名、篇章名、推薦序標題) 或頁眉裝飾圖標，一律標記為 abandon，避免污染正文。
+        has_substantive_lower_content = any(
+            b["cls_name"] not in ("abandon",) and (b["bbox"][1] >= int(img_h * 0.12) or b["bbox"][3] >= int(img_h * 0.20))
+            for b in boxes_info
+        )
+        if has_substantive_lower_content:
+            for b in boxes_info:
+                bx1, by1, bx2, by2 = b["bbox"]
+                bbw = bx2 - bx1
+                bbh = by2 - by1
+                if by2 <= int(img_h * 0.08) and bbh <= 160:
+                    if effective_direction == "vertical":
+                        if bbw > bbh or (b["cls_name"] == "figure" and bbw <= 200 and bbh <= 200 and bx1 <= int(img_w * 0.20)):
+                            if b["cls_name"] != "abandon":
+                                print(f"  [-] 天頭頁眉/角落裝飾過濾: {b['cls_name']} {b['bbox']} -> abandon")
+                                b["cls_name"] = "abandon"
+
+        filtered_boxes = self._filter_contained_boxes(boxes_info, img_h=img_h)
         merged_boxes = self._merge_adjacent_text_columns(filtered_boxes, img_w=img_w, img_h=img_h, layout_direction=effective_direction)
         sorted_boxes = self._sort_reading_order(merged_boxes, layout_direction=effective_direction)
         return sorted_boxes
@@ -693,7 +713,8 @@ class DocumentConverter:
         if w <= 0 or h <= 0:
             return im
 
-        # 僅針對直排狹長條 (高度遠大於寬度，如 h/w > max_ratio) 進行水平兩側補白
+        # 針對直排狹長條 (高度大於寬度且長寬比 h/w > max_ratio) 進行水平兩側補白，
+        # 保證視覺編碼器擁有足夠的水平 token (至少 1:2 長寬比)，杜絕注意力坍塌與 \x00 死循環
         if h > w and (h / max(1, w)) > max_ratio:
             target_w = max(w, int(h / max_ratio))
             new_im = Image.new("RGB", (target_w, h), (255, 255, 255))
@@ -703,7 +724,7 @@ class DocumentConverter:
 
         return im
 
-    def _filter_contained_boxes(self, boxes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _filter_contained_boxes(self, boxes: List[Dict[str, Any]], img_h: Optional[int] = None) -> List[Dict[str, Any]]:
         if not boxes:
             return []
 
@@ -741,11 +762,15 @@ class DocumentConverter:
                         if not has_actual_table and b1["cls_name"] in ("table_footnote", "table_caption") and b2["cls_name"] in ("plain text", "title"):
                             is_contained = True
                             break
-                        # 情況 3：若重疊嚴重且 b2 具有更具體的正文屬性或更高置信度
+                        # 情況 3：頁眉頁腳區域中的 abandon 優先權 (真正的頁眉頁碼常被弱置信度的 plain text/title 誤檢重疊)
+                        if b1["cls_name"] == "abandon" or b2["cls_name"] == "abandon":
+                            if b1["cls_name"] != "abandon" and b2["cls_name"] == "abandon":
+                                is_contained = True
+                                break
+                            elif b1["cls_name"] == "abandon" and b2["cls_name"] != "abandon":
+                                continue
+                        # 情況 4：若重疊嚴重且 b2 具有更具體的正文屬性或更高置信度
                         if b1["cls_name"] not in ("plain text", "title") and b2["cls_name"] in ("plain text", "title"):
-                            is_contained = True
-                            break
-                        elif b1["cls_name"] == "abandon" and b2["cls_name"] != "abandon":
                             is_contained = True
                             break
             if not is_contained:
@@ -826,18 +851,41 @@ class DocumentConverter:
             if self.no_repeat_ngram_size is not None and self.no_repeat_ngram_size > 0:
                 gen_kwargs["no_repeat_ngram_size"] = self.no_repeat_ngram_size
 
-            # 自適應多階緩衝補白推論 (Adaptive Multi-tier Cushion Retry)
-            # 第 1 階：標準補白 max_ratio=4.0 (對大部分直排長條與一般標題最精確)
-            # 第 2 階：若輸出為空或注意力坍塌 (\x00)，自動切換至寬補白 max_ratio=2.0 (避免超長細條視覺 token 不足)
-            # 第 3 階：若依然為空，切換為原圖直推 (無補白，避免大留白干擾)
-            candidate_ratios = [4.0, 2.0, None]
+            # 自適應多階裁切與尺度縮放推論 (Adaptive Multi-tier Crop & Scale Retry)
+            # 若為直排細長條 (h > w * 2.0)，優先嘗試原圖與 2.0 補白 (保證視覺 token 充足杜絕 \x00 注意力坍塌)；
+            # 若為橫排或常規比例，優先嘗試原圖與 0.5x 縮放 (還原超大字型至安全視覺尺度)。
+            if crop_img.height > crop_img.width * 2.0:
+                candidate_tiers = [
+                    (1.0, None),
+                    (1.0, 2.0),
+                    (0.5, 2.0),
+                    (0.5, None),
+                    (0.75, None),
+                ]
+            else:
+                candidate_tiers = [
+                    (1.0, None),
+                    (0.5, None),
+                    (1.0, 2.0),
+                    (0.5, 2.0),
+                    (0.75, None),
+                ]
             best_cleaned_text = ""
 
-            for r_tier in candidate_ratios:
-                if r_tier is not None:
-                    cushioned_img = self._pad_cushion(crop_img, max_ratio=r_tier)
+            for scale, r_tier in candidate_tiers:
+                if scale != 1.0:
+                    nw = max(1, int(crop_img.width * scale))
+                    nh = max(1, int(crop_img.height * scale))
+                    if nw < 10 or nh < 10:
+                        continue
+                    tier_im = crop_img.resize((nw, nh), Image.Resampling.LANCZOS)
                 else:
-                    cushioned_img = crop_img
+                    tier_im = crop_img
+
+                if r_tier is not None:
+                    cushioned_img = self._pad_cushion(tier_im, max_ratio=r_tier)
+                else:
+                    cushioned_img = tier_im
 
                 w, h = cushioned_img.size
                 ocr_img = cushioned_img.copy()
@@ -965,13 +1013,12 @@ class DocumentConverter:
                     print(f"  [-] [拋棄] {cls_name:15s} (conf: {conf:.2f}) bbox: {bbox}")
                     continue
 
-                pad_x = 20
-                pad_y = 10
+                # 精確裁切 YOLO bbox 區域 (周邊緩衝補白由 _pad_cushion 統一以純白背景補足，避免捲入周邊掃描雜訊)
                 crop_box = (
-                    max(0, x1 - pad_x),
-                    max(0, y1 - pad_y),
-                    min(img_w, x2 + pad_x),
-                    min(img_h, y2 + pad_y)
+                    max(0, x1),
+                    max(0, y1),
+                    min(img_w, x2),
+                    min(img_h, y2)
                 )
                 crop_im = orig_im.crop(crop_box)
 
@@ -1348,14 +1395,14 @@ def main():
     parser.add_argument(
         "--repetition-penalty",
         type=float,
-        default=1.1,
-        help="GLM-OCR 生成文字時的重複懲罰係數 (預設: 1.1，防止引導線或符號陷入無限重複死循環)"
+        default=None,
+        help="GLM-OCR 生成文字時的重複懲罰係數 (預設: None，如需防止長重複可設 1.05~1.1)"
     )
     parser.add_argument(
         "--no-repeat-ngram-size",
         type=int,
-        default=10,
-        help="禁止連續重複的 n-gram 大小 (預設: 10，防止長引導點/破折號無限重複)"
+        default=None,
+        help="禁止連續重複的 n-gram 大小 (預設: None)"
     )
     parser.add_argument(
         "--raw-pages-dir",

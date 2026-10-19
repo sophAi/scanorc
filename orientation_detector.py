@@ -235,14 +235,20 @@ def detect_page_orientation(
                 "projection": proj_res,
                 "bbox": bbox_res,
             }
-        if bbox_res["confidence"] > 0.85 and proj_res["confidence"] < 0.7:
-            return {
-                "orientation": bbox_res["orientation"],
-                "confidence": bbox_res["confidence"],
-                "method": "bbox_override",
-                "projection": proj_res,
-                "bbox": bbox_res,
-            }
+        # 當 BBox 統計具有明確排版方向 (例如文字框皆為橫向或豎向，且反方向計數為 0 或置信度 >= 0.80)
+        # 且投影法置信度未達絕對優勢 (如 < 0.85 或低於 BBox 置信度) 時，以文字框排版方向為準
+        if bbox_res["orientation"] != "ambiguous":
+            has_exclusive_direction = (bbox_res["v_count"] == 0 and bbox_res["h_count"] >= 2) or \
+                                      (bbox_res["h_count"] == 0 and bbox_res["v_count"] >= 2)
+            if (has_exclusive_direction and bbox_res["confidence"] >= 0.75) or \
+               (bbox_res["confidence"] >= 0.80 and (proj_res["confidence"] < 0.85 or bbox_res["confidence"] > proj_res["confidence"])):
+                return {
+                    "orientation": bbox_res["orientation"],
+                    "confidence": bbox_res["confidence"],
+                    "method": "bbox_override",
+                    "projection": proj_res,
+                    "bbox": bbox_res,
+                }
 
     return {
         "orientation": proj_res["orientation"] if proj_res["orientation"] != "ambiguous" else "horizontal",
