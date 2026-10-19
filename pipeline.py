@@ -1365,7 +1365,7 @@ def main():
         action="store_const",
         const="vertical",
         default=argparse.SUPPRESS,
-        help="快捷選項：強制設定為直排模式 (豎排 / vertical-rl / RTL 翻頁)"
+        help="快捷選項：強制設定為直排模式 (豎排 / vertical-rl 排版與 OCR 排序，HTML 直排)"
     )
     parser.add_argument(
         "--horizontal",
@@ -1373,7 +1373,7 @@ def main():
         action="store_const",
         const="horizontal",
         default=argparse.SUPPRESS,
-        help="快捷選項：強制設定為橫排模式 (horizontal / LTR 翻頁)"
+        help="快捷選項：強制設定為橫排模式 (horizontal 排版與 OCR 排序)"
     )
     parser.add_argument(
         "--repetition-penalty",
@@ -1686,7 +1686,7 @@ def main():
             title=args.title,
             cover_image=str(actual_cover) if actual_cover else None,
             split_level=1,
-            layout_direction=resolved_layout_direction,
+            layout_direction="horizontal",
         )
 
     print("\n[🎉] 全流程轉換成功完成！")

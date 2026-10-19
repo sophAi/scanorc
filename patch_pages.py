@@ -22,6 +22,11 @@ from typing import List, Set, Dict, Optional, Tuple
 
 from config_utils import attach_preference_and_template_support
 
+try:
+    from raw_to_html import sanitize_epub_math
+except ImportError:
+    sanitize_epub_math = lambda p: 0
+
 VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
 
 
@@ -194,29 +199,21 @@ body {
 .fullpage-figure img {
   max-width: 100%;
 }
-"""
-    if is_vertical:
-        base_epub_css += """
-html, body {
-  writing-mode: vertical-rl;
-  -webkit-writing-mode: vertical-rl;
-  -epub-writing-mode: vertical-rl;
-  text-orientation: mixed;
-  -webkit-text-orientation: mixed;
+/* ScanORC Base EPUB Styles (Strict Horizontal-TB / LTR) */
+html, body, body.layout-vertical {
+  writing-mode: horizontal-tb !important;
+  -webkit-writing-mode: horizontal-tb !important;
+  -epub-writing-mode: horizontal-tb !important;
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
 }
-body {
-  padding: 20px 30px;
-}
-p {
-  margin: 0 0.8em;
-  text-indent: 2em;
-  line-height: 2.0;
-}
-.page-anchor {
-  text-align: right;
-  color: #888;
-  font-size: 0.75rem;
-  margin: 0 0.5em 0 0;
+.book-page, .book-figure, .book-cover-page, .book-toc {
+  writing-mode: horizontal-tb !important;
+  -webkit-writing-mode: horizontal-tb !important;
+  -epub-writing-mode: horizontal-tb !important;
+  height: auto !important;
+  display: block !important;
 }
 """
     auto_css_path.write_text(base_epub_css, encoding="utf-8")
@@ -234,16 +231,12 @@ p {
         "--metadata", f"title={title}",
         "--metadata", "language=zh-TW",
     ]
-    if is_vertical:
-        cmd.extend([
-            "--metadata", "page-progression-direction=rtl",
-            "--metadata", "dir=rtl",
-        ])
 
-    print(f"[*] 執行 Pandoc 重新編譯 MathML EPUB (工作目錄: {html_dir}):")
+    print(f"[*] 執行 Pandoc 重新編譯 MathML EPUB (橫排標準排版, 工作目錄: {html_dir}):")
     print(f"    {' '.join(cmd)}")
     try:
         subprocess.run(cmd, cwd=html_dir, check=True)
+        sanitize_epub_math(abs_epub_path)
         print(f"[+] EPUB 生成成功: {abs_epub_path}")
     finally:
         if auto_css_path.exists():

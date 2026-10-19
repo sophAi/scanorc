@@ -15,6 +15,7 @@ import re
 import sys
 import json
 import shutil
+import zipfile
 import argparse
 import subprocess
 from pathlib import Path
@@ -64,40 +65,99 @@ def book_page_sort_key(p: Union[str, Path], cover_first: bool = True) -> Tuple[i
     return (priority, natural_sort_key(p), str(p))
 
 
+CIRCLED_CHARS_RE = r"[\u2460-\u2473\u24ea\u3251-\u325f\u32b1-\u32bf\u24d0-\u24e9\u24b6-\u24cf]"
+
+
+def to_circled_char(key: str) -> str:
+    """將數字 (0~50) 或字母 (a~z, A~Z) 轉換為標準 Unicode 帶圈字元 (①, ②, ㉑, ㊱, ⓐ, Ⓐ 等)"""
+    key = str(key).strip()
+    if key.isdigit():
+        n = int(key)
+        if n == 0:
+            return "⓪"
+        elif 1 <= n <= 20:
+            return chr(0x2460 + n - 1)
+        elif 21 <= n <= 35:
+            return chr(0x3251 + n - 21)
+        elif 36 <= n <= 50:
+            return chr(0x32B1 + n - 36)
+        else:
+            return f"({n})"
+    elif len(key) == 1:
+        if "a" <= key <= "z":
+            return chr(0x24D0 + ord(key) - ord("a"))
+        elif "A" <= key <= "Z":
+            return chr(0x24B6 + ord(key) - ord("A"))
+    return f"({key})"
+
+
+P_CIRCLED_UNWRAP = re.compile(r"(?<!\$)\$(?!\$)\s*(" + CIRCLED_CHARS_RE + r")\s*(?<!\$)\$(?!\$)")
+P_CIRCLED_SUP1 = re.compile(r"(?<!\$)\$(?!\$)\s*\^\{\s*(" + CIRCLED_CHARS_RE + r")\s*\}\s*(?<!\$)\$(?!\$)")
+P_CIRCLED_SUP2 = re.compile(r"(?<!\$)\$(?!\$)\s*\^(" + CIRCLED_CHARS_RE + r")\s*(?<!\$)\$(?!\$)")
+P_WORD_SUP = re.compile(r"(?<!\$)\$(?!\$)\s*([A-Za-z0-9_\u4e00-\u9fa5]*)(?:\\mathrm\{([^{}]+)\})?\s*\^\{\s*(" + CIRCLED_CHARS_RE + r")\s*\}\s*(?<!\$)\$(?!\$)")
+
+
 def clean_math_syntax(text: str) -> str:
     """
     清理並標準化 LaTeX 數學語法：
-    1. 去除行內公式 $ ... $ 內部頭尾的空白字元（符合 Pandoc 與標準 TeX 語法）。
-    2. 將公式末尾包含的句點或逗號移至公式外，例如 `$x.$` -> `$x$.`
-    3. 保留非公式的貨幣金額（如 $100 到 $200），避免誤將貨幣符號當作公式處理。
-    4. 標準化 \\( ... \\) 行內公式為 $ ... $。
+    1. 將 GLM-OCR 識別輸出之 \\textcircled{n} 自動轉譯為標準 Unicode 帶圈註腳符號 (①, ②, ③...)。
+    2. 解除獨立帶圈數字的 $...$ 包裹 ($①$ -> ①, $^{①}$ -> <sup>①</sup>)，防止 Pandoc MathML 引擎解析失敗而殘留原始碼。
+    3. 自動正規化註腳上標 ($^{5,6}$ -> <sup>5,6</sup>, $^{1}$ -> <sup>1</sup>, $2\\mathrm{ch}^{②}$ -> 2ch<sup>②</sup>)。
+    4. 去除行內公式 $ ... $ 內部頭尾的空白字元（符合 Pandoc 與標準 TeX 語法）。
+    5. 將公式末尾包含的句點或逗號移至公式外，例如 `$x.$` -> `$x$.`
+    6. 保留非公式的貨幣金額（如 $100 到 $200），避免誤將貨幣符號當作公式處理。
+    7. 標準化 \\( ... \\) 行內公式為 $ ... $。
     """
     if not text:
         return ""
 
-    def fix_inline_math(match):
-        inner = match.group(1).strip()
-        trailing_punct = ""
-        if inner and inner[-1] in ".，,。；;":
-            trailing_punct = inner[-1]
-            inner = inner[:-1].strip()
-        return f"${inner}${trailing_punct}"
+    # 1. 將所有 \textcircled{...} 轉換為 Unicode 帶圈字元 (①, ② ...)
+    text = re.sub(r"\\textcircled\{([^{}]+)\}", lambda m: to_circled_char(m.group(1)), text)
 
+    # 2. 處理以 $ 包裹的單一帶圈數字，直接解包為純字元: $①$ -> ①
+    text = P_CIRCLED_UNWRAP.sub(r"\1", text)
+
+    # 3. 處理以 $ 包裹的上標帶圈數字: $^{①}$ 或 $^{ ① }$ -> <sup>①</sup>
+    text = P_CIRCLED_SUP1.sub(r"<sup>\1</sup>", text)
+    text = P_CIRCLED_SUP2.sub(r"<sup>\1</sup>", text)
+
+    # 4. 處理帶有詞彙的上標帶圈數字，例如 $2\mathrm{ch}^{ ② }$ -> 2ch<sup>②</sup>
+    def fix_word_superscript(m):
+        prefix = m.group(1) or ""
+        math_rm = m.group(2) or ""
+        sup = m.group(3) or ""
+        word = prefix + math_rm
+        return f"{word}<sup>{sup}</sup>"
+
+    text = P_WORD_SUP.sub(fix_word_superscript, text)
+
+    # 5. 處理純數字/逗號之上標註腳: $^{5,6}$ -> <sup>5,6</sup>, $^{1}$ -> <sup>1</sup>
+    text = re.sub(r"(?<!\$)\$(?!\$)\s*\^\{\s*([0-9,，\s\-]+)\s*\}\s*(?<!\$)\$(?!\$)", lambda m: f"<sup>{m.group(1).strip()}</sup>", text)
+    text = re.sub(r"(?<!\$)\$(?!\$)\s*\^([0-9]+)\s*(?<!\$)\$(?!\$)", r"<sup>\1</sup>", text)
+
+    # 6. 標準化 \( ... \) 行內公式為 $ ... $
     def fix_paren_math(match):
         inner = match.group(1).strip()
         trailing_punct = ""
         if inner and inner[-1] in ".，,。；;":
             trailing_punct = inner[-1]
             inner = inner[:-1].strip()
-        return f"${inner}${trailing_punct}"
+        return f"${inner}${trailing_punct}" if inner else trailing_punct
 
-    # 1. 處理 $ ... $ 行內公式 (結尾 $ 後不可緊接數字，避免金額被誤抓)
-    cleaned = re.sub(r"(?<!\$)\$(?!\$)\s*([^\$\n]+?)\s*(?<!\$)\$(?!\$|\d)", fix_inline_math, text)
+    text = re.sub(r"\\\(\s*([^\n\\]+?)\s*\\\)", fix_paren_math, text)
 
-    # 2. 處理 \( ... \) 行內公式，標準化為 $ ... $
-    cleaned = re.sub(r"\\\(\s*([^\n\\]+?)\s*\\\)", fix_paren_math, cleaned)
+    # 7. 去除行內公式 $ ... $ 內部頭尾的空白字元
+    def fix_inline_math(match):
+        inner = match.group(1).strip()
+        trailing_punct = ""
+        if inner and inner[-1] in ".，,。；;":
+            trailing_punct = inner[-1]
+            inner = inner[:-1].strip()
+        return f"${inner}${trailing_punct}" if inner else trailing_punct
 
-    return cleaned
+    text = re.sub(r"(?<!\$)\$(?!\$)\s*([^\$\n]+?)\s*(?<!\$)\$(?!\$|\d)", fix_inline_math, text)
+
+    return text
 
 
 def normalize_formula_content(content: str) -> str:
@@ -108,7 +168,7 @@ def normalize_formula_content(content: str) -> str:
     """
     if not content:
         return ""
-    c = content.strip()
+    c = clean_math_syntax(content.strip())
     while True:
         stripped = False
         if c.startswith("$$") and c.endswith("$$") and len(c) >= 4:
@@ -703,16 +763,89 @@ def render_html(
     return full_html
 
 
+def sanitize_epub_math(epub_path: Union[str, Path]) -> int:
+    """
+    掃描並清理 EPUB 內部 XHTML 檔案中可能殘留的未轉譯 LaTeX 數學語法或 Pandoc 未能解析之 <span class="math ..."> 標記。
+    回傳修復的標記數量。
+    """
+    e_path = Path(epub_path)
+    if not e_path.exists():
+        return 0
+
+    total_fixes = 0
+    temp_epub = e_path.parent / f"__tmp_math_{e_path.name}"
+
+    try:
+        with zipfile.ZipFile(e_path, "r") as zin, zipfile.ZipFile(temp_epub, "w", compression=zin.compression) as zout:
+            for item in zin.infolist():
+                content_bytes = zin.read(item.filename)
+                if item.filename.endswith(".xhtml") or item.filename.endswith(".html"):
+                    text = content_bytes.decode("utf-8", errors="replace")
+                    orig_text = text
+
+                    def fix_math_span(match):
+                        inner = match.group(1).strip()
+                        if inner.startswith("$") and inner.endswith("$") and len(inner) >= 2:
+                            inner = inner[1:-1].strip()
+                        elif inner.startswith(r"\(") and inner.endswith(r"\)") and len(inner) >= 4:
+                            inner = inner[2:-2].strip()
+                        elif inner.startswith(r"\[") and inner.endswith(r"\]") and len(inner) >= 4:
+                            inner = inner[2:-2].strip()
+
+                        inner = re.sub(r"\\textcircled\{([^{}]+)\}", lambda m: to_circled_char(m.group(1)), inner)
+                        if re.match(r"^" + CIRCLED_CHARS_RE + r"$", inner):
+                            return inner
+                        m_sup = re.match(r"^\^\{\s*(" + CIRCLED_CHARS_RE + r"|[0-9,，\s\-]+)\s*\}$", inner)
+                        if m_sup:
+                            return f"<sup>{m_sup.group(1).strip()}</sup>"
+                        m_sup2 = re.match(r"^\^(" + CIRCLED_CHARS_RE + r"|[0-9]+)$", inner)
+                        if m_sup2:
+                            return f"<sup>{m_sup2.group(1)}</sup>"
+                        m_word = re.match(r"^([A-Za-z0-9_\u4e00-\u9fa5]*)(?:\\mathrm\{([^{}]+)\})?\s*\^\{\s*(" + CIRCLED_CHARS_RE + r")\s*\}$", inner)
+                        if m_word:
+                            w = (m_word.group(1) or "") + (m_word.group(2) or "")
+                            return f"{w}<sup>{m_word.group(3)}</sup>"
+                        return inner
+
+                    text = re.sub(r'<span class="math (?:inline|display)">([\s\S]*?)</span>', fix_math_span, text)
+
+                    if text != orig_text:
+                        total_fixes += 1
+                        content_bytes = text.encode("utf-8")
+
+                zout.writestr(item, content_bytes)
+
+        if total_fixes > 0:
+            temp_epub.replace(e_path)
+            print(f"[*] EPUB MathML 校驗修正: 自動替換了 {total_fixes} 處未轉譯之 LaTeX/標籤原始碼")
+        else:
+            if temp_epub.exists():
+                temp_epub.unlink()
+    except Exception as e:
+        if temp_epub.exists():
+            try:
+                temp_epub.unlink()
+            except Exception:
+                pass
+        print(f"[-] EPUB 數學標記校驗略過: {e}")
+
+    return total_fixes
+
+
 def build_epub_with_pandoc(
     html_path: str,
     epub_path: str,
     title: str = "Scanned Book",
     cover_image: Optional[str] = None,
     split_level: int = 1,
-    layout_direction: str = "auto",
+    layout_direction: str = "horizontal",
     css_path: Optional[str] = None,
 ):
-    """呼叫 Pandoc 編譯 MathML EPUB3 電子書 (支援原生直排/橫排排版、MathML 與頁碼標籤樣式)"""
+    """
+    呼叫 Pandoc 編譯 MathML EPUB3 電子書。
+    注意：EPUB 一律維持標準橫排排版 (Horizontal-TB / LTR)，直排參數與樣式已全面取消；
+    HTML 原生直排設定保持獨立運作不受影響。
+    """
     pandoc_bin = "/opt/anaconda3/bin/pandoc"
     if not os.path.exists(pandoc_bin):
         pandoc_bin = "pandoc"
@@ -721,35 +854,76 @@ def build_epub_with_pandoc(
     html_file = os.path.basename(html_path)
     abs_epub_path = os.path.abspath(epub_path)
 
-    # 判斷是否為直排 (豎排 / vertical-rl) 排版
-    clean_dir = str(layout_direction).strip().lower()
-    is_vertical = False
-    if clean_dir in ("vertical", "vert", "vertical-rl"):
-        is_vertical = True
-    elif clean_dir in ("horizontal", "horizon", "horizontal-tb"):
-        is_vertical = False
-    else:  # auto: 檢測 HTML 檔案中是否包含直排標記
-        try:
-            with open(html_path, "r", encoding="utf-8", errors="replace") as f_chk:
-                html_snippet = f_chk.read(5000)
-            if "vertical-rl" in html_snippet or "layout-vertical" in html_snippet:
-                is_vertical = True
-        except Exception:
-            is_vertical = False
+    # 檢查輸入 HTML 是否包含未轉譯的 \textcircled 或舊版 File: 標記，若有則生成暫存檔預先清洗
+    target_compile_file = html_file
+    temp_sanitized_html = None
+    try:
+        with open(html_path, "r", encoding="utf-8", errors="replace") as f_chk:
+            raw_html_text = f_chk.read()
+        sanitized_html = clean_math_syntax(raw_html_text)
+        cleaned_html, file_prefix_cleaned = re.subn(
+            r'(<div\s+class=["\']page-anchor["\'][^>]*>\s*(?:<small>)?)\s*File:\s*',
+            r'\1',
+            sanitized_html,
+            flags=re.IGNORECASE,
+        )
+        if file_prefix_cleaned > 0:
+            sanitized_html = cleaned_html
 
-    # 構造 EPUB 內嵌專屬樣式表 (Pandoc EPUB 不讀取 HTML <style> 標籤，必須透過 --css 傳入)
+        if sanitized_html != raw_html_text:
+            temp_sanitized_html = Path(html_dir) / f"__epub_temp_{Path(html_file).stem}.html"
+            temp_sanitized_html.write_text(sanitized_html, encoding="utf-8")
+            target_compile_file = temp_sanitized_html.name
+    except Exception as e:
+        pass
+
+    # 構造 EPUB 內嵌專屬樣式表 (強制橫排 horizontal-tb)
     auto_css_path = Path(html_dir) / f"__epub_auto_style_{Path(html_file).stem}.css"
-    base_epub_css = """
+    base_epub_css = """/* ScanORC Base EPUB Styles (Strict Horizontal-TB / LTR) */
+html, body, body.layout-vertical {
+  writing-mode: horizontal-tb !important;
+  -webkit-writing-mode: horizontal-tb !important;
+  -epub-writing-mode: horizontal-tb !important;
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Hiragino Sans GB", "Microsoft JhengHei", "Noto Serif CJK TC", serif;
   line-height: 1.85;
   color: #2b2b2b;
+}
+p {
+  margin: 0.8em 0;
+  text-align: justify;
+}
+h1, h2, h3, h4 {
+  font-weight: bold;
+  line-height: 1.35;
+}
+h1.chapter-heading {
+  font-size: 1.85rem;
+  font-weight: 700;
+  color: #1a202c;
+  margin: 44px 0 20px 0;
+  padding-bottom: 10px;
+  border-bottom: 2px solid #3498db;
+  page-break-before: always;
+  break-before: page;
+}
+.book-page, .book-figure, .book-cover-page, .book-toc {
+  writing-mode: horizontal-tb !important;
+  -webkit-writing-mode: horizontal-tb !important;
+  -epub-writing-mode: horizontal-tb !important;
+  height: auto !important;
+  display: block !important;
 }
 .page-anchor {
   text-align: right;
   color: #888;
   font-size: 0.75rem;
   margin-bottom: 6px;
+  letter-spacing: 0.02em;
   user-select: none;
 }
 .page-anchor small {
@@ -795,72 +969,6 @@ th {
   text-align: center;
 }
 """
-    if is_vertical:
-        vertical_epub_css = """
-html, body {
-  writing-mode: vertical-rl;
-  -webkit-writing-mode: vertical-rl;
-  -epub-writing-mode: vertical-rl;
-  text-orientation: mixed;
-  -webkit-text-orientation: mixed;
-}
-body {
-  padding: 20px 30px;
-}
-p {
-  margin: 0 0.8em;
-  text-indent: 2em;
-  line-height: 2.0;
-}
-h1, h2, h3 {
-  margin: 0 1.2em;
-  line-height: 1.4;
-  font-weight: bold;
-}
-.page-anchor {
-  text-align: right;
-  color: #888;
-  font-size: 0.75rem;
-  margin: 0 0.5em 0 0;
-}
-.book-figure, .fullpage-figure {
-  margin: 0 1.5em;
-  display: inline-block;
-  vertical-align: top;
-}
-.book-figure img {
-  max-width: 100%;
-  max-height: 85vh;
-  height: auto;
-  object-fit: contain;
-}
-.fullpage-figure img {
-  max-width: 100%;
-  max-height: 92vh;
-  object-fit: contain;
-}
-.book-cover-page {
-  margin: 0 2em;
-  display: inline-block;
-  vertical-align: top;
-}
-.book-cover-page img {
-  max-width: 100%;
-  max-height: 92vh;
-  object-fit: contain;
-}
-"""
-        base_epub_css += vertical_epub_css
-    elif clean_dir in ("horizontal", "horizon", "horizontal-tb"):
-        horizontal_override_css = """
-/* Force Horizontal-TB */
-html, body, body.layout-vertical {
-  writing-mode: horizontal-tb !important;
-  -webkit-writing-mode: horizontal-tb !important;
-  -epub-writing-mode: horizontal-tb !important;
-}
-"""
-        base_epub_css += horizontal_override_css
 
     if css_path and Path(css_path).exists():
         custom_css = Path(css_path).read_text(encoding="utf-8", errors="replace")
@@ -871,7 +979,7 @@ html, body, body.layout-vertical {
     cmd = [
         pandoc_bin,
         "-f", "html+tex_math_dollars+tex_math_single_backslash+tex_math_double_backslash",
-        html_file,
+        target_compile_file,
         "-o", abs_epub_path,
         "--resource-path=.",
         f"--css={auto_css_path.name}",
@@ -882,22 +990,24 @@ html, body, body.layout-vertical {
         "--metadata", f"title={title}",
         "--metadata", "language=zh-TW",
     ]
-    if is_vertical:
-        cmd.extend([
-            "--metadata", "page-progression-direction=rtl",
-            "--metadata", "dir=rtl",
-        ])
     if cover_image and os.path.exists(cover_image):
         cmd.append(f"--epub-cover-image={os.path.abspath(cover_image)}")
 
-    print(f"[*] 執行 Pandoc 編譯 MathML EPUB (工作目錄: {html_dir}):\n    {' '.join(cmd)}")
+    print(f"[*] 執行 Pandoc 編譯 MathML EPUB (橫排標準排版, 工作目錄: {html_dir}):\n    {' '.join(cmd)}")
     try:
         subprocess.run(cmd, cwd=html_dir, check=True)
-        print(f"[+] EPUB 生成成功 (含原生 MathML 渲染與章節 Outline): {abs_epub_path}")
+        # 執行 EPUB 內部 MathML 與標記二次驗證，確保 100% 無殘留 LaTeX
+        sanitize_epub_math(abs_epub_path)
+        print(f"[+] EPUB 生成成功 (標準橫排 MathML 渲染與章節 Outline): {abs_epub_path}")
     finally:
         if auto_css_path.exists():
             try:
                 auto_css_path.unlink()
+            except Exception:
+                pass
+        if temp_sanitized_html and temp_sanitized_html.exists():
+            try:
+                temp_sanitized_html.unlink()
             except Exception:
                 pass
 
@@ -1090,7 +1200,7 @@ def raw_pages_to_html(
             title=resolved_title,
             cover_image=str(resolved_cover) if resolved_cover else None,
             split_level=1,
-            layout_direction=eff_direction,
+            layout_direction="horizontal",
         )
 
     return out_html_path

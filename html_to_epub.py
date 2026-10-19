@@ -16,12 +16,131 @@ import re
 import sys
 import json
 import shutil
+import zipfile
 import argparse
 import subprocess
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple, Union
 
 from config_utils import attach_preference_and_template_support
+
+try:
+    from raw_to_html import clean_math_syntax, sanitize_epub_math
+except ImportError:
+    CIRCLED_CHARS_RE = r"[\u2460-\u2473\u24ea\u3251-\u325f\u32b1-\u32bf\u24d0-\u24e9\u24b6-\u24cf]"
+
+    def to_circled_char(key: str) -> str:
+        key = str(key).strip()
+        if key.isdigit():
+            n = int(key)
+            if n == 0:
+                return "⓪"
+            elif 1 <= n <= 20:
+                return chr(0x2460 + n - 1)
+            elif 21 <= n <= 35:
+                return chr(0x3251 + n - 21)
+            elif 36 <= n <= 50:
+                return chr(0x32B1 + n - 36)
+            else:
+                return f"({n})"
+        elif len(key) == 1:
+            if "a" <= key <= "z":
+                return chr(0x24D0 + ord(key) - ord("a"))
+            elif "A" <= key <= "Z":
+                return chr(0x24B6 + ord(key) - ord("A"))
+        return f"({key})"
+
+    P_CIRCLED_UNWRAP = re.compile(r"(?<!\$)\$(?!\$)\s*(" + CIRCLED_CHARS_RE + r")\s*(?<!\$)\$(?!\$)")
+    P_CIRCLED_SUP1 = re.compile(r"(?<!\$)\$(?!\$)\s*\^\{\s*(" + CIRCLED_CHARS_RE + r")\s*\}\s*(?<!\$)\$(?!\$)")
+    P_CIRCLED_SUP2 = re.compile(r"(?<!\$)\$(?!\$)\s*\^(" + CIRCLED_CHARS_RE + r")\s*(?<!\$)\$(?!\$)")
+    P_WORD_SUP = re.compile(r"(?<!\$)\$(?!\$)\s*([A-Za-z0-9_\u4e00-\u9fa5]*)(?:\\mathrm\{([^{}]+)\})?\s*\^\{\s*(" + CIRCLED_CHARS_RE + r")\s*\}\s*(?<!\$)\$(?!\$)")
+
+    def clean_math_syntax(text: str) -> str:
+        if not text:
+            return ""
+        text = re.sub(r"\\textcircled\{([^{}]+)\}", lambda m: to_circled_char(m.group(1)), text)
+        text = P_CIRCLED_UNWRAP.sub(r"\1", text)
+        text = P_CIRCLED_SUP1.sub(r"<sup>\1</sup>", text)
+        text = P_CIRCLED_SUP2.sub(r"<sup>\1</sup>", text)
+        def fix_word_superscript(m):
+            prefix = m.group(1) or ""
+            math_rm = m.group(2) or ""
+            sup = m.group(3) or ""
+            word = prefix + math_rm
+            return f"{word}<sup>{sup}</sup>"
+        text = P_WORD_SUP.sub(fix_word_superscript, text)
+        text = re.sub(r"(?<!\$)\$(?!\$)\s*\^\{\s*([0-9,，\s\-]+)\s*\}\s*(?<!\$)\$(?!\$)", lambda m: f"<sup>{m.group(1).strip()}</sup>", text)
+        text = re.sub(r"(?<!\$)\$(?!\$)\s*\^([0-9]+)\s*(?<!\$)\$(?!\$)", r"<sup>\1</sup>", text)
+        def fix_paren_math(match):
+            inner = match.group(1).strip()
+            trailing_punct = ""
+            if inner and inner[-1] in ".，,。；;":
+                trailing_punct = inner[-1]
+                inner = inner[:-1].strip()
+            return f"${inner}${trailing_punct}" if inner else trailing_punct
+        text = re.sub(r"\\\(\s*([^\n\\]+?)\s*\\\)", fix_paren_math, text)
+        def fix_inline_math(match):
+            inner = match.group(1).strip()
+            trailing_punct = ""
+            if inner and inner[-1] in ".，,。；;":
+                trailing_punct = inner[-1]
+                inner = inner[:-1].strip()
+            return f"${inner}${trailing_punct}" if inner else trailing_punct
+        text = re.sub(r"(?<!\$)\$(?!\$)\s*([^\$\n]+?)\s*(?<!\$)\$(?!\$|\d)", fix_inline_math, text)
+        return text
+
+    def sanitize_epub_math(epub_path: Union[str, Path]) -> int:
+        e_path = Path(epub_path)
+        if not e_path.exists():
+            return 0
+        total_fixes = 0
+        temp_epub = e_path.parent / f"__tmp_math_{e_path.name}"
+        try:
+            with zipfile.ZipFile(e_path, "r") as zin, zipfile.ZipFile(temp_epub, "w", compression=zin.compression) as zout:
+                for item in zin.infolist():
+                    content_bytes = zin.read(item.filename)
+                    if item.filename.endswith(".xhtml") or item.filename.endswith(".html"):
+                        text = content_bytes.decode("utf-8", errors="replace")
+                        orig_text = text
+                        def fix_math_span(match):
+                            inner = match.group(1).strip()
+                            if inner.startswith("$") and inner.endswith("$") and len(inner) >= 2:
+                                inner = inner[1:-1].strip()
+                            elif inner.startswith(r"\(") and inner.endswith(r"\)") and len(inner) >= 4:
+                                inner = inner[2:-2].strip()
+                            elif inner.startswith(r"\[") and inner.endswith(r"\]") and len(inner) >= 4:
+                                inner = inner[2:-2].strip()
+                            inner = re.sub(r"\\textcircled\{([^{}]+)\}", lambda m: to_circled_char(m.group(1)), inner)
+                            if re.match(r"^" + CIRCLED_CHARS_RE + r"$", inner):
+                                return inner
+                            m_sup = re.match(r"^\^\{\s*(" + CIRCLED_CHARS_RE + r"|[0-9,，\s\-]+)\s*\}$", inner)
+                            if m_sup:
+                                return f"<sup>{m_sup.group(1).strip()}</sup>"
+                            m_sup2 = re.match(r"^\^(" + CIRCLED_CHARS_RE + r"|[0-9]+)$", inner)
+                            if m_sup2:
+                                return f"<sup>{m_sup2.group(1)}</sup>"
+                            m_word = re.match(r"^([A-Za-z0-9_\u4e00-\u9fa5]*)(?:\\mathrm\{([^{}]+)\})?\s*\^\{\s*(" + CIRCLED_CHARS_RE + r")\s*\}$", inner)
+                            if m_word:
+                                w = (m_word.group(1) or "") + (m_word.group(2) or "")
+                                return f"{w}<sup>{m_word.group(3)}</sup>"
+                            return inner
+                        text = re.sub(r'<span class="math (?:inline|display)">([\s\S]*?)</span>', fix_math_span, text)
+                        if text != orig_text:
+                            total_fixes += 1
+                            content_bytes = text.encode("utf-8")
+                    zout.writestr(item, content_bytes)
+            if total_fixes > 0:
+                temp_epub.replace(e_path)
+            else:
+                if temp_epub.exists():
+                    temp_epub.unlink()
+        except Exception:
+            if temp_epub.exists():
+                try:
+                    temp_epub.unlink()
+                except Exception:
+                    pass
+        return total_fixes
 
 try:
     from recompress_images import recompress_directory
@@ -448,6 +567,14 @@ def convert_html_to_epub(
         if verbose:
             print(f"[*] 已自動移除 HTML 中 {file_prefix_cleaned} 處 'File: ' 頁面錨點前綴")
 
+    # 清理並標準化 LaTeX 數學語法與帶圈註腳符號，防止 Pandoc MathML 引擎解析失敗而殘留原始碼
+    math_cleaned_html = clean_math_syntax(updated_html)
+    if math_cleaned_html != updated_html:
+        updated_html = math_cleaned_html
+        injected = True
+        if verbose:
+            print("[*] 已自動清理並標準化 HTML 中的 LaTeX 數學語法與帶圈註腳符號")
+
     compile_target_name = html_name
     temp_html_path = None
     if injected:
@@ -497,105 +624,23 @@ def convert_html_to_epub(
     if author:
         cmd.extend(["--metadata", f"author={author}"])
 
-    # 讀取目錄索引檔 (若有)，以供讀取 layout_direction 與 Outline 輔助
-    toc_data = None
-    toc_file = Path(toc_path).resolve() if toc_path else None
-    if not toc_file and html_dir:
-        for c in [html_dir / "toc.json", html_dir.parent / "toc.json", Path("toc.json"), Path("output/toc.json")]:
-            if c.exists():
-                toc_file = c.resolve()
-                break
-
-    if toc_file and toc_file.exists():
-        try:
-            with open(toc_file, "r", encoding="utf-8") as f:
-                toc_data = json.load(f)
-        except Exception as e:
-            if verbose:
-                print(f"[-] 讀取目錄索引檔失敗: {e}")
-
-    # 判斷是否為直排 (豎排 / vertical-rl) 排版
-    is_vertical = False
-    clean_dir = str(layout_direction).strip().lower()
-
-    if clean_dir in ("vertical", "vert", "vertical-rl"):
-        is_vertical = True
-        if verbose:
-            print("[*] 手動指定 EPUB 排版方向: 直排 (豎排 / vertical-rl / RTL)")
-    elif clean_dir in ("horizontal", "horizon", "horizontal-tb"):
-        is_vertical = False
-        if verbose:
-            print("[*] 手動指定 EPUB 排版方向: 橫排 (horizontal / LTR)")
-    else:  # auto: 預設優先讀取 toc.json，次之檢查 HTML 特徵
-        toc_dir = str(toc_data.get("layout_direction", "")).strip().lower() if toc_data else ""
-        if toc_dir in ("vertical", "vert", "vertical-rl"):
-            is_vertical = True
-            if verbose:
-                t_name = toc_file.name if toc_file else "toc.json"
-                print(f"[*] 依據 {t_name} 自動套用 EPUB 排版方向: 直排 (豎排 / vertical-rl / RTL)")
-        elif toc_dir in ("horizontal", "horizon", "horizontal-tb"):
-            is_vertical = False
-            if verbose:
-                t_name = toc_file.name if toc_file else "toc.json"
-                print(f"[*] 依據 {t_name} 自動套用 EPUB 排版方向: 橫排 (horizontal / LTR)")
-        elif "layout-vertical" in html_raw or "vertical-rl" in html_raw:
-            is_vertical = True
-            if verbose:
-                print("[*] 依據 HTML 樣式特徵自動套用 EPUB 排版方向: 直排 (豎排 / vertical-rl / RTL)")
-        else:
-            is_vertical = False
-            if verbose:
-                print("[*] 預設 EPUB 排版方向: 橫排 (horizontal / LTR)")
-
-    if is_vertical:
-        cmd.extend([
-            "--metadata", "page-progression-direction=rtl",
-            "--metadata", "dir=rtl",
-        ])
-        if verbose:
-            print("[*] 啟用 EPUB 直排模式 (RTL 翻頁與 vertical-rl 排版)")
-        # 確保 HTML 中包含直排 CSS 樣式
-        if "vertical-rl" not in updated_html:
-            vertical_css = """
-    body {
-      writing-mode: vertical-rl;
-      -webkit-writing-mode: vertical-rl;
-      -epub-writing-mode: vertical-rl;
-      text-orientation: mixed;
-    }
-"""
-            style_end = updated_html.find("</style>")
-            if style_end != -1:
-                updated_html = updated_html[:style_end] + vertical_css + updated_html[style_end:]
-            else:
-                updated_html = updated_html.replace("<head>", f"<head>\n<style>{vertical_css}</style>")
-            temp_html_path = html_dir / f"__epub_temp_{h_path.stem}.html"
-            temp_html_path.write_text(updated_html, encoding="utf-8")
-            compile_target_name = temp_html_path.name
-    elif clean_dir in ("horizontal", "horizon", "horizontal-tb") and ("writing-mode: vertical-rl" in updated_html or "layout-vertical" in updated_html):
-        # 使用者明確要求橫排但 HTML 帶有直排樣式時，強制覆蓋為橫排
-        override_css = """
-    body, body.layout-vertical {
-      writing-mode: horizontal-tb !important;
-      -webkit-writing-mode: horizontal-tb !important;
-      -epub-writing-mode: horizontal-tb !important;
-    }
-"""
-        style_end = updated_html.find("</style>")
-        if style_end != -1:
-            updated_html = updated_html[:style_end] + override_css + updated_html[style_end:]
-        else:
-            updated_html = updated_html.replace("<head>", f"<head>\n<style>{override_css}</style>")
-        temp_html_path = html_dir / f"__epub_temp_{h_path.stem}.html"
-        temp_html_path.write_text(updated_html, encoding="utf-8")
-        compile_target_name = temp_html_path.name
+    if verbose:
+        print("[*] EPUB 排版模式: 標準橫排 (horizontal / LTR 翻頁，已取消直排設定)")
 
     if actual_cover:
         cmd.append(f"--epub-cover-image={str(actual_cover)}")
 
-    # 構造 EPUB 內嵌專屬樣式表 (Pandoc 於 HTML 轉 EPUB 時會解構 AST 並剝離 <head> 內的 <style>，必須透過 --css 傳入)
+    # 構造 EPUB 內嵌專屬樣式表 (強制橫排 Horizontal-TB)
     auto_css_path = html_dir / f"__epub_auto_style_{h_path.stem}.css"
-    base_epub_css = """/* ScanORC Base EPUB Styles */
+    base_epub_css = """/* ScanORC Base EPUB Styles (Strict Horizontal-TB / LTR) */
+html, body, body.layout-vertical {
+  writing-mode: horizontal-tb !important;
+  -webkit-writing-mode: horizontal-tb !important;
+  -epub-writing-mode: horizontal-tb !important;
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Hiragino Sans GB", "Microsoft JhengHei", "Noto Serif CJK TC", serif;
   line-height: 1.85;
@@ -618,6 +663,13 @@ h1.chapter-heading {
   border-bottom: 2px solid #3498db;
   page-break-before: always;
   break-before: page;
+}
+.book-page, .book-figure, .book-cover-page, .book-toc {
+  writing-mode: horizontal-tb !important;
+  -webkit-writing-mode: horizontal-tb !important;
+  -epub-writing-mode: horizontal-tb !important;
+  height: auto !important;
+  display: block !important;
 }
 .page-anchor {
   text-align: right;
@@ -685,73 +737,6 @@ th {
   text-align: center;
 }
 """
-    if is_vertical:
-        vertical_epub_css = """
-/* ScanORC Vertical-RL Styles */
-html, body {
-  writing-mode: vertical-rl;
-  -webkit-writing-mode: vertical-rl;
-  -epub-writing-mode: vertical-rl;
-  text-orientation: mixed;
-  -webkit-text-orientation: mixed;
-}
-body {
-  padding: 20px 30px;
-}
-p {
-  margin: 0 0.8em;
-  text-indent: 2em;
-  line-height: 2.0;
-}
-h1, h2, h3 {
-  margin: 0 1.2em;
-  line-height: 1.4;
-  font-weight: bold;
-}
-.page-anchor {
-  text-align: right;
-  color: #888;
-  font-size: 0.75rem;
-  margin: 0 0.5em 0 0;
-}
-.book-figure, .fullpage-figure {
-  margin: 0 1.5em;
-  display: inline-block;
-  vertical-align: top;
-}
-.book-figure img {
-  max-width: 100%;
-  max-height: 85vh;
-  height: auto;
-  object-fit: contain;
-}
-.fullpage-figure img {
-  max-width: 100%;
-  max-height: 92vh;
-  object-fit: contain;
-}
-.book-cover-page {
-  margin: 0 2em;
-  display: inline-block;
-  vertical-align: top;
-}
-.book-cover-page img {
-  max-width: 100%;
-  max-height: 92vh;
-  object-fit: contain;
-}
-"""
-        base_epub_css += vertical_epub_css
-    elif clean_dir in ("horizontal", "horizon", "horizontal-tb"):
-        horizontal_override_css = """
-/* Force Horizontal-TB */
-html, body, body.layout-vertical {
-  writing-mode: horizontal-tb !important;
-  -webkit-writing-mode: horizontal-tb !important;
-  -epub-writing-mode: horizontal-tb !important;
-}
-"""
-        base_epub_css += horizontal_override_css
 
     if css_path:
         c_path = Path(css_path).resolve()
@@ -783,10 +768,13 @@ html, body, body.layout-vertical {
         if not out_epub.exists() or out_epub.stat().st_size == 0:
             raise RuntimeError(f"EPUB 生成失敗，未產出有效檔案: {out_epub}")
 
+        # 執行 EPUB 內部 MathML 與標記二次驗證，確保 100% 無殘留 LaTeX
+        sanitize_epub_math(out_epub)
+
         file_size_mb = out_epub.stat().st_size / (1024 * 1024)
         if verbose:
             print("======================================================================")
-            print(f"[🎉] EPUB 電子書生成成功！(含原生 MathML 與章節大綱 Outline)")
+            print(f"[🎉] EPUB 電子書生成成功！(標準橫排 MathML 與章節大綱 Outline)")
             print(f"      檔案路徑: {out_epub}")
             print(f"      檔案大小: {file_size_mb:.2f} MB ({out_epub.stat().st_size:,} bytes)")
             print("======================================================================")
@@ -939,17 +927,9 @@ def main():
     parser.add_argument(
         "--layout-direction", "--direction",
         dest="layout_direction",
-        choices=["auto", "horizontal", "vertical"],
-        default="auto",
-        help="EPUB 排版方向 (auto: 預設自動讀取 toc.json 或 HTML 樣式特徵, horizontal: 橫排, vertical: 直排 RTL)"
-    )
-    parser.add_argument(
-        "--vertical",
-        action="store_const",
-        dest="layout_direction",
-        const="vertical",
-        default=argparse.SUPPRESS,
-        help="快捷切換為直排 (豎排 / vertical-rl / RTL 翻頁) EPUB"
+        choices=["horizontal", "auto"],
+        default="horizontal",
+        help="EPUB 排版方向 (EPUB 一律維持標準橫排 horizontal-tb / LTR)"
     )
     parser.add_argument(
         "--horizontal",
