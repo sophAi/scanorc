@@ -506,7 +506,7 @@ class DocumentConverter:
     def run_layout_analysis(
         self,
         image_path: str,
-        conf: float = 0.25,
+        conf: float = 0.10,
         layout_direction: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         self._ensure_models_loaded()
@@ -549,17 +549,17 @@ class DocumentConverter:
                     })
             return boxes
 
-        # 第一階段：以標準 conf (預設 0.25) 進行版面分析預測
+        # 第一階段：以高靈敏度 conf (預設 0.10) 進行版面分析預測
         results = self.yolo.predict(image_path, imgsz=1024, conf=conf, device=self.device)
         boxes_info = _parse_and_sanitize_boxes(results)
 
         # 檢查是否有任何非 abandon 的有效內容區塊
         has_content = any(b["cls_name"] != "abandon" for b in boxes_info)
 
-        # 機制 1：動態兩階段 Confidence 重試 (若第一階段未抓到任何有效內容區塊且 conf > 0.15)
-        if not has_content and conf > 0.15:
-            retry_conf = 0.15
-            print(f"  [*] 第一階段未偵測到有效內文區塊，自動啟動第二階段寬鬆重試 (conf: {retry_conf:.2f})...")
+        # 機制 1：動態兩階段 Confidence 重試 (若第一階段未抓到任何有效內容區塊且 conf > 0.05)
+        if not has_content and conf > 0.05:
+            retry_conf = 0.05
+            print(f"  [*] 第一階段未偵測到有效內文區塊，自動啟動第二階段極寬鬆重試 (conf: {retry_conf:.2f})...")
             retry_results = self.yolo.predict(image_path, imgsz=1024, conf=retry_conf, device=self.device)
             retry_boxes = _parse_and_sanitize_boxes(retry_results)
             if any(b["cls_name"] != "abandon" for b in retry_boxes):
@@ -682,12 +682,12 @@ class DocumentConverter:
         return current_boxes
 
     @staticmethod
-    def _pad_cushion(im: Image.Image, max_ratio: float = 4.0) -> Image.Image:
+    def _pad_cushion(im: Image.Image, max_ratio: float = 2.0) -> Image.Image:
         """
         對極端細長比的直排裁切圖片進行白底兩側緩衝補白 (Aspect Ratio Cushion)，
         避免 CogViT 視覺編碼器因水平 Patch 數過少 (小於 4 個 patch) 導致注意力機制崩潰與 \\x00 死循環。
         注意：橫排單行文字 (w > h) 水平 patch 充足，不需垂直補白 (補白過多空白反會干擾文字定位)。
-        max_ratio: 最大允許長寬比 (預設 4.0，即高度不超過寬度的 4 倍)。
+        max_ratio: 最大允許長寬比 (預設 2.0，即高度不超過寬度的 2 倍，保證充足的水平視覺 token)。
         """
         w, h = im.size
         if w <= 0 or h <= 0:
@@ -718,6 +718,14 @@ class DocumentConverter:
                     if self._is_mostly_inside(b1["bbox"], b2["bbox"]):
                         # 情況 0：若兩者互相包含 (幾近完全一致之重複框)
                         if self._is_mostly_inside(b2["bbox"], b1["bbox"]):
+                            # 若其中一個是 title 且另一個是 plain text，且寬度 <= 120 (單行直排長條)，優先保留 title
+                            b1_bw = b1["bbox"][2] - b1["bbox"][0]
+                            if b1_bw <= 120 and {b1["cls_name"], b2["cls_name"]} == {"title", "plain text"}:
+                                if b1["cls_name"] != "title":
+                                    is_contained = True
+                                    break
+                                else:
+                                    continue
                             # 保留置信度高者；若置信度相同，保留序號較小者
                             if (b1["conf"] < b2["conf"]) or (b1["conf"] == b2["conf"] and i > j):
                                 is_contained = True
@@ -798,15 +806,6 @@ class DocumentConverter:
 
         for crop_img, task_type in crop_items:
             prompt_text = task_prompts.get(task_type, "Text Recognition:")
-
-            # 極端長寬比白色緩衝補白 (Aspect Ratio Cushion)
-            cushioned_img = self._pad_cushion(crop_img, max_ratio=4.0)
-
-            w, h = cushioned_img.size
-            ocr_img = cushioned_img.copy()
-            if max(w, h) > self.max_ocr_dim:
-                ocr_img.thumbnail((self.max_ocr_dim, self.max_ocr_dim), Image.Resampling.LANCZOS)
-
             messages = [
                 {
                     "role": "user",
@@ -818,13 +817,6 @@ class DocumentConverter:
             ]
             p = self.processor.apply_chat_template(messages, add_generation_prompt=True)
 
-            inputs = self.processor(
-                images=[ocr_img],
-                text=[p],
-                padding=False,
-                return_tensors="pt"
-            ).to(self.device)
-
             max_tokens = 1024 if task_type == "table" else 512
             gen_kwargs = {
                 "max_new_tokens": max_tokens,
@@ -834,14 +826,43 @@ class DocumentConverter:
             if self.no_repeat_ngram_size is not None and self.no_repeat_ngram_size > 0:
                 gen_kwargs["no_repeat_ngram_size"] = self.no_repeat_ngram_size
 
-            with torch.no_grad():
-                outputs = self.glm.generate(**inputs, **gen_kwargs)
+            # 自適應多階緩衝補白推論 (Adaptive Multi-tier Cushion Retry)
+            # 第 1 階：標準補白 max_ratio=4.0 (對大部分直排長條與一般標題最精確)
+            # 第 2 階：若輸出為空或注意力坍塌 (\x00)，自動切換至寬補白 max_ratio=2.0 (避免超長細條視覺 token 不足)
+            # 第 3 階：若依然為空，切換為原圖直推 (無補白，避免大留白干擾)
+            candidate_ratios = [4.0, 2.0, None]
+            best_cleaned_text = ""
 
-            # 解碼各結果並嚴格過濾 ASCII 控制字符 (0x00 ~ 0x1F，保留 \n 與 \t)
-            raw_text = self.processor.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
-            cleaned_text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw_text).strip()
-            cleaned_text = clean_math_syntax(cleaned_text)
-            all_results.append(cleaned_text)
+            for r_tier in candidate_ratios:
+                if r_tier is not None:
+                    cushioned_img = self._pad_cushion(crop_img, max_ratio=r_tier)
+                else:
+                    cushioned_img = crop_img
+
+                w, h = cushioned_img.size
+                ocr_img = cushioned_img.copy()
+                if max(w, h) > self.max_ocr_dim:
+                    ocr_img.thumbnail((self.max_ocr_dim, self.max_ocr_dim), Image.Resampling.LANCZOS)
+
+                inputs = self.processor(
+                    images=[ocr_img],
+                    text=[p],
+                    padding=False,
+                    return_tensors="pt"
+                ).to(self.device)
+
+                with torch.no_grad():
+                    outputs = self.glm.generate(**inputs, **gen_kwargs)
+
+                raw_text = self.processor.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+                cleaned_text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw_text).strip()
+
+                if cleaned_text and "\x00" not in raw_text:
+                    best_cleaned_text = cleaned_text
+                    break
+
+            best_cleaned_text = clean_math_syntax(best_cleaned_text)
+            all_results.append(best_cleaned_text)
 
         return all_results
 
@@ -874,11 +895,17 @@ class DocumentConverter:
         raw_dir = Path(raw_pages_dir) if raw_pages_dir else (Path(output_dir) / "raw_pages")
         raw_dir.mkdir(parents=True, exist_ok=True)
         raw_file = raw_dir / f"{page_stem}.json"
+        fail_raw_file = raw_dir / f"{page_stem}_fail.json"
 
         # 0. 檢查斷點續傳快取
         if not force_ocr:
             cached_res = get_cached_page_result(raw_file, output_dir)
             if cached_res is not None:
+                if fail_raw_file.exists():
+                    try:
+                        fail_raw_file.unlink()
+                    except Exception:
+                        pass
                 print(f"[*] 頁面 {page_id}: 讀取既有 raw 檔快取 (raw_pages/{raw_file.name})，略過 OCR 辨識")
                 return cached_res
 
@@ -902,6 +929,11 @@ class DocumentConverter:
                 }]
             }
             save_atomic_json(raw_file, res)
+            if fail_raw_file.exists():
+                try:
+                    fail_raw_file.unlink()
+                except Exception:
+                    pass
             return res
 
         orig_im = Image.open(image_path).convert("RGB")
@@ -933,12 +965,13 @@ class DocumentConverter:
                     print(f"  [-] [拋棄] {cls_name:15s} (conf: {conf:.2f}) bbox: {bbox}")
                     continue
 
-                pad = 2
+                pad_x = 20
+                pad_y = 10
                 crop_box = (
-                    max(0, x1 - pad),
-                    max(0, y1 - pad),
-                    min(img_w, x2 + pad),
-                    min(img_h, y2 + pad)
+                    max(0, x1 - pad_x),
+                    max(0, y1 - pad_y),
+                    min(img_w, x2 + pad_x),
+                    min(img_h, y2 + pad_y)
                 )
                 crop_im = orig_im.crop(crop_box)
 
@@ -1025,9 +1058,12 @@ class DocumentConverter:
             # 過濾已合併的區塊
             final_blocks = [b for b in html_blocks_draft if b is not None]
 
+            # 檢測頁面是否含有實質文字筆畫特徵
+            has_text_feature = self._has_text_content(orig_im)
+
             # 機制 2：若此頁完全未識別出任何有效內容，但檢測到包含實質文字筆畫特徵，啟動【保底整頁 OCR】
             if not final_blocks:
-                if self._has_text_content(orig_im):
+                if has_text_feature:
                     print(f"  [*] 該頁未分割出有效區塊，但包含文字特徵，啟動【保底整頁 OCR】補救辨識...")
                     try:
                         full_ocr_res = self.recognize_crops_batch([(orig_im, "text")])
@@ -1048,9 +1084,13 @@ class DocumentConverter:
                     except Exception as e_full_ocr:
                         print(f"  [-] 保底整頁 OCR 執行異常: {e_full_ocr}", file=sys.stderr)
 
-            # 若經保底整頁 OCR 後依然無有效文字內容（代表為純插圖、無字隔頁或空白頁），才自動轉為原圖嵌入
+            # 判斷是否屬於辨識失敗：
+            # 若原始圖檔具備文字特徵 (has_text_feature=True)，但最終仍無法解析出任何文字區塊，
+            # 降級為整頁原圖嵌入，且標記為失敗 (命名為 Page-xxx_fail.json 以利快速檢查問題)
+            is_recognition_failed = False
+            fail_reason = ""
+
             if not final_blocks:
-                print(f"  [-] 該頁確認無內文區塊，自動將原圖嵌入為整頁插圖")
                 dest_img_filename = f"{page_stem}_raw{Path(image_path).suffix.lower()}"
                 dest_img_path = os.path.join(images_out_dir, dest_img_filename)
                 shutil.copy2(image_path, dest_img_path)
@@ -1060,24 +1100,50 @@ class DocumentConverter:
                     "caption": "",
                     "is_full_page": True
                 }]
+                if has_text_feature:
+                    is_recognition_failed = True
+                    fail_reason = "偵測到實質文字筆畫特徵，但版面分析與保底 OCR 皆未提取出有效文字區塊，已降級為原圖嵌入"
+                    print(f"  [!] 警告：頁面 '{page_id}' 含有文字但未能提取出任何內文區塊，標記為辨識失敗 (將儲存為 {fail_raw_file.name})")
+                else:
+                    print(f"  [-] 該頁確認為純插圖/空白頁，自動將原圖嵌入為整頁插圖")
 
             res = {
                 "page_id": page_id,
                 "page_stem": page_stem,
                 "blocks": final_blocks
             }
-            save_atomic_json(raw_file, res)
-            print(f"  [+] 已儲存頁面 raw 檔快取: raw_pages/{raw_file.name}")
+
+            if is_recognition_failed:
+                res["status"] = "failed"
+                res["error"] = fail_reason
+                save_atomic_json(fail_raw_file, res)
+                if raw_file.exists():
+                    try:
+                        raw_file.unlink()
+                    except Exception:
+                        pass
+                print(f"  [!] 已儲存失敗頁面 raw 檔: raw_pages/{fail_raw_file.name}")
+            else:
+                save_atomic_json(raw_file, res)
+                if fail_raw_file.exists():
+                    try:
+                        fail_raw_file.unlink()
+                    except Exception:
+                        pass
+                print(f"  [+] 已儲存頁面 raw 檔快取: raw_pages/{raw_file.name}")
+
             return res
 
         except Exception as e:
-            print(f"  [-] 警告：頁面 '{page_id}' OCR 辨識失敗或難度過高 ({e})，自動降級為整頁原始圖檔嵌入！", file=sys.stderr)
+            print(f"  [-] 警告：頁面 '{page_id}' OCR 辨識異常 ({e})，標記為辨識失敗並自動降級為整頁原始圖檔嵌入！", file=sys.stderr)
             dest_img_filename = f"{page_stem}_raw{Path(image_path).suffix.lower()}"
             dest_img_path = os.path.join(images_out_dir, dest_img_filename)
             shutil.copy2(image_path, dest_img_path)
             res = {
                 "page_id": page_id,
                 "page_stem": page_stem,
+                "status": "failed",
+                "error": str(e),
                 "blocks": [{
                     "type": "figure",
                     "img_src": f"images/{dest_img_filename}",
@@ -1085,7 +1151,13 @@ class DocumentConverter:
                     "is_full_page": True
                 }]
             }
-            save_atomic_json(raw_file, res)
+            save_atomic_json(fail_raw_file, res)
+            if raw_file.exists():
+                try:
+                    raw_file.unlink()
+                except Exception:
+                    pass
+            print(f"  [!] 已儲存失敗頁面 raw 檔: raw_pages/{fail_raw_file.name} (供後續快速除錯檢視)")
             return res
 
     def render_html(
@@ -1453,20 +1525,25 @@ def main():
     # 檢查已完成快取之頁面 (斷點續傳)
     cached_map = {}
     uncached_indices = []
+    failed_cached_count = 0
     if not args.force_ocr:
         for idx, img_p in enumerate(image_files):
             stem = img_p.stem
             rf = raw_pages_dir / f"{stem}.json"
+            fail_rf = raw_pages_dir / f"{stem}_fail.json"
             c_res = get_cached_page_result(rf, args.output)
             if c_res is not None:
                 c_res["_task_idx"] = idx
                 cached_map[idx] = c_res
             else:
+                if fail_rf.exists():
+                    failed_cached_count += 1
                 uncached_indices.append(idx)
     else:
         uncached_indices = list(range(len(image_files)))
 
-    print(f"[*] 頁面快取狀態: 共 {len(image_files)} 頁，已快取 {len(cached_map)} 頁，待推論 {len(uncached_indices)} 頁 (快取目錄: {raw_pages_dir})")
+    fail_note = f"，包含先前失敗待重試 {failed_cached_count} 頁" if failed_cached_count > 0 else ""
+    print(f"[*] 頁面快取狀態: 共 {len(image_files)} 頁，已成功快取 {len(cached_map)} 頁{fail_note}，待推論 {len(uncached_indices)} 頁 (快取目錄: {raw_pages_dir})")
 
     if not uncached_indices:
         print("[🚀] 全書所有頁面之 OCR raw 檔均已齊全！免載入 AI 模型，直接進入 HTML / EPUB 組裝階段！")

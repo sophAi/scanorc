@@ -181,15 +181,20 @@ def save_atomic_json(target_path: Union[str, Path], data: Any):
 def get_cached_page_result(raw_file: Union[str, Path], output_dir: Union[str, Path]) -> Optional[Dict[str, Any]]:
     """
     檢查並載入已存在的 raw_pages/{stem}.json 快取。
-    若檔案存在、JSON 格式正確，且其中引用的插圖檔案皆實體存在，傳回快取資料；否則傳回 None。
+    若檔案存在、JSON 格式正確、非失敗狀態 (無 status == "failed" 且非 _fail.json)，
+    且其中引用的插圖檔案皆實體存在，傳回快取資料；否則傳回 None (以便系統自動重新推論)。
     """
     rf = Path(raw_file)
     if not rf.exists() or rf.stat().st_size == 0:
+        return None
+    if rf.name.endswith("_fail.json"):
         return None
     try:
         with open(rf, "r", encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict) or "blocks" not in data:
+            return None
+        if data.get("status") == "failed":
             return None
         # 驗證插圖完整性：若引用的插圖檔案遺失，視為快取失效需重跑
         images_dir = Path(output_dir) / "images"
@@ -690,16 +695,45 @@ def raw_pages_to_html(
         raw_path = raw_path / "raw_pages"
 
     # 收集 raw_pages 中的所有 JSON 檔案 (排除 .tmp 暫存檔)
-    json_files = [
+    all_json_files = [
         f for f in raw_path.iterdir()
         if f.is_file() and f.suffix.lower() == ".json" and not f.name.endswith(".tmp")
     ]
 
-    if not json_files:
+    if not all_json_files:
         raise ValueError(f"目錄 '{raw_path}' 中未找到任何 OCR raw 檔 (*.json)！")
 
-    # 排序 JSON 檔案 (Cover 優先，其次依自然數字排序)
-    sorted_json_files = sorted(json_files, key=lambda f: book_page_sort_key(f, cover_first=cover_first))
+    # 分類有效正常 JSON 檔與 _fail.json 檔
+    normal_map = {}
+    fail_map = {}
+    for f in all_json_files:
+        stem = f.stem
+        if stem.endswith("_fail"):
+            orig_stem = stem[:-5]
+            fail_map[orig_stem] = f
+        else:
+            normal_map[stem] = f
+
+    # 對於既有 normal 又有 fail 的頁面，以 normal 為準；
+    # 若某頁僅有 _fail.json，則載入該備援原圖嵌入以確保書籍完整，並發出醒目警示
+    target_json_files = []
+    failed_loaded = []
+    for stem, f in normal_map.items():
+        target_json_files.append(f)
+
+    for stem, f in fail_map.items():
+        if stem not in normal_map:
+            target_json_files.append(f)
+            failed_loaded.append(f.name)
+
+    if failed_loaded:
+        print(f"  [!] 警告: 發現 {len(failed_loaded)} 個辨識失敗頁面 (已載入原圖嵌入以確保書籍排版完整): {sorted(failed_loaded)}", file=sys.stderr)
+
+    # 排序 JSON 檔案 (Cover 優先，其次依自然數字排序，以原始頁面 stem 排序)
+    sorted_json_files = sorted(
+        target_json_files,
+        key=lambda f: book_page_sort_key(f.name.replace("_fail.json", ".json"), cover_first=cover_first)
+    )
 
     # 讀取各頁 JSON 內容
     page_results = []
