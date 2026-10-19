@@ -464,34 +464,24 @@ def validate_toc(entries: List[Dict[str, Any]]) -> bool:
 
 def format_chapter_dirname(entry: Dict[str, Any], total_entries: int) -> str:
     """
-    根據章節資訊格式化標準子目錄名稱 (例如 '01-一切從此開始', '07-放空_獲利捷徑')
+    根據章節資訊格式化標準子目錄名稱 (例如 '01-前言', '02-一切從此開始', '07-放空_獲利捷徑')
+    使用 index 確保章節資料夾前綴序號絕對唯一且單調遞增，完全避免章節重疊覆蓋或排序錯亂
     """
     ch_num = entry.get("chapter", "").strip()
     ch_title = entry.get("title", "").strip()
     index = entry.get("index", 1)
+    digits = max(2, len(str(total_entries)))
+    prefix = f"{index:0{digits}d}"
 
-    match = re.search(r"第\s*([0-9]+|[一二三四五六七八九十百千兩]+)\s*[章節回卷部篇]", ch_num)
-    match_en = re.search(r"(?:Chapter|Unit|Section|Part)\s*([0-9]+)", ch_num, re.IGNORECASE)
-    match_num = re.search(r"^(\d+)", ch_num)
-    if match:
-        num = parse_chinese_number(match.group(1))
-        prefix = f"{num:02d}" if num is not None else f"{(index - 1):02d}"
-    elif match_en:
-        num = int(match_en.group(1))
-        prefix = f"{num:02d}"
-    elif match_num:
-        num = int(match_num.group(1))
-        prefix = f"{num:02d}"
-    else:
-        prefix = f"{(index - 1):02d}"
-
-    # 替換作業系統不允許或容易出錯的字元 (包含全半形冒號、逗號等)
     clean_title = re.sub(r'[\/:*?"<>|：，,;；]', "_", ch_title)
     clean_title = re.sub(r"\s+", " ", clean_title).strip()
 
     if clean_title:
         return f"{prefix}-{clean_title}"
-    return f"{prefix}-{ch_num}"
+    clean_num = re.sub(r'[\/:*?"<>|：，,;；]', "_", ch_num).strip()
+    if clean_num:
+        return f"{prefix}-{clean_num}"
+    return f"{prefix}-第{index}章"
 
 
 def find_matching_chapter(page_num: int, toc_entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -524,7 +514,8 @@ def organize_pages_by_toc(
     exclude_files: Optional[List[Path]] = None
 ) -> Dict[str, int]:
     """
-    自動建立各章節子目錄，並將 Page-xxx.jpg 等檔案歸檔至對應目錄中
+    自動建立各章節子目錄，並將 Page-xxx.jpg 等檔案歸檔至對應目錄中。
+    支援遞迴搜尋 pages_dir 及其所有子目錄中的圖檔，無論初始為平鋪或鏡像子目錄皆能正確整理歸檔。
     """
     exclude_set = {f.resolve() for f in (exclude_files or [])}
     action_name = "複製" if copy_mode else "移動"
@@ -534,25 +525,54 @@ def organize_pages_by_toc(
     print(f"[*] 目標目錄: {pages_dir}")
     print("==================================================")
 
-    # 預先建立所有章節子目錄
+    # 建立所有章節子目錄對應表 (延遲建立目錄，僅在有圖檔歸入時建立)
     dir_mapping = {}
     for entry in toc_entries:
         dirname = format_chapter_dirname(entry, len(toc_entries))
-        target_dir = pages_dir / dirname
-        target_dir.mkdir(parents=True, exist_ok=True)
-        dir_mapping[entry["index"]] = target_dir
+        dir_mapping[entry["index"]] = pages_dir / dirname
 
-    # 掃描目標目錄根目錄下的所有圖檔
-    root_files = [
-        f for f in pages_dir.iterdir()
-        if f.is_file() and f.suffix.lower() in VALID_IMAGE_EXTS and f.resolve() not in exclude_set
-    ]
+    # 遞迴搜尋目標目錄下所有圖檔 (支援根目錄平鋪與子目錄分組結構)
+    candidate_files = []
+    for root, _, files in os.walk(pages_dir):
+        for fname in sorted(files):
+            f = Path(root) / fname
+            if f.suffix.lower() not in VALID_IMAGE_EXTS:
+                continue
+            if f.resolve() in exclude_set:
+                continue
 
-    stats = {dirname: 0 for dirname in [d.name for d in dir_mapping.values()]}
+            # 排除非書籍主體資料夾 (如 raw_pages 或 images)
+            if any(part in ("raw_pages", "images", "deb_dist", ".git") for part in f.parts):
+                continue
+
+            f_lower = fname.lower()
+            # 封面與目錄圖檔應保留於書籍根目錄中
+            if re.search(r"^(cover|content|front[-_]?cover|封面)", f_lower):
+                if f.parent.resolve() != pages_dir.resolve():
+                    root_dest = pages_dir / f.name
+                    if not root_dest.exists():
+                        if copy_mode:
+                            shutil.copy2(f, root_dest)
+                        else:
+                            shutil.move(str(f), str(root_dest))
+                continue
+
+            if f.stem.startswith("."):
+                continue
+
+            candidate_files.append(f)
+
+    # 依檔名自然數字排序
+    candidate_files.sort(
+        key=lambda p: [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", p.name)]
+    )
+
+    stats = {d.name: 0 for d in dir_mapping.values()}
     stats["[未配對]"] = 0
     moved_count = 0
+    already_placed_count = 0
 
-    for f in root_files:
+    for f in candidate_files:
         # 從檔名中提取頁碼數字 (例如 Page-050.jpg -> 50, p020.png -> 20)
         nums = re.findall(r"\d+", f.stem)
         if not nums:
@@ -563,22 +583,41 @@ def organize_pages_by_toc(
 
         if target_chapter:
             dest_dir = dir_mapping[target_chapter["index"]]
+            dest_dir.mkdir(parents=True, exist_ok=True)
             dest_file = dest_dir / f.name
 
-            if copy_mode:
-                shutil.copy2(f, dest_file)
+            d_name = dest_dir.name
+            if f.resolve() == dest_file.resolve():
+                stats[d_name] = stats.get(d_name, 0) + 1
+                already_placed_count += 1
             else:
-                shutil.move(f, dest_file)
-
-            stats[dest_dir.name] += 1
-            moved_count += 1
+                if copy_mode:
+                    shutil.copy2(f, dest_file)
+                else:
+                    shutil.move(str(f), str(dest_file))
+                stats[d_name] = stats.get(d_name, 0) + 1
+                moved_count += 1
         else:
-            stats["[未配對]"] += 1
+            stats["[未配對]"] = stats.get("[未配對]", 0) + 1
 
-    print(f"[+] 歸檔完成！共處理 {moved_count} 個圖檔：")
-    for d_name, count in stats.items():
-        if count > 0:
+    # 清理所有空資料夾 (包括全數移出圖檔之舊子目錄，或未歸入任何圖檔之章節目錄)
+    for root, dirs, files in os.walk(pages_dir, topdown=False):
+        p_root = Path(root)
+        if p_root.resolve() == pages_dir.resolve():
+            continue
+        try:
+            if not any(p_root.iterdir()):
+                p_root.rmdir()
+        except Exception:
+            pass
+
+    total_processed = moved_count + already_placed_count
+    print(f"[+] 歸檔完成！共處理 {total_processed} 個圖檔 (新歸檔: {moved_count}, 已就位: {already_placed_count}, 未配對: {stats['[未配對]']})：")
+    for d_name, count in sorted(stats.items()):
+        if count > 0 and d_name != "[未配對]":
             print(f"  - {d_name}: {count} 頁")
+    if stats["[未配對]"] > 0:
+        print(f"  [!] 提示: 有 {stats['[未配對]']} 個圖檔未配對至任何章節區間，已保留原位")
 
     return stats
 
