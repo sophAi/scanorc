@@ -26,7 +26,7 @@
    - **包含候選框外擴邊界吸收 (BBox Expansion Absorption)**：在同類別候選框重疊包含去重時，由較大框主動吸收較小框向外擴展之邊界（`max(b1, b2)`），徹底防止直排首行/尾行右緣文字（如「很遺憾的」）被切邊腰斬與錯字。
    - **動態兩階段 Confidence 重試**：當第一階段（預設 `conf=0.10`）未偵測到有效內文區塊時，自動啟動第二階段寬鬆重試（`conf=0.05`），搭配邊界校正與跨類別 NMS 去重，徹底解決章節收尾半頁直排頁面漏檢問題。
    - **相互包含重疊區塊智慧去重**：修復相同或相近重複候選框互相排斥的問題，優先保留高置信度主要區塊。
-   - 自動將非文字內容（插圖）無損裁切儲存為獨立高解析圖檔並關聯至文章中。
+   - 自動將非文字內容（插圖）、封面與全頁原圖統一裁切儲存為最佳化 `.jpg` 圖檔（預設 `quality=50`，並自動檢測是否為灰階以轉為單通道灰階儲存，大幅節省 75%~85% 空間並消除彩噪）並關聯至文章與 EPUB 中。
 
 3. **強大視覺語言 OCR (`GLM-OCR 0.9B`)**：
    - 智譜開源 0.9B 多模態端到端模型，具備深厚的繁簡中文、排版與公式理解力。
@@ -425,11 +425,11 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--toc` | - | `None` | 目錄結構 JSON 檔案路徑（自動生成目錄索引，並於對應頁面注入章節標題寫入 EPUB Outline 大綱） |
 | `--layout-direction` | `--direction` | `auto` | 書籍排版方向（`auto`: 優先讀取 toc.json，次之自動抽樣檢測；支援 `horizontal` 橫排、`vertical` 直排，自動套用至 HTML 與 EPUB CSS） |
 | `--cover` | `--cover-image` | `None` (自動搜尋) | 指定封面圖片路徑（**預設以 `Cover-01.jpg` 作為 EPUB 與 HTML 的封面**，亦相容 cover.*） |
-| `--compress-images` | - | `False` | 是否在編譯 EPUB 前自動將 `output/images` 目錄中的 JPG 與 PNG 重新壓縮與縮放（大幅縮減 EPUB 體積） |
-| `--image-quality` | - | `75` | images 圖檔壓縮品質（1~100，預設: 75） |
-| `--image-scale` | - | `0.75` | images 圖檔尺寸縮放比例（例如 0.75 或 1.0，預設: 0.75） |
-| `--image-max-dim` | - | `None` | images 圖檔最大長寬像素限制（例如 1920，預設 None 不限制） |
-| `--auto-grayscale` | `--no-auto-grayscale` | `True` | 重新壓縮圖檔時自動偵測是否為灰階色調並以灰階模式壓縮儲存以節省空間（內建封面保護與彩色細節防護，預設: True） |
+| `--compress-images` | - | `False` | 是否在編譯 EPUB 前自動將 `output/images` 目錄中的圖檔額外重新壓縮與縮放（預設裁切與嵌入時已直接存為最佳化 `.jpg`） |
+| `--image-quality` | - | `50` | `images/` 插圖與 EPUB 來源圖檔儲存與壓縮品質（1~100，預設: 50） |
+| `--image-scale` | - | `1.0` | `images/` 圖檔尺寸縮放比例（例如 0.8 或 1.0，預設: 1.0） |
+| `--image-max-dim` | - | `None` | `images/` 圖檔最大長寬像素限制（例如 1920，預設 None 不限制） |
+| `--auto-grayscale` | `--no-auto-grayscale` | `True` | 儲存或重新壓縮 `images/` 圖檔時自動偵測是否為灰階色調並以單通道灰階模式壓縮儲存以節省空間（內建封面保護與彩色細節防護，預設: True） |
 | `--recursive` | `-r` | `True` | 是否遞迴讀取子目錄所有圖檔（**預設啟用**，若使用 `--no-recursive` 則僅讀取頂層目錄） |
 | `--cover-first` | - | `True` | 頁面編排順序：是否將封面/目錄頁（`Cover-*.jpg`）編排於內文頁（`Page-*.jpg`）之前（**預設啟用**；各群組內部均依自然數字順序排序） |
 | `--epub` | - | `False` | 是否在生成 HTML 後自動調用 Pandoc 編譯 MathML EPUB |
@@ -466,8 +466,8 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--layout-direction` | `--direction` | `auto` | 書籍排版方向（`auto`: 優先讀取 toc.json，次之自動抽樣檢測；支援 `horizontal` 橫排、`vertical` 直排） |
 | `--cover` | `--cover-image` | `None` | 指定 EPUB 封面圖檔路徑（未指定則自動在輸入或轉正目錄中偵測 Cover-*.jpg） |
 | `--compress-images` | `--no-compress-images` | `True` | 是否在打包 EPUB 前將 `images/` 目錄圖檔重新壓縮與縮放（**預設啟用**，大幅瘦身 EPUB） |
-| `--image-quality` | - | `75` | images 圖檔壓縮品質（1~100，預設: 75） |
-| `--image-scale` | - | `0.75` | images 圖檔尺寸縮放比例（預設: 0.75） |
+| `--image-quality` | - | `50` | `images/` 插圖與 EPUB 來源圖檔儲存與壓縮品質（1~100，預設: 50） |
+| `--image-scale` | - | `0.8` | `images/` 圖檔尺寸縮放比例（預設: 0.8） |
 | `--image-max-dim` | - | `None` | images 圖檔最大長寬限制（例如 1920，預設 None 不限制） |
 | `--dpi` | - | `None` | 輸出解析度 DPI（預設保持 1:1 原生尺寸無損輸出） |
 | `--margins` | - | `1` | 版心四周均勻留白邊距 (mm，預設: 1) |

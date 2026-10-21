@@ -46,9 +46,10 @@ from raw_to_html import (
 )
 
 try:
-    from recompress_images import recompress_directory
+    from recompress_images import recompress_directory, is_grayscale_image
 except ImportError:
     recompress_directory = None
+    is_grayscale_image = None
 
 try:
     from orientation_detector import detect_book_orientation, detect_page_orientation, normalize_layout_direction
@@ -425,6 +426,70 @@ def resolve_model_paths(models_dir: Optional[str] = None, yolo_weights: Optional
     return str(yolo_weights), str(glm_model_dir)
 
 
+def save_image_as_jpg(
+    src_img_or_path: Union[Image.Image, str, Path],
+    dest_jpg_path: Union[str, Path],
+    quality: int = 50,
+    auto_grayscale: bool = True,
+    is_cover: bool = False,
+    force_gray: bool = False,
+) -> None:
+    """
+    將 PIL.Image 或圖檔路徑統一儲存為最佳化 JPG 圖檔 (.jpg)：
+    1. 預設 quality=50，搭配 Huffman optimize=True。
+    2. 若啟用 auto_grayscale，自動檢測是否實質為灰階色調（含封面色彩保護與高彩度細節防護），
+       若是則轉為單通道灰階 (L 模式) 儲存，大幅縮減檔案體積並消除彩噪。
+    """
+    dest_p = Path(dest_jpg_path)
+    dest_p.parent.mkdir(parents=True, exist_ok=True)
+
+    def _process_and_save(im: Image.Image):
+        target_im = im
+        if auto_grayscale:
+            if force_gray or target_im.mode in ("L", "1", "LA"):
+                is_gray = True
+            elif is_grayscale_image is not None:
+                is_gray = is_grayscale_image(target_im, is_cover=is_cover)
+            else:
+                from PIL import ImageChops
+                rgb_im = target_im.convert("RGB")
+                r, g, b = rgb_im.split()
+                max_diff = max(
+                    ImageChops.difference(r, g).getextrema()[1],
+                    ImageChops.difference(g, b).getextrema()[1],
+                    ImageChops.difference(r, b).getextrema()[1],
+                )
+                is_gray = (max_diff == 0) if is_cover else (max_diff <= 12)
+
+            if is_gray:
+                if target_im.mode != "L":
+                    target_im = target_im.convert("L")
+            else:
+                if target_im.mode != "RGB":
+                    target_im = target_im.convert("RGB")
+        else:
+            if target_im.mode not in ("RGB", "L"):
+                target_im = target_im.convert("RGB")
+
+        save_kwargs: Dict[str, Any] = {
+            "format": "JPEG",
+            "quality": max(1, min(100, int(quality))),
+            "optimize": True,
+        }
+        if "dpi" in im.info:
+            save_kwargs["dpi"] = im.info["dpi"]
+        if target_im.mode == "RGB" and "icc_profile" in im.info:
+            save_kwargs["icc_profile"] = im.info["icc_profile"]
+
+        target_im.save(dest_p, **save_kwargs)
+
+    if isinstance(src_img_or_path, (str, Path)):
+        with Image.open(src_img_or_path) as loaded_im:
+            _process_and_save(loaded_im)
+    else:
+        _process_and_save(src_img_or_path)
+
+
 class DocumentConverter:
     def __init__(
         self,
@@ -438,6 +503,8 @@ class DocumentConverter:
         layout_direction: str = "auto",
         repetition_penalty: Optional[float] = None,
         no_repeat_ngram_size: Optional[int] = None,
+        image_quality: int = 50,
+        auto_grayscale: bool = True,
     ):
         self.resolved_yolo, self.resolved_glm = resolve_model_paths(models_dir, yolo_weights, glm_model_dir)
         self.device = device if torch.cuda.is_available() else "cpu"
@@ -447,6 +514,8 @@ class DocumentConverter:
         self.layout_direction = layout_direction
         self.repetition_penalty = repetition_penalty
         self.no_repeat_ngram_size = no_repeat_ngram_size
+        self.image_quality = int(image_quality)
+        self.auto_grayscale = bool(auto_grayscale)
         self.yolo = None
         self.glm = None
         self.processor = None
@@ -973,14 +1042,21 @@ class DocumentConverter:
                 return cached_res
 
         # 1. 主動跳過 OCR 模式 (使用者指定全頁圖片頁或免 OCR 頁)
+        is_cov_page = (classify_book_image(Path(image_path)) == 0)
         if skip_ocr:
             print(f"\n==================================================")
             print(f"[*] 處理頁面: {page_id} (指定不作 OCR / 整頁插圖模式)")
             print(f"==================================================")
-            dest_img_filename = f"{page_stem}_raw{Path(image_path).suffix.lower()}"
+            dest_img_filename = f"{page_stem}_raw.jpg"
             dest_img_path = os.path.join(images_out_dir, dest_img_filename)
-            shutil.copy2(image_path, dest_img_path)
-            print(f"  [+] 成功將原始圖檔嵌入為整頁插圖: images/{dest_img_filename}")
+            save_image_as_jpg(
+                image_path,
+                dest_img_path,
+                quality=self.image_quality,
+                auto_grayscale=self.auto_grayscale,
+                is_cover=is_cov_page,
+            )
+            print(f"  [+] 成功將原始圖檔嵌入為整頁插圖 (JPG, quality={self.image_quality}): images/{dest_img_filename}")
             res = {
                 "page_id": page_id,
                 "page_stem": page_stem,
@@ -999,7 +1075,9 @@ class DocumentConverter:
                     pass
             return res
 
-        orig_im = Image.open(image_path).convert("RGB")
+        with Image.open(image_path) as _raw_im:
+            orig_is_gray = _raw_im.mode in ("L", "1", "LA")
+            orig_im = _raw_im.convert("RGB")
         img_w, img_h = orig_im.size
 
         print(f"\n==================================================")
@@ -1037,13 +1115,20 @@ class DocumentConverter:
                 )
                 crop_im = orig_im.crop(crop_box)
 
-                # 插圖 (Figure) 無需 OCR，直接儲存原圖
+                # 插圖 (Figure) 無需 OCR，統一儲存為最佳化 JPG (.jpg)
                 if cls_name == "figure":
                     fig_count += 1
-                    fig_filename = f"{page_stem}_fig_{fig_count:02d}.png"
+                    fig_filename = f"{page_stem}_fig_{fig_count:02d}.jpg"
                     fig_path = os.path.join(images_out_dir, fig_filename)
-                    crop_im.save(fig_path, "PNG", quality=95)
-                    print(f"  [+] [插圖] 成功裁切原始高解析圖檔: images/{fig_filename} (尺寸: {crop_im.size})")
+                    save_image_as_jpg(
+                        crop_im,
+                        fig_path,
+                        quality=self.image_quality,
+                        auto_grayscale=self.auto_grayscale,
+                        is_cover=False,
+                        force_gray=orig_is_gray,
+                    )
+                    print(f"  [+] [插圖] 成功裁切圖檔 (JPG, quality={self.image_quality}): images/{fig_filename} (尺寸: {crop_im.size})")
                     html_blocks_draft.append({
                         "type": "figure",
                         "img_src": f"images/{fig_filename}",
@@ -1152,9 +1237,15 @@ class DocumentConverter:
             fail_reason = ""
 
             if not final_blocks:
-                dest_img_filename = f"{page_stem}_raw{Path(image_path).suffix.lower()}"
+                dest_img_filename = f"{page_stem}_raw.jpg"
                 dest_img_path = os.path.join(images_out_dir, dest_img_filename)
-                shutil.copy2(image_path, dest_img_path)
+                save_image_as_jpg(
+                    image_path,
+                    dest_img_path,
+                    quality=self.image_quality,
+                    auto_grayscale=self.auto_grayscale,
+                    is_cover=is_cov_page,
+                )
                 final_blocks = [{
                     "type": "figure",
                     "img_src": f"images/{dest_img_filename}",
@@ -1166,7 +1257,7 @@ class DocumentConverter:
                     fail_reason = "偵測到實質文字筆畫特徵，但版面分析與保底 OCR 皆未提取出有效文字區塊，已降級為原圖嵌入"
                     print(f"  [!] 警告：頁面 '{page_id}' 含有文字但未能提取出任何內文區塊，標記為辨識失敗 (將儲存為 {fail_raw_file.name})")
                 else:
-                    print(f"  [-] 該頁確認為純插圖/空白頁，自動將原圖嵌入為整頁插圖")
+                    print(f"  [-] 該頁確認為純插圖/空白頁，自動將原圖嵌入為整頁插圖 (JPG, quality={self.image_quality})")
 
             res = {
                 "page_id": page_id,
@@ -1197,9 +1288,15 @@ class DocumentConverter:
 
         except Exception as e:
             print(f"  [-] 警告：頁面 '{page_id}' OCR 辨識異常 ({e})，標記為辨識失敗並自動降級為整頁原始圖檔嵌入！", file=sys.stderr)
-            dest_img_filename = f"{page_stem}_raw{Path(image_path).suffix.lower()}"
+            dest_img_filename = f"{page_stem}_raw.jpg"
             dest_img_path = os.path.join(images_out_dir, dest_img_filename)
-            shutil.copy2(image_path, dest_img_path)
+            save_image_as_jpg(
+                image_path,
+                dest_img_path,
+                quality=self.image_quality,
+                auto_grayscale=self.auto_grayscale,
+                is_cover=is_cov_page,
+            )
             res = {
                 "page_id": page_id,
                 "page_stem": page_stem,
@@ -1257,6 +1354,8 @@ def _worker_process_page(args_tuple):
         layout_direction,
         repetition_penalty,
         no_repeat_ngram_size,
+        image_quality,
+        auto_grayscale,
     ) = args_tuple
 
     # 優先檢查快取命中：若已存在有效 raw 檔且未強制重跑，直接回傳，完全不載入 AI 模型或佔用 VRAM
@@ -1279,6 +1378,8 @@ def _worker_process_page(args_tuple):
         layout_direction=layout_direction,
         repetition_penalty=repetition_penalty,
         no_repeat_ngram_size=no_repeat_ngram_size,
+        image_quality=image_quality,
+        auto_grayscale=auto_grayscale,
     )
     res = converter.process_page(
         img_path,
@@ -1320,8 +1421,8 @@ def main():
     parser.add_argument(
         "--image-quality",
         type=int,
-        default=75,
-        help="images 圖檔壓縮品質 (1-100，預設: 75)"
+        default=50,
+        help="images 圖檔儲存與壓縮品質 (1-100，預設: 50)"
     )
     parser.add_argument(
         "--image-scale",
@@ -1344,7 +1445,7 @@ def main():
         "--auto-grayscale",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="重新壓縮圖檔時自動判斷是否為灰階色調，若無彩色資訊則改以灰階模式壓縮儲存以節省空間 (預設: True，使用 --no-auto-grayscale 保持原樣)"
+        help="儲存或重新壓縮圖檔時自動判斷是否為灰階色調，若無彩色資訊則改以灰階模式壓縮儲存以節省空間 (預設: True，使用 --no-auto-grayscale 保持原樣)"
     )
     parser.add_argument("--batch-size", type=int, default=2, help="單頁 OCR 批次參數 (保留向後相容性；為杜絕 Batch Padding 造成之注意力坍塌與死循環，內部已全面採用單圖獨立安全前向推論；多工加速請使用 --workers)")
     parser.add_argument("--workers", type=int, default=1, help="多進程並行 Worker 數 (預設 1，16GB 顯卡可設 3~4)")
@@ -1496,14 +1597,22 @@ def main():
             args.title = toc_data["book_title"]
             print(f"[*] 自動套用 toc.json 中的書名: '{args.title}'")
 
-    # 確保封面圖片複製至 output/images/ 目錄，供 HTML 與 EPUB 引用
+    # 確保封面圖片儲存為最佳化 JPG (.jpg) 至 output/images/ 目錄，供 HTML 與 EPUB 引用
+    orig_cover_name = actual_cover.name.lower() if actual_cover else None
     if actual_cover and actual_cover.exists():
         images_dir = Path(args.output) / "images"
         images_dir.mkdir(parents=True, exist_ok=True)
-        dest_cover = images_dir / actual_cover.name
+        dest_cover = images_dir / f"{actual_cover.stem}.jpg"
         if not dest_cover.exists() or dest_cover.resolve() != actual_cover.resolve():
-            shutil.copy2(actual_cover, dest_cover)
-            print(f"[*] 複製封面圖檔至圖片目錄: {dest_cover}")
+            save_image_as_jpg(
+                actual_cover,
+                dest_cover,
+                quality=args.image_quality,
+                auto_grayscale=args.auto_grayscale,
+                is_cover=True,
+            )
+            print(f"[*] 儲存封面圖檔至圖片目錄 (JPG, quality={args.image_quality}): {dest_cover}")
+        actual_cover = dest_cover
 
     out_path = Path(args.output).resolve()
     exclude_targets = [
@@ -1533,6 +1642,8 @@ def main():
 
     skip_targets = parse_skip_ocr_targets(args.skip_ocr)
     if actual_cover:
+        if orig_cover_name:
+            skip_targets.add(orig_cover_name)
         skip_targets.add(actual_cover.name.lower())
         skip_targets.add(actual_cover.stem.lower())
     if skip_targets:
@@ -1633,6 +1744,8 @@ def main():
                 resolved_layout_direction,
                 args.repetition_penalty,
                 args.no_repeat_ngram_size,
+                args.image_quality,
+                args.auto_grayscale,
             )
             for idx in uncached_indices
         ]
@@ -1650,6 +1763,8 @@ def main():
             layout_direction=resolved_layout_direction,
             repetition_penalty=args.repetition_penalty,
             no_repeat_ngram_size=args.no_repeat_ngram_size,
+            image_quality=args.image_quality,
+            auto_grayscale=args.auto_grayscale,
         )
         for idx in uncached_indices:
             img_path = image_files[idx]

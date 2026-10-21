@@ -206,8 +206,8 @@ def main():
     parser.add_argument(
         "--image-quality",
         type=int,
-        default=75,
-        help="images 圖檔壓縮品質 (1-100，預設: 75)"
+        default=50,
+        help="images 圖檔儲存與壓縮品質 (1-100，預設: 50)"
     )
     parser.add_argument(
         "--image-scale",
@@ -505,19 +505,19 @@ def main():
         step3_cmd.extend(["--cover", str(actual_cover)])
         print(f"[*] 設定 EPUB/HTML 封面圖檔: {actual_cover}")
 
-    # images 圖檔重新壓縮與縮放設定
+    # images 圖檔品質與灰階檢測設定 (含選擇性重新壓縮與縮放)
+    step3_cmd.extend(["--image-quality", str(args.image_quality)])
+    if getattr(args, "auto_grayscale", True):
+        step3_cmd.append("--auto-grayscale")
+    else:
+        step3_cmd.append("--no-auto-grayscale")
     if args.compress_images:
         step3_cmd.append("--compress-images")
-        step3_cmd.extend(["--image-quality", str(args.image_quality)])
         step3_cmd.extend(["--image-scale", str(args.image_scale)])
         if args.image_max_dim:
             step3_cmd.extend(["--image-max-dim", str(args.image_max_dim)])
         if args.image_unsharp:
             step3_cmd.extend(["--image-unsharp", str(args.image_unsharp)])
-        if getattr(args, "auto_grayscale", True):
-            step3_cmd.append("--auto-grayscale")
-        else:
-            step3_cmd.append("--no-auto-grayscale")
 
     print(f"[*] 執行指令: {' '.join(step3_cmd)}")
     subprocess.run(step3_cmd, check=True)
