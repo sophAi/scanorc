@@ -661,9 +661,10 @@ class DocumentConverter:
 
         filtered_boxes = self._filter_contained_boxes(boxes_info, img_h=img_h)
         merged_boxes = self._merge_adjacent_text_columns(filtered_boxes, img_w=img_w, img_h=img_h, layout_direction=effective_direction)
+        expanded_boxes = self._expand_vertical_trailing_columns(merged_boxes, im=im, img_w=img_w, img_h=img_h, layout_direction=effective_direction)
         # 直排章節標題語意校正：若直排版面中有單列頂部起排且較短的文字區塊，校正為 title
         if effective_direction == "vertical":
-            for b in merged_boxes:
+            for b in expanded_boxes:
                 if b["cls_name"] == "plain text":
                     bx1, by1, bx2, by2 = b["bbox"]
                     bw = bx2 - bx1
@@ -673,7 +674,7 @@ class DocumentConverter:
                         b["cls_id"] = 0
                         print(f"  [+] 直排標題語意校正: {b['bbox']} -> title")
 
-        sorted_boxes = self._sort_reading_order(merged_boxes, layout_direction=effective_direction)
+        sorted_boxes = self._sort_reading_order(expanded_boxes, layout_direction=effective_direction)
         return sorted_boxes
 
     def _merge_adjacent_text_columns(
@@ -775,6 +776,110 @@ class DocumentConverter:
                     break
 
         return current_boxes
+
+    def _expand_vertical_trailing_columns(
+        self,
+        boxes: List[Dict[str, Any]],
+        im: Image.Image,
+        img_w: int,
+        img_h: int,
+        layout_direction: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        直排書籍左側收尾短行自動外擴偵測 (Vertical Trailing Column Absorption)。
+        在直排版面（由右向左讀）中，章節或段落末尾的最後一列（收尾短行）往往僅有數個字（例如「超級強勢股。」），
+        因高度短且左側與下方均為大片空白，DocLayout-YOLO 經常無法提出候選框或置信度偏低而漏檢。
+        本機制針對直排正文（plain text）區塊，主動探測其左側緊鄰區域（1~2 行距內）是否存在收尾文字筆畫特徵，
+        若偵測到相鄰短行且無其他區塊阻擋，自動將 bbox 向左平滑外擴吸收並給予充足安全留白，徹底根絕漏字。
+        """
+        if not boxes or layout_direction != "vertical":
+            return boxes
+
+        try:
+            import numpy as np
+            gray_im = im.convert("L")
+            arr = np.array(gray_im)
+        except Exception:
+            return boxes
+
+        for b in boxes:
+            if b["cls_name"] != "plain text":
+                continue
+            x1, y1, x2, y2 = b["bbox"]
+            bh = y2 - y1
+            if bh < 300:
+                continue
+
+            curr_x1 = x1
+            # 最多向左探測 3 次相鄰短行 (防止多列短行連續漏檢)
+            for _ in range(3):
+                max_probe = min(int(img_w * 0.12), 160)
+                probe_x1 = max(0, curr_x1 - max_probe)
+
+                # 檢查是否有其他非 abandon 的 box 位於左側且 Y 軸重疊阻擋
+                for ob in boxes:
+                    if ob is b or ob["cls_name"] == "abandon":
+                        continue
+                    ox1, oy1, ox2, oy2 = ob["bbox"]
+                    if max(y1, oy1) < min(y2, oy2):
+                        if ox2 <= curr_x1 and ox2 > probe_x1:
+                            probe_x1 = ox2
+
+                if curr_x1 - probe_x1 < 25:
+                    break
+
+                slice_arr = arr[y1:y2, probe_x1:curr_x1]
+                is_dark = (slice_arr < 200)
+                col_dark_counts = is_dark.sum(axis=0)
+
+                # 單欄文字筆畫黑點門檻 (例如黑點數 >= 15)
+                dark_cols = np.where(col_dark_counts >= 15)[0]
+                if len(dark_cols) == 0:
+                    break
+
+                width = curr_x1 - probe_x1
+                last_dark_rel = int(dark_cols[-1])
+                gap_to_box = width - 1 - last_dark_rel
+
+                # 緊鄰行距通常在 10px ~ 90px 之間，若間距過大則非相鄰收尾行
+                if gap_to_box > 90:
+                    break
+
+                # 尋找與 last_dark_rel 相連或同欄 (寬度 <= 65px) 的黑點群
+                line_dark_cols = [c for c in dark_cols if (last_dark_rel - c) <= 65]
+                first_dark_rel = int(line_dark_cols[0])
+                col_span = last_dark_rel - first_dark_rel + 1
+
+                # 筆畫高度檢驗
+                stroke_y_has_dark = is_dark[:, first_dark_rel:last_dark_rel + 1].any(axis=1)
+                stroke_y_indices = np.where(stroke_y_has_dark)[0]
+                if len(stroke_y_indices) == 0:
+                    break
+
+                stroke_h = stroke_y_indices[-1] - stroke_y_indices[0] + 1
+                if col_span < 8 or stroke_h < 15:
+                    break
+                if col_span <= 5 and stroke_h > int(bh * 0.85):
+                    # 排除貫穿整頁之純邊框細線
+                    break
+                if stroke_y_indices[0] > 250:
+                    # 直排收尾行通常從頂部起排
+                    break
+
+                abs_text_x1 = probe_x1 + first_dark_rel
+                safe_margin = 35
+                expanded_x1 = max(0, abs_text_x1 - safe_margin)
+                if expanded_x1 < curr_x1:
+                    curr_x1 = expanded_x1
+                else:
+                    break
+
+            if curr_x1 < x1:
+                old_bbox = list(b["bbox"])
+                b["bbox"] = [curr_x1, y1, x2, y2]
+                print(f"  [+] 直排左側收尾行智慧外擴: {old_bbox} -> {b['bbox']} (向左吸收 {x1 - curr_x1}px 孤立短行)")
+
+        return boxes
 
     @staticmethod
     def _pad_cushion(im: Image.Image, max_ratio: float = 2.0) -> Image.Image:
