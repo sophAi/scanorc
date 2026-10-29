@@ -116,6 +116,36 @@ def get_directory_dpi(img_files: List[Path], fallback_dpi: int = 300) -> int:
     return fallback_dpi
 
 
+def deskew_image_pil(im: Image.Image) -> Image.Image:
+    """
+    純 Python / OpenCV 文字行傾斜檢測與無損旋轉校正 (作為 ImageMagick convert -deskew 之備援)
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        im_gray = np.array(im.convert("L"))
+        edges = cv2.Canny(im_gray, 50, 150)
+        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 50, minLineLength=50, maxLineGap=10)
+        if lines is None:
+            return im
+        angles = []
+        for line in lines:
+            x1, y1, x2, y2 = line[0] if len(line.shape) > 1 else line
+            ang = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+            if abs(ang) < 30:
+                angles.append(ang)
+        if not angles:
+            return im
+        med_angle = float(np.median(angles))
+        if abs(med_angle) < 0.1:
+            return im
+        bg_color = (255, 255, 255) if im.mode == "RGB" else 255
+        return im.rotate(-med_angle, resample=Image.Resampling.BICUBIC, expand=True, fillcolor=bg_color)
+    except Exception:
+        return im
+
+
 def apply_image_transform(
     src_path: Path,
     target_path: Path,
@@ -123,13 +153,14 @@ def apply_image_transform(
     quality: int = 50,
     scale: float = 1.0,
     unsharp: Optional[str] = "1x0.55+1.5+0.002",
-    auto_grayscale: bool = True
+    auto_grayscale: bool = True,
+    deskew: bool = False
 ):
     """
     通用影像導出與處理函式：
     支援尺寸縮放 (scale)、銳化遮色片 (unsharp，預設 1x0.55+1.5+0.002)、
-    JPG 品質壓縮 (quality) 與自動灰階判定 (auto_grayscale，保護封面與彩色細節)。
-    優先使用 ImageMagick convert 執行高效精確之 -unsharp 與 -colorspace Gray 濾鏡，若無則自動降級為 PIL UnsharpMask。
+    JPG 品質壓縮 (quality)、純幾何轉正 (deskew) 與自動灰階判定 (auto_grayscale，保護封面與彩色細節)。
+    優先使用 ImageMagick convert 執行高效精確之 -deskew、-unsharp 與 -colorspace Gray 濾鏡，若無則自動降級為 PIL。
     """
     fmt = target_format.lower()
     target_ext = f".{fmt}" if fmt != "jpeg" else ".jpg"
@@ -137,8 +168,8 @@ def apply_image_transform(
     no_scale = (scale is None or abs(scale - 1.0) <= 1e-4)
     has_unsharp = bool(unsharp and str(unsharp).strip().lower() not in ("none", "off", "0", "false"))
 
-    # 若無需轉換格式、縮放或銳化，且非 JPG 格式，直接快速複製
-    if is_same_ext and fmt not in ("jpg", "jpeg") and no_scale and not has_unsharp:
+    # 若無需轉換格式、縮放、銳化或旋轉校正，且非 JPG 格式，直接快速複製
+    if is_same_ext and fmt not in ("jpg", "jpeg") and no_scale and not has_unsharp and not deskew:
         shutil.copy2(src_path, target_path)
         return
 
@@ -168,6 +199,8 @@ def apply_image_transform(
     convert_bin = shutil.which("convert") or shutil.which("magick")
     if convert_bin:
         cmd = [convert_bin, str(src_path)]
+        if deskew:
+            cmd.extend(["-deskew", "40%"])
         if not no_scale and scale > 0:
             scale_pct = round(scale * 100, 2)
             cmd.extend(["-resize", f"{scale_pct}%"])
@@ -189,6 +222,8 @@ def apply_image_transform(
     # 2. 備援方案：PIL (Pillow)
     try:
         with Image.open(src_path) as im:
+            if deskew:
+                im = deskew_image_pil(im)
             if not no_scale and scale > 0:
                 new_w = max(1, int(round(im.width * scale)))
                 new_h = max(1, int(round(im.height * scale)))
@@ -256,10 +291,11 @@ def export_image_to_target_format(
     quality: int = 50,
     scale: float = 1.0,
     unsharp: Optional[str] = "1x0.55+1.5+0.002",
-    auto_grayscale: bool = True
+    auto_grayscale: bool = True,
+    deskew: bool = False
 ):
     """
-    將原圖導出為指定的目標格式 (支援尺寸縮放與銳化)
+    將原圖導出為指定的目標格式 (支援尺寸縮放、銳化與純幾何旋轉校正)
     """
     apply_image_transform(
         src_path=src_path,
@@ -268,7 +304,8 @@ def export_image_to_target_format(
         quality=quality,
         scale=scale,
         unsharp=unsharp,
-        auto_grayscale=auto_grayscale
+        auto_grayscale=auto_grayscale,
+        deskew=deskew
     )
 
 
@@ -447,7 +484,28 @@ def process_image_group(
                 quality=args.quality,
                 scale=args.scale,
                 unsharp=args.unsharp,
-                auto_grayscale=args.auto_grayscale
+                auto_grayscale=args.auto_grayscale,
+                deskew=False
+            )
+            total_converted += 1
+        return total_converted
+
+    # 若僅啟用自動旋轉校正 (未啟用版心鎖定、黑邊或中縫陰影)
+    # 採用純幾何無損 Deskew，保持 1:1 原生全頁尺寸與所有留白，零位移、零內容裁切
+    if args.auto_rotate and not (args.content_box_lock or args.remove_black_borders or args.remove_spine_shadow):
+        print(f"    [*] 幾何預處理模式: 純旋轉校正 (無版心鎖定裁切，保持 1:1 原生全頁尺寸無損轉正)")
+        for p in files_to_process:
+            target_name = f"{p.stem}.{args.format.lower()}"
+            final_dest = dest_dir / target_name
+            export_image_to_target_format(
+                p,
+                final_dest,
+                target_format=args.format,
+                quality=args.quality,
+                scale=args.scale,
+                unsharp=args.unsharp,
+                auto_grayscale=args.auto_grayscale,
+                deskew=True
             )
             total_converted += 1
         return total_converted
@@ -508,43 +566,24 @@ def process_image_group(
             base_opts.append("--dewarping=off")
 
         for batch in batches:
-            # 4. 版心鎖定
+            # 4. 版心鎖定與邊距處理
             if args.content_box_lock:
                 batch_opts = list(base_opts) + [
                     "--content-detection=normal",
                     f"--margins={args.margins}",
                 ]
-                cmd = (
-                    scantailor_cmd
-                    + batch_opts
-                    + [str(p.resolve()) for p in batch]
-                    + [str(temp_tif_dir.resolve())]
-                )
-                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             else:
-                # 關閉版心鎖定：按圖檔尺寸分組，設定全頁完整邊界以避免裁切版心
-                size_groups = {}
-                for img_p in batch:
-                    try:
-                        with Image.open(img_p) as im:
-                            sz = (im.width, im.height)
-                    except Exception:
-                        sz = (0, 0)
-                    size_groups.setdefault(sz, []).append(img_p)
-
-                for (w, h), sub_batch in size_groups.items():
-                    sub_opts = list(base_opts)
-                    if w > 0 and h > 0:
-                        sub_opts.extend([f"--content-box=0x0:{w}x{h}", "--margins=0"])
-                    else:
-                        sub_opts.append("--margins=0")
-                    cmd = (
-                        scantailor_cmd
-                        + sub_opts
-                        + [str(p.resolve()) for p in sub_batch]
-                        + [str(temp_tif_dir.resolve())]
-                    )
-                    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                batch_opts = list(base_opts) + [
+                    "--content-detection=cautious",
+                    f"--margins={args.margins}",
+                ]
+            cmd = (
+                scantailor_cmd
+                + batch_opts
+                + [str(p.resolve()) for p in batch]
+                + [str(temp_tif_dir.resolve())]
+            )
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
             # 收集產生的 TIF 檔案並轉出至目標鏡像目錄
             tif_files = sorted(

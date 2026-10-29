@@ -385,7 +385,7 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--output` | `-o` | `preprocessed_samples` | 輸出目錄（自動鏡像建立相同的子目錄結構） |
 | `--format` | `-f` | `jpg` | 最終圖檔格式，可選：`jpg`、`png`、`tif` |
 | `--dpi` | - | `None` | 輸出解析度 DPI（**預設 None 不縮放，保持 1:1 原生像素**；指定時才執行重新取樣） |
-| `--margins` | - | `1` | 版心四周均勻邊距大小 (單位: mm，預設 1) |
+| `--margins` | - | `1` | 版心四周均勻邊距大小 (單位: mm，預設 1，僅在啟用 `--content-box-lock` 時生效) |
 | `--color-mode` | - | `color_grayscale` | 色彩模式：`color_grayscale` (保留插圖/照片階調)、`mixed`、`black_and_white` |
 | `--despeckle` | - | `normal` | 去雜點強度：`normal`、`cautious`、`aggressive`、`off` |
 | `--quality` | - | `50` | JPG 輸出壓縮品質 (1~100，預設 50，於畫面參數中即時顯示) |

@@ -1077,10 +1077,23 @@ class MainWindow(QMainWindow):
         self.oc_auto_rotate.stateChanged.connect(self.update_command_preview)
         grid_oc_geom.addWidget(self.oc_auto_rotate, 0, 0)
 
+        h_oc_lock_margins = QHBoxLayout()
         self.oc_content_box_lock = QCheckBox("版心鎖定裁切 (--content-box-lock)")
         self.oc_content_box_lock.setChecked(False)
         self.oc_content_box_lock.stateChanged.connect(self.update_command_preview)
-        grid_oc_geom.addWidget(self.oc_content_box_lock, 0, 1)
+        h_oc_lock_margins.addWidget(self.oc_content_box_lock)
+
+        self.oc_margins = QSpinBox()
+        self.oc_margins.setRange(0, 100)
+        self.oc_margins.setValue(1)
+        self.oc_margins.setSuffix(" mm")
+        self.oc_margins.setToolTip("版心四周留白邊距大小 (單位: mm，需啟用【版心鎖定裁切】方能生效)")
+        self.oc_margins.setEnabled(False)
+        self.oc_margins.valueChanged.connect(self.update_command_preview)
+        self.oc_content_box_lock.toggled.connect(self.oc_margins.setEnabled)
+        h_oc_lock_margins.addWidget(QLabel("留白邊距:"))
+        h_oc_lock_margins.addWidget(self.oc_margins)
+        grid_oc_geom.addLayout(h_oc_lock_margins, 0, 1)
 
         self.oc_remove_black_borders = QCheckBox("清除邊緣黑邊 (--remove-black-borders)")
         self.oc_remove_black_borders.setChecked(False)
@@ -1158,6 +1171,9 @@ class MainWindow(QMainWindow):
         self.s1_margins = QSpinBox()
         self.s1_margins.setRange(0, 100)
         self.s1_margins.setValue(1)
+        self.s1_margins.setSuffix(" mm")
+        self.s1_margins.setToolTip("版心四周留白邊距大小 (單位: mm，需啟用【版心鎖定裁切】方能生效)")
+        self.s1_margins.setEnabled(False)
         self.s1_margins.valueChanged.connect(self.update_command_preview)
         h_params.addWidget(QLabel("邊距 (mm):"))
         h_params.addWidget(self.s1_margins)
@@ -1207,6 +1223,7 @@ class MainWindow(QMainWindow):
         self.s1_content_box_lock = QCheckBox("版心鎖定裁切 (--content-box-lock)")
         self.s1_content_box_lock.setChecked(False)
         self.s1_content_box_lock.stateChanged.connect(self.update_command_preview)
+        self.s1_content_box_lock.toggled.connect(self.s1_margins.setEnabled)
         grid_s1_geom.addWidget(self.s1_content_box_lock, 0, 1)
 
         self.s1_remove_black_borders = QCheckBox("清除邊緣黑邊 (--remove-black-borders)")
@@ -1766,10 +1783,23 @@ class MainWindow(QMainWindow):
         self.batch_auto_rotate.stateChanged.connect(self.update_command_preview)
         grid_batch_geom.addWidget(self.batch_auto_rotate, 0, 0)
 
+        h_batch_lock_margins = QHBoxLayout()
         self.batch_content_box_lock = QCheckBox("版心鎖定裁切")
         self.batch_content_box_lock.setChecked(False)
         self.batch_content_box_lock.stateChanged.connect(self.update_command_preview)
-        grid_batch_geom.addWidget(self.batch_content_box_lock, 0, 1)
+        h_batch_lock_margins.addWidget(self.batch_content_box_lock)
+
+        self.batch_margins = QSpinBox()
+        self.batch_margins.setRange(0, 100)
+        self.batch_margins.setValue(1)
+        self.batch_margins.setSuffix(" mm")
+        self.batch_margins.setToolTip("版心四周留白邊距大小 (單位: mm，需啟用【版心鎖定裁切】方能生效)")
+        self.batch_margins.setEnabled(False)
+        self.batch_margins.valueChanged.connect(self.update_command_preview)
+        self.batch_content_box_lock.toggled.connect(self.batch_margins.setEnabled)
+        h_batch_lock_margins.addWidget(QLabel("留白邊距:"))
+        h_batch_lock_margins.addWidget(self.batch_margins)
+        grid_batch_geom.addLayout(h_batch_lock_margins, 0, 1)
 
         self.batch_remove_black_borders = QCheckBox("清除邊緣黑邊")
         self.batch_remove_black_borders.setChecked(False)
@@ -2532,6 +2562,7 @@ class MainWindow(QMainWindow):
                 cmd.append("--no-auto-rotate")
             if self.batch_content_box_lock.isChecked():
                 cmd.append("--content-box-lock")
+                cmd.extend(["--margins", str(self.batch_margins.value())])
             else:
                 cmd.append("--no-content-box-lock")
             if self.batch_remove_black_borders.isChecked():
@@ -2576,6 +2607,7 @@ class MainWindow(QMainWindow):
                 cmd.append("--no-auto-rotate")
             if self.oc_content_box_lock.isChecked():
                 cmd.append("--content-box-lock")
+                cmd.extend(["--margins", str(self.oc_margins.value())])
             else:
                 cmd.append("--no-content-box-lock")
             if self.oc_remove_black_borders.isChecked():
@@ -2614,7 +2646,6 @@ class MainWindow(QMainWindow):
             cmd.extend(["--output", self.s1_output.text().strip() or "preprocessed_samples"])
             cmd.extend(["--color-mode", self.s1_color.currentText()])
             cmd.extend(["--despeckle", self.s1_despeckle.currentText()])
-            cmd.extend(["--margins", str(self.s1_margins.value())])
             cmd.extend(["--format", self.s1_format.currentText()])
             cmd.extend(["--quality", str(self.s1_quality.value())])
             cmd.extend(["--scale", str(self.s1_scale.value())])
@@ -2628,6 +2659,7 @@ class MainWindow(QMainWindow):
                 cmd.append("--no-auto-rotate")
             if self.s1_content_box_lock.isChecked():
                 cmd.append("--content-box-lock")
+                cmd.extend(["--margins", str(self.s1_margins.value())])
             else:
                 cmd.append("--no-content-box-lock")
             if self.s1_remove_black_borders.isChecked():
@@ -2952,6 +2984,7 @@ class MainWindow(QMainWindow):
                 "copy": self.batch_copy.isChecked(),
                 "organize_target": "preprocessed",
                 "layout_direction": self.batch_layout_dir.currentData() or "auto",
+                "margins": self.batch_margins.value(),
                 "auto_rotate": self.batch_auto_rotate.isChecked(),
                 "content_box_lock": self.batch_content_box_lock.isChecked(),
                 "remove_black_borders": self.batch_remove_black_borders.isChecked(),
@@ -2976,7 +3009,7 @@ class MainWindow(QMainWindow):
                 "force_toc": False,
                 "models_dir": self.oc_models_dir.text().strip() or None,
                 "dpi": dpi_val,
-                "margins": 1,
+                "margins": self.oc_margins.value(),
                 "quality": 50,
                 "scale": 1.0,
                 "unsharp": self.oc_unsharp.text().strip(),
@@ -3211,6 +3244,9 @@ class MainWindow(QMainWindow):
                 self.batch_remove_spine_shadow.setChecked(bool(data["remove_spine_shadow"]))
             elif "clean_shadows" in data:
                 self.batch_remove_spine_shadow.setChecked(bool(data["clean_shadows"]))
+            if "margins" in data and data["margins"] is not None:
+                self.batch_margins.setValue(int(data["margins"]))
+            self.batch_margins.setEnabled(self.batch_content_box_lock.isChecked())
 
         elif target_w == self.tab_oneclick:
             if "input" in data and data["input"] is not None:
@@ -3275,6 +3311,9 @@ class MainWindow(QMainWindow):
                 self.oc_remove_spine_shadow.setChecked(bool(data["remove_spine_shadow"]))
             elif "clean_shadows" in data:
                 self.oc_remove_spine_shadow.setChecked(bool(data["clean_shadows"]))
+            if "margins" in data and data["margins"] is not None:
+                self.oc_margins.setValue(int(data["margins"]))
+            self.oc_margins.setEnabled(self.oc_content_box_lock.isChecked())
 
         elif target_w == self.tab_step1:
             if "input" in data and data["input"] is not None:
@@ -3288,6 +3327,7 @@ class MainWindow(QMainWindow):
                 self.s1_dpi.setText(str(data["dpi"]) if data["dpi"] is not None else "")
             if "margins" in data and data["margins"] is not None:
                 self.s1_margins.setValue(int(data["margins"]))
+            self.s1_margins.setEnabled(self.s1_content_box_lock.isChecked())
             if "color_mode" in data and data["color_mode"] is not None:
                 self.s1_color.setCurrentText(str(data["color_mode"]))
             if "despeckle" in data and data["despeckle"] is not None:
