@@ -434,6 +434,24 @@ def process_image_group(
     if not files_to_process:
         return total_converted
 
+    # 若四項幾何預處理功能皆關閉，直接導出目標格式，無需調用 ScanTailor
+    if not (args.auto_rotate or args.content_box_lock or args.remove_black_borders or args.remove_spine_shadow):
+        print(f"    [*] 幾何預處理開關: 四項全關 (版心鎖定/旋轉校正/黑邊/陰影)，直接快速導出目標格式")
+        for p in files_to_process:
+            target_name = f"{p.stem}.{args.format.lower()}"
+            final_dest = dest_dir / target_name
+            export_image_to_target_format(
+                p,
+                final_dest,
+                target_format=args.format,
+                quality=args.quality,
+                scale=args.scale,
+                unsharp=args.unsharp,
+                auto_grayscale=args.auto_grayscale
+            )
+            total_converted += 1
+        return total_converted
+
     # 建立該子目錄專屬的臨時工作區，執行前徹底清空確保無殘留
     temp_tif_dir = dest_dir / ".scantailor_temp"
     shutil.rmtree(temp_tif_dir, ignore_errors=True)
@@ -465,26 +483,68 @@ def process_image_group(
         batches = [files_to_process]
 
     try:
-        for batch in batches:
-            base_opts = [
-                "--layout=1",                 # 單頁版面
-                "--deskew=auto",              # 自動傾斜角度校正 (各目錄獨立計算)
-                "--content-detection=normal", # 智慧內容邊界識別 (各目錄獨立判斷)
-                f"--margins={args.margins}",  # 版心頁邊距 (mm)
-                f"--color-mode={args.color_mode}", # 保留插圖階調
-                f"--dpi={in_dpi}",            # 輸入解析度
-                f"--output-dpi={out_dpi}",    # 輸出解析度 (兩者相等時比例為 1.0，完全不縮放)
-                f"--despeckle={args.despeckle}", # 消除黑斑雜點
-            ]
-            cmd = (
-                scantailor_cmd
-                + base_opts
-                + [str(p.resolve()) for p in batch]
-                + [str(temp_tif_dir.resolve())]
-            )
+        base_opts = [
+            "--layout=1",                 # 單頁版面
+            f"--color-mode={args.color_mode}", # 保留插圖階調
+            f"--dpi={in_dpi}",            # 輸入解析度
+            f"--output-dpi={out_dpi}",    # 輸出解析度 (兩者相等時比例為 1.0，完全不縮放)
+        ]
+        # 1. 自動旋轉校正
+        if args.auto_rotate:
+            base_opts.append("--deskew=auto")
+        else:
+            base_opts.append("--deskew=manual")
 
-            # 執行 ScanTailor 運算
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # 2. 清除黑邊
+        if args.remove_black_borders:
+            base_opts.extend(["--white-margins", f"--despeckle={args.despeckle}"])
+        else:
+            base_opts.append("--despeckle=off")
+
+        # 3. 清除中縫漸層陰影
+        if args.remove_spine_shadow:
+            base_opts.extend(["--dewarping=auto", "--normalize-illumination"])
+        else:
+            base_opts.append("--dewarping=off")
+
+        for batch in batches:
+            # 4. 版心鎖定
+            if args.content_box_lock:
+                batch_opts = list(base_opts) + [
+                    "--content-detection=normal",
+                    f"--margins={args.margins}",
+                ]
+                cmd = (
+                    scantailor_cmd
+                    + batch_opts
+                    + [str(p.resolve()) for p in batch]
+                    + [str(temp_tif_dir.resolve())]
+                )
+                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            else:
+                # 關閉版心鎖定：按圖檔尺寸分組，設定全頁完整邊界以避免裁切版心
+                size_groups = {}
+                for img_p in batch:
+                    try:
+                        with Image.open(img_p) as im:
+                            sz = (im.width, im.height)
+                    except Exception:
+                        sz = (0, 0)
+                    size_groups.setdefault(sz, []).append(img_p)
+
+                for (w, h), sub_batch in size_groups.items():
+                    sub_opts = list(base_opts)
+                    if w > 0 and h > 0:
+                        sub_opts.extend([f"--content-box=0x0:{w}x{h}", "--margins=0"])
+                    else:
+                        sub_opts.append("--margins=0")
+                    cmd = (
+                        scantailor_cmd
+                        + sub_opts
+                        + [str(p.resolve()) for p in sub_batch]
+                        + [str(temp_tif_dir.resolve())]
+                    )
+                    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
             # 收集產生的 TIF 檔案並轉出至目標鏡像目錄
             tif_files = sorted(
@@ -595,6 +655,30 @@ def main():
         help="自動偵測圖檔是否為灰階色調，若無彩色資訊則改以灰階模式壓縮儲存以節省空間 (預設: True，使用 --no-auto-grayscale 保持原樣)"
     )
     parser.add_argument(
+        "--auto-rotate", "--auto-deskew",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="自動偵測傾斜角度並旋轉校正 (預設: True，使用 --no-auto-rotate 關閉)"
+    )
+    parser.add_argument(
+        "--content-box-lock", "--lock-content-box",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="鎖定版心內容邊界，依頁面文字邊界自動裁切並套用邊距 (預設: False，保持整頁原始尺寸，使用 --content-box-lock 啟用)"
+    )
+    parser.add_argument(
+        "--remove-black-borders", "--clean-borders",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="清除掃描頁面四周的黑邊與雜點 (預設: False，使用 --remove-black-borders 啟用)"
+    )
+    parser.add_argument(
+        "--remove-spine-shadow", "--clean-shadows",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="消除中縫漸層陰影與曲面平整化 (預設: False，使用 --remove-spine-shadow 啟用)"
+    )
+    parser.add_argument(
         "--skip-orc", "--skip-ocr", "--no-ocr",
         nargs="*",
         default=[],
@@ -636,6 +720,7 @@ def main():
     quality_desc = f", 品質: {args.quality}" if args.format.lower() in ("jpg", "jpeg") else ""
     gray_desc = f", 自動灰階: {'啟用' if args.auto_grayscale else '關閉'}" if args.format.lower() in ("jpg", "jpeg") else ""
     print(f"[*] 參數設定: {args.format.upper()} (解析度: {dpi_summary}, 邊距: {args.margins}mm, 色彩: {args.color_mode}{quality_desc}{gray_desc}, 縮放: {args.scale}, 銳化: {args.unsharp})")
+    print(f"[*] 幾何開關: 自動旋轉校正: {'開啟' if args.auto_rotate else '關閉'} | 版心鎖定: {'開啟' if args.content_box_lock else '關閉'} | 清除黑邊: {'開啟' if args.remove_black_borders else '關閉'} | 清除中縫陰影: {'開啟' if args.remove_spine_shadow else '關閉'}")
     if skip_targets:
         print(f"[*] 略過設定: 發現 {len(skip_targets)} 個略過項目 (將繞過 ScanTailor 運算並直接導出原圖)")
     print(f"[*] 掃描統計: 發現 {len(image_groups)} 個書籍/章節目錄群組，共計 {total_images} 張圖片待處理")

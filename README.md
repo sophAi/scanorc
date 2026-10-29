@@ -15,7 +15,7 @@
    - **多階層子目錄遞迴**：自動遞迴掃描輸入目錄結構，並以完全相同的目錄樹鏡像輸出。
    - **獨立書籍版面判定**：每個子目錄視為一本獨立書籍，自動重新計算版心與轉正角度，絕不跨目錄沿用或殘留規格。
    - **1:1 原生尺寸無損輸出**：預設不進行任何圖形重新取樣或縮放，完整保留原始掃描之最高清晰度；支援自訂 `--dpi`。
-   - **自動去除黑邊與雜訊**：自動清除掃描儀壓痕黑邊、書脊中縫漸層陰影與微小孤立黑點（Despeckle）。
+   - **獨立幾何前置開關**：將自動旋轉校正、版心鎖定、清除黑邊、清除中縫陰影拆分為獨立選項，可單獨控制開啟或關閉；**預設僅啟用自動旋轉校正**（保持整頁原寸不裁切版心），若四項全關則直接無損秒級導出。
 
 2. **精準版面分析與內容分離 (`DocLayout-YOLO`)**：
    - 採用以 YOLOv10 為基礎之出版版面偵測模型（39MB 超輕量）。
@@ -392,6 +392,10 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--scale` | - | `1.0` | 輸出圖檔尺寸縮放比例（例如 0.8 或 1.0，預設: 1.0） |
 | `--unsharp` | - | `1x0.55+1.5+0.002` | 影像銳化濾鏡參數（ImageMagick unsharp 語法，例如 1x0.55+1.5+0.002，設為 none 或 off 關閉） |
 | `--auto-grayscale` | `--no-auto-grayscale` | `True` | 自動偵測圖檔是否為灰階色調，若無彩色資訊則改以灰階模式壓縮儲存以節省空間（內建封面保護與彩色細節防護，預設: True） |
+| `--auto-rotate` | `--no-auto-rotate`, `--auto-deskew` | `True` | 自動偵測傾斜角度並旋轉校正（**預設啟用**，使用 `--no-auto-rotate` 關閉） |
+| `--content-box-lock` | `--no-content-box-lock`, `--lock-content-box` | `False` | 鎖定版心內容邊界，依文字邊界自動裁切並套用邊距（**預設 False** 關閉，保持整頁原始尺寸） |
+| `--remove-black-borders` | `--no-remove-black-borders`, `--clean-borders` | `False` | 清除掃描頁面四周的黑邊與雜點（**預設 False** 關閉） |
+| `--remove-spine-shadow` | `--no-remove-spine-shadow`, `--clean-shadows` | `False` | 消除中縫漸層陰影與曲面平整化（**預設 False** 關閉） |
 | `--batch-size` | - | `0` | 單一目錄分批大小 (預設 0 表示整章節一次性處理以維持版心尺寸統一) |
 | `--skip-orc` | `--skip-ocr`, `--no-ocr` | `[]` | 略過 ScanTailor 幾何轉正與裁切處理的檔案清單（支援萬用字元如 `Cover-*.jpg`、`Content-*`、檔名、頁碼或 txt 清單，直接將原始圖檔導出至輸出目錄） |
 
@@ -475,6 +479,10 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--quality` | - | `50` | 轉正裁切若輸出為 JPG 時的壓縮品質 (1~100，預設: 50) |
 | `--scale` | - | `1.0` | 轉正裁切圖檔尺寸縮放比例 (預設: 1.0) |
 | `--unsharp` | - | `1x0.55+1.5+0.002` | 轉正裁切銳化濾鏡參數 (ImageMagick unsharp 語法，預設: 1x0.55+1.5+0.002) |
+| `--auto-rotate` | `--no-auto-rotate` | `True` | 步驟 1 轉正：自動旋轉校正（**預設: True**） |
+| `--content-box-lock` | `--no-content-box-lock` | `False` | 步驟 1 轉正：版心鎖定裁切（**預設: False**，保持整頁原始尺寸） |
+| `--remove-black-borders` | `--no-remove-black-borders` | `False` | 步驟 1 轉正：清除邊緣黑邊（**預設: False**） |
+| `--remove-spine-shadow` | `--no-remove-spine-shadow` | `False` | 步驟 1 轉正：清除中縫陰影（**預設: False**） |
 | `--auto-grayscale` | `--no-auto-grayscale` | `True` | 自動偵測圖檔是否為灰階色調並以灰階模式壓縮儲存以進一步節省空間（內建封面保護與彩色細節防護，預設: True） |
 | `--color-mode` | - | `color_grayscale` | 轉正色彩模式：`color_grayscale`、`mixed`、`black_and_white` |
 | `--workers` | - | `1` | 多進程並行 Worker 數（預設 1；16GB 顯卡可設 3~4） |
@@ -569,6 +577,10 @@ ScanORC 旗下的**所有工具程式**（`process_book.py`, `batch_process.py`,
 | `--quality` | - | `50` | 轉正裁切若輸出為 JPG 時的壓縮品質 (預設: 50) |
 | `--scale` | - | `1.0` | 轉正裁切圖檔尺寸縮放比例 (預設: 1.0) |
 | `--unsharp` | - | `1x0.55+1.5+0.002` | 轉正裁切銳化濾鏡參數 (ImageMagick unsharp 語法，預設: 1x0.55+1.5+0.002) |
+| `--auto-rotate` | `--no-auto-rotate` | `True` | 步驟 1 轉正：自動旋轉校正（**預設: True**） |
+| `--content-box-lock` | `--no-content-box-lock` | `False` | 步驟 1 轉正：版心鎖定裁切（**預設: False**，保持整頁原始尺寸） |
+| `--remove-black-borders` | `--no-remove-black-borders` | `False` | 步驟 1 轉正：清除邊緣黑邊（**預設: False**） |
+| `--remove-spine-shadow` | `--no-remove-spine-shadow` | `False` | 步驟 1 轉正：清除中縫陰影（**預設: False**） |
 | `--auto-grayscale` | `--no-auto-grayscale` | `True` | 自動偵測圖檔是否為灰階色調並以灰階模式壓縮儲存以進一步節省空間（內建封面保護與彩色細節防護，預設: True） |
 | `--skip-existing` | - | `False` | 斷點續傳：若該書輸出目錄已存在 `book.epub`（或 `book.html`）則自動略過 |
 | `--use-existing-toc` | `--no-use-existing-toc` | `True` | 若目錄中存在 `toc.json`，是否優先沿用並跳過 AI 抽取 |

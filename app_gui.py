@@ -1071,6 +1071,28 @@ class MainWindow(QMainWindow):
         grid_chk.addWidget(self.oc_copy, 1, 0, 1, 2)
         form.addRow("功能開關:", grid_chk)
 
+        grid_oc_geom = QGridLayout()
+        self.oc_auto_rotate = QCheckBox("自動旋轉校正 (--auto-rotate)")
+        self.oc_auto_rotate.setChecked(True)
+        self.oc_auto_rotate.stateChanged.connect(self.update_command_preview)
+        grid_oc_geom.addWidget(self.oc_auto_rotate, 0, 0)
+
+        self.oc_content_box_lock = QCheckBox("版心鎖定裁切 (--content-box-lock)")
+        self.oc_content_box_lock.setChecked(False)
+        self.oc_content_box_lock.stateChanged.connect(self.update_command_preview)
+        grid_oc_geom.addWidget(self.oc_content_box_lock, 0, 1)
+
+        self.oc_remove_black_borders = QCheckBox("清除邊緣黑邊 (--remove-black-borders)")
+        self.oc_remove_black_borders.setChecked(False)
+        self.oc_remove_black_borders.stateChanged.connect(self.update_command_preview)
+        grid_oc_geom.addWidget(self.oc_remove_black_borders, 1, 0)
+
+        self.oc_remove_spine_shadow = QCheckBox("清除中縫陰影 (--remove-spine-shadow)")
+        self.oc_remove_spine_shadow.setChecked(False)
+        self.oc_remove_spine_shadow.stateChanged.connect(self.update_command_preview)
+        grid_oc_geom.addWidget(self.oc_remove_spine_shadow, 1, 1)
+        form.addRow("轉正幾何開關:", grid_oc_geom)
+
         h_oc_layout_dir = QHBoxLayout()
         self.oc_layout_dir = QComboBox()
         self.oc_layout_dir.addItem("auto (預設：自動讀取 toc.json 或抽樣檢測)", "auto")
@@ -1175,6 +1197,28 @@ class MainWindow(QMainWindow):
         h_fmt.addWidget(QLabel("銳化:"))
         h_fmt.addWidget(self.s1_unsharp)
         form.addRow("輸出品質與尺寸:", h_fmt)
+
+        grid_s1_geom = QGridLayout()
+        self.s1_auto_rotate = QCheckBox("自動旋轉校正 (--auto-rotate)")
+        self.s1_auto_rotate.setChecked(True)
+        self.s1_auto_rotate.stateChanged.connect(self.update_command_preview)
+        grid_s1_geom.addWidget(self.s1_auto_rotate, 0, 0)
+
+        self.s1_content_box_lock = QCheckBox("版心鎖定裁切 (--content-box-lock)")
+        self.s1_content_box_lock.setChecked(False)
+        self.s1_content_box_lock.stateChanged.connect(self.update_command_preview)
+        grid_s1_geom.addWidget(self.s1_content_box_lock, 0, 1)
+
+        self.s1_remove_black_borders = QCheckBox("清除邊緣黑邊 (--remove-black-borders)")
+        self.s1_remove_black_borders.setChecked(False)
+        self.s1_remove_black_borders.stateChanged.connect(self.update_command_preview)
+        grid_s1_geom.addWidget(self.s1_remove_black_borders, 1, 0)
+
+        self.s1_remove_spine_shadow = QCheckBox("清除中縫陰影 (--remove-spine-shadow)")
+        self.s1_remove_spine_shadow.setChecked(False)
+        self.s1_remove_spine_shadow.stateChanged.connect(self.update_command_preview)
+        grid_s1_geom.addWidget(self.s1_remove_spine_shadow, 1, 1)
+        form.addRow("幾何前置開關:", grid_s1_geom)
 
         self.s1_skip = QLineEdit("")
         self.s1_skip.setPlaceholderText("指定略過頁碼/檔名 (自動同步左側『略過OCR』勾選項，繞過 ScanTailor 直接導出原圖)")
@@ -1715,6 +1759,28 @@ class MainWindow(QMainWindow):
         self.batch_copy.stateChanged.connect(self.update_command_preview)
         grid_common_chk.addWidget(self.batch_copy, 1, 1)
         form_common.addRow("功能開關:", grid_common_chk)
+
+        grid_batch_geom = QGridLayout()
+        self.batch_auto_rotate = QCheckBox("自動旋轉校正")
+        self.batch_auto_rotate.setChecked(True)
+        self.batch_auto_rotate.stateChanged.connect(self.update_command_preview)
+        grid_batch_geom.addWidget(self.batch_auto_rotate, 0, 0)
+
+        self.batch_content_box_lock = QCheckBox("版心鎖定裁切")
+        self.batch_content_box_lock.setChecked(False)
+        self.batch_content_box_lock.stateChanged.connect(self.update_command_preview)
+        grid_batch_geom.addWidget(self.batch_content_box_lock, 0, 1)
+
+        self.batch_remove_black_borders = QCheckBox("清除邊緣黑邊")
+        self.batch_remove_black_borders.setChecked(False)
+        self.batch_remove_black_borders.stateChanged.connect(self.update_command_preview)
+        grid_batch_geom.addWidget(self.batch_remove_black_borders, 1, 0)
+
+        self.batch_remove_spine_shadow = QCheckBox("清除中縫陰影")
+        self.batch_remove_spine_shadow.setChecked(False)
+        self.batch_remove_spine_shadow.stateChanged.connect(self.update_command_preview)
+        grid_batch_geom.addWidget(self.batch_remove_spine_shadow, 1, 1)
+        form_common.addRow("轉正幾何開關:", grid_batch_geom)
 
         h_batch_layout_dir = QHBoxLayout()
         self.batch_layout_dir = QComboBox()
@@ -2460,6 +2526,22 @@ class MainWindow(QMainWindow):
             batch_ld = self.batch_layout_dir.currentData() or "auto"
             if batch_ld != "auto":
                 cmd.extend(["--layout-direction", batch_ld])
+            if self.batch_auto_rotate.isChecked():
+                cmd.append("--auto-rotate")
+            else:
+                cmd.append("--no-auto-rotate")
+            if self.batch_content_box_lock.isChecked():
+                cmd.append("--content-box-lock")
+            else:
+                cmd.append("--no-content-box-lock")
+            if self.batch_remove_black_borders.isChecked():
+                cmd.append("--remove-black-borders")
+            else:
+                cmd.append("--no-remove-black-borders")
+            if self.batch_remove_spine_shadow.isChecked():
+                cmd.append("--remove-spine-shadow")
+            else:
+                cmd.append("--no-remove-spine-shadow")
             if not self.batch_compress_images.isChecked():
                 cmd.append("--no-compress-images")
             if not self.batch_epub.isChecked():
@@ -2488,6 +2570,22 @@ class MainWindow(QMainWindow):
             oc_ld = self.oc_layout_dir.currentData() or "auto"
             if oc_ld != "auto":
                 cmd.extend(["--layout-direction", oc_ld])
+            if self.oc_auto_rotate.isChecked():
+                cmd.append("--auto-rotate")
+            else:
+                cmd.append("--no-auto-rotate")
+            if self.oc_content_box_lock.isChecked():
+                cmd.append("--content-box-lock")
+            else:
+                cmd.append("--no-content-box-lock")
+            if self.oc_remove_black_borders.isChecked():
+                cmd.append("--remove-black-borders")
+            else:
+                cmd.append("--no-remove-black-borders")
+            if self.oc_remove_spine_shadow.isChecked():
+                cmd.append("--remove-spine-shadow")
+            else:
+                cmd.append("--no-remove-spine-shadow")
             cmd.extend(["--workers", str(self.oc_workers.value())])
             cmd.extend(["--batch-size", str(self.oc_batch.value())])
             if self.oc_compress_images.isChecked():
@@ -2524,6 +2622,22 @@ class MainWindow(QMainWindow):
                 cmd.extend(["--unsharp", self.s1_unsharp.text().strip()])
             if self.s1_dpi.text().strip():
                 cmd.extend(["--dpi", self.s1_dpi.text().strip()])
+            if self.s1_auto_rotate.isChecked():
+                cmd.append("--auto-rotate")
+            else:
+                cmd.append("--no-auto-rotate")
+            if self.s1_content_box_lock.isChecked():
+                cmd.append("--content-box-lock")
+            else:
+                cmd.append("--no-content-box-lock")
+            if self.s1_remove_black_borders.isChecked():
+                cmd.append("--remove-black-borders")
+            else:
+                cmd.append("--no-remove-black-borders")
+            if self.s1_remove_spine_shadow.isChecked():
+                cmd.append("--remove-spine-shadow")
+            else:
+                cmd.append("--no-remove-spine-shadow")
             s1_skips = safe_split_args(self.s1_skip.text())
             if s1_skips:
                 cmd.extend(["--skip-orc"] + s1_skips)
@@ -2837,7 +2951,11 @@ class MainWindow(QMainWindow):
                 "organize_pages": self.batch_organize.isChecked(),
                 "copy": self.batch_copy.isChecked(),
                 "organize_target": "preprocessed",
-                "layout_direction": self.batch_layout_dir.currentData() or "auto"
+                "layout_direction": self.batch_layout_dir.currentData() or "auto",
+                "auto_rotate": self.batch_auto_rotate.isChecked(),
+                "content_box_lock": self.batch_content_box_lock.isChecked(),
+                "remove_black_borders": self.batch_remove_black_borders.isChecked(),
+                "remove_spine_shadow": self.batch_remove_spine_shadow.isChecked()
             }
 
         elif target_w == self.tab_oneclick:
@@ -2876,7 +2994,11 @@ class MainWindow(QMainWindow):
                 "organize_pages": self.oc_organize.isChecked(),
                 "copy": self.oc_copy.isChecked(),
                 "organize_target": "preprocessed",
-                "layout_direction": self.oc_layout_dir.currentData() or "auto"
+                "layout_direction": self.oc_layout_dir.currentData() or "auto",
+                "auto_rotate": self.oc_auto_rotate.isChecked(),
+                "content_box_lock": self.oc_content_box_lock.isChecked(),
+                "remove_black_borders": self.oc_remove_black_borders.isChecked(),
+                "remove_spine_shadow": self.oc_remove_spine_shadow.isChecked()
             }
 
         elif target_w == self.tab_step1:
@@ -2897,6 +3019,10 @@ class MainWindow(QMainWindow):
                 "quality": self.s1_quality.value(),
                 "scale": round(float(self.s1_scale.value()), 2),
                 "unsharp": self.s1_unsharp.text().strip(),
+                "auto_rotate": self.s1_auto_rotate.isChecked(),
+                "content_box_lock": self.s1_content_box_lock.isChecked(),
+                "remove_black_borders": self.s1_remove_black_borders.isChecked(),
+                "remove_spine_shadow": self.s1_remove_spine_shadow.isChecked(),
                 "batch_size": 0,
                 "skip_ocr": safe_split_args(self.s1_skip.text())
             }
@@ -3069,6 +3195,22 @@ class MainWindow(QMainWindow):
                 for i in range(self.batch_layout_dir.count()):
                     if self.batch_layout_dir.itemData(i) == val:
                         self.batch_layout_dir.setCurrentIndex(i)
+            if "auto_rotate" in data:
+                self.batch_auto_rotate.setChecked(bool(data["auto_rotate"]))
+            elif "auto_deskew" in data:
+                self.batch_auto_rotate.setChecked(bool(data["auto_deskew"]))
+            if "content_box_lock" in data:
+                self.batch_content_box_lock.setChecked(bool(data["content_box_lock"]))
+            elif "lock_content_box" in data:
+                self.batch_content_box_lock.setChecked(bool(data["lock_content_box"]))
+            if "remove_black_borders" in data:
+                self.batch_remove_black_borders.setChecked(bool(data["remove_black_borders"]))
+            elif "clean_borders" in data:
+                self.batch_remove_black_borders.setChecked(bool(data["clean_borders"]))
+            if "remove_spine_shadow" in data:
+                self.batch_remove_spine_shadow.setChecked(bool(data["remove_spine_shadow"]))
+            elif "clean_shadows" in data:
+                self.batch_remove_spine_shadow.setChecked(bool(data["clean_shadows"]))
 
         elif target_w == self.tab_oneclick:
             if "input" in data and data["input"] is not None:
@@ -3117,6 +3259,22 @@ class MainWindow(QMainWindow):
                 for i in range(self.oc_layout_dir.count()):
                     if self.oc_layout_dir.itemData(i) == val:
                         self.oc_layout_dir.setCurrentIndex(i)
+            if "auto_rotate" in data:
+                self.oc_auto_rotate.setChecked(bool(data["auto_rotate"]))
+            elif "auto_deskew" in data:
+                self.oc_auto_rotate.setChecked(bool(data["auto_deskew"]))
+            if "content_box_lock" in data:
+                self.oc_content_box_lock.setChecked(bool(data["content_box_lock"]))
+            elif "lock_content_box" in data:
+                self.oc_content_box_lock.setChecked(bool(data["lock_content_box"]))
+            if "remove_black_borders" in data:
+                self.oc_remove_black_borders.setChecked(bool(data["remove_black_borders"]))
+            elif "clean_borders" in data:
+                self.oc_remove_black_borders.setChecked(bool(data["clean_borders"]))
+            if "remove_spine_shadow" in data:
+                self.oc_remove_spine_shadow.setChecked(bool(data["remove_spine_shadow"]))
+            elif "clean_shadows" in data:
+                self.oc_remove_spine_shadow.setChecked(bool(data["clean_shadows"]))
 
         elif target_w == self.tab_step1:
             if "input" in data and data["input"] is not None:
@@ -3140,6 +3298,22 @@ class MainWindow(QMainWindow):
                 self.s1_scale.setValue(float(data["scale"]))
             if "unsharp" in data and data["unsharp"] is not None:
                 self.s1_unsharp.setText(str(data["unsharp"]))
+            if "auto_rotate" in data:
+                self.s1_auto_rotate.setChecked(bool(data["auto_rotate"]))
+            elif "auto_deskew" in data:
+                self.s1_auto_rotate.setChecked(bool(data["auto_deskew"]))
+            if "content_box_lock" in data:
+                self.s1_content_box_lock.setChecked(bool(data["content_box_lock"]))
+            elif "lock_content_box" in data:
+                self.s1_content_box_lock.setChecked(bool(data["lock_content_box"]))
+            if "remove_black_borders" in data:
+                self.s1_remove_black_borders.setChecked(bool(data["remove_black_borders"]))
+            elif "clean_borders" in data:
+                self.s1_remove_black_borders.setChecked(bool(data["clean_borders"]))
+            if "remove_spine_shadow" in data:
+                self.s1_remove_spine_shadow.setChecked(bool(data["remove_spine_shadow"]))
+            elif "clean_shadows" in data:
+                self.s1_remove_spine_shadow.setChecked(bool(data["clean_shadows"]))
             skip_val = data.get("skip_ocr", data.get("skip_orc"))
             if skip_val is not None:
                 if isinstance(skip_val, list):

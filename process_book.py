@@ -149,6 +149,30 @@ def main():
         help="轉正裁切影像銳化濾鏡參數 (ImageMagick unsharp 語法，例如 1x0.55+1.5+0.002，設為 none 或 off 關閉，預設: 1x0.55+1.5+0.002)"
     )
     parser.add_argument(
+        "--auto-rotate", "--auto-deskew",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="步驟 1 轉正：自動偵測傾斜角度並旋轉校正 (預設: True，使用 --no-auto-rotate 關閉)"
+    )
+    parser.add_argument(
+        "--content-box-lock", "--lock-content-box",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="步驟 1 轉正：鎖定版心內容邊界，依頁面文字邊界自動裁切並套用邊距 (預設: False，保持整頁原始尺寸，使用 --content-box-lock 啟用)"
+    )
+    parser.add_argument(
+        "--remove-black-borders", "--clean-borders",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="步驟 1 轉正：清除掃描頁面四周的黑邊與雜點 (預設: False，使用 --remove-black-borders 啟用)"
+    )
+    parser.add_argument(
+        "--remove-spine-shadow", "--clean-shadows",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="步驟 1 轉正：消除中縫漸層陰影與曲面平整化 (預設: False，使用 --remove-spine-shadow 啟用)"
+    )
+    parser.add_argument(
         "--repetition-penalty",
         type=float,
         default=1.1,
@@ -339,6 +363,22 @@ def main():
         step1_cmd.extend(["--scale", str(args.scale)])
     if args.unsharp:
         step1_cmd.extend(["--unsharp", str(args.unsharp)])
+    if getattr(args, "auto_rotate", True):
+        step1_cmd.append("--auto-rotate")
+    else:
+        step1_cmd.append("--no-auto-rotate")
+    if getattr(args, "content_box_lock", False):
+        step1_cmd.append("--content-box-lock")
+    else:
+        step1_cmd.append("--no-content-box-lock")
+    if getattr(args, "remove_black_borders", False):
+        step1_cmd.append("--remove-black-borders")
+    else:
+        step1_cmd.append("--no-remove-black-borders")
+    if getattr(args, "remove_spine_shadow", False):
+        step1_cmd.append("--remove-spine-shadow")
+    else:
+        step1_cmd.append("--no-remove-spine-shadow")
     if getattr(args, "auto_grayscale", True):
         step1_cmd.append("--auto-grayscale")
     else:

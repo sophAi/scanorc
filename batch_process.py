@@ -152,6 +152,30 @@ def main():
     parser.add_argument("--scale", type=float, default=1.0, help="預設圖檔尺寸縮放比例 (預設: 1.0)")
     parser.add_argument("--unsharp", default="1x0.55+1.5+0.002", help="預設銳化參數 (ImageMagick unsharp 語法，預設: 1x0.55+1.5+0.002)")
     parser.add_argument(
+        "--auto-rotate", "--auto-deskew",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="步驟 1 轉正：預設自動偵測傾斜角度並旋轉校正 (預設: True，使用 --no-auto-rotate 關閉)"
+    )
+    parser.add_argument(
+        "--content-box-lock", "--lock-content-box",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="步驟 1 轉正：預設鎖定版心內容邊界，依頁面文字邊界自動裁切並套用邊距 (預設: False，保持整頁原始尺寸，使用 --content-box-lock 啟用)"
+    )
+    parser.add_argument(
+        "--remove-black-borders", "--clean-borders",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="步驟 1 轉正：預設清除掃描頁面四周的黑邊與雜點 (預設: False，使用 --remove-black-borders 啟用)"
+    )
+    parser.add_argument(
+        "--remove-spine-shadow", "--clean-shadows",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="步驟 1 轉正：預設消除中縫漸層陰影與曲面平整化 (預設: False，使用 --remove-spine-shadow 啟用)"
+    )
+    parser.add_argument(
         "--repetition-penalty",
         type=float,
         default=1.1,
@@ -450,6 +474,30 @@ def main():
         unsharp = cfg_data.get("unsharp", args.unsharp)
         if unsharp:
             cmd.extend(["--unsharp", str(unsharp)])
+
+        auto_rotate = cfg_data.get("auto_rotate", cfg_data.get("auto_deskew", args.auto_rotate))
+        if auto_rotate:
+            cmd.append("--auto-rotate")
+        else:
+            cmd.append("--no-auto-rotate")
+
+        content_box_lock = cfg_data.get("content_box_lock", cfg_data.get("lock_content_box", args.content_box_lock))
+        if content_box_lock:
+            cmd.append("--content-box-lock")
+        else:
+            cmd.append("--no-content-box-lock")
+
+        remove_black_borders = cfg_data.get("remove_black_borders", cfg_data.get("clean_borders", args.remove_black_borders))
+        if remove_black_borders:
+            cmd.append("--remove-black-borders")
+        else:
+            cmd.append("--no-remove-black-borders")
+
+        remove_spine_shadow = cfg_data.get("remove_spine_shadow", cfg_data.get("clean_shadows", args.remove_spine_shadow))
+        if remove_spine_shadow:
+            cmd.append("--remove-spine-shadow")
+        else:
+            cmd.append("--no-remove-spine-shadow")
         rep_pen = cfg_data.get("repetition_penalty", args.repetition_penalty)
         if rep_pen:
             cmd.extend(["--repetition-penalty", str(rep_pen)])
