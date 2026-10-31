@@ -30,7 +30,7 @@ except ImportError:
     CIRCLED_CHARS_RE = r"[\u2460-\u2473\u24ea\u3251-\u325f\u32b1-\u32bf\u24d0-\u24e9\u24b6-\u24cf]"
 
     ALLOWED_HTML_TAGS = {
-        "html", "head", "body", "meta", "title", "style", "link", "script",
+        "html", "head", "body", "meta", "title", "style", "link", "script", "nav",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "p", "div", "span", "section", "hr", "br",
         "a", "img", "figure", "figcaption",
@@ -44,6 +44,8 @@ except ImportError:
     def sanitize_html_tags(html_text: str) -> str:
         if not html_text:
             return ""
+        html_text = re.sub(r"<(?![a-zA-Z/!])", "&lt;", html_text)
+        tag_pattern = re.compile(r"<(?:!--[\s\S]*?--|!DOCTYPE[^>]*|/?[a-zA-Z][a-zA-Z0-9_-]*(?:\s+[^<>]*)?)>", re.IGNORECASE)
         def replace_tag(match):
             tag_str = match.group(0)
             if tag_str.startswith("<!") and tag_str.endswith(">"):
@@ -54,7 +56,7 @@ except ImportError:
                 if tag_name in ALLOWED_HTML_TAGS:
                     return tag_str
             return tag_str.replace("<", "&lt;").replace(">", "&gt;")
-        return re.sub(r"<[^>]*>", replace_tag, html_text)
+        return tag_pattern.sub(replace_tag, html_text)
 
     def to_circled_char(key: str) -> str:
         key = str(key).strip()

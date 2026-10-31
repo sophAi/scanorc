@@ -69,7 +69,7 @@ CIRCLED_CHARS_RE = r"[\u2460-\u2473\u24ea\u3251-\u325f\u32b1-\u32bf\u24d0-\u24e9
 
 # 允許合法保留的 HTML 標籤白名單 (不分大小寫)
 ALLOWED_HTML_TAGS = {
-    "html", "head", "body", "meta", "title", "style", "link", "script",
+    "html", "head", "body", "meta", "title", "style", "link", "script", "nav",
     "h1", "h2", "h3", "h4", "h5", "h6",
     "p", "div", "span", "section", "hr", "br",
     "a", "img", "figure", "figcaption",
@@ -85,9 +85,16 @@ def sanitize_html_tags(html_text: str) -> str:
     """
     清洗 HTML 字串，防止非 HTML 標籤之角括號 (如 C++ 模板 <Q>, <T>, <vector>, 或 <iostream> 等)
     被 Pandoc 或 HTML 解析器誤判為 HTML 標籤 (如 <Q> 被誤認為 <q> 引號標籤) 導致 TagClose 錯誤。
+    同時嚴格隔離孤立角括號，防止文字中的 << 鈕誤吞段落結尾 </p>。
     """
     if not html_text:
         return ""
+
+    # 1. 先將顯然非 HTML 標籤之孤立角括號 (< 後面非英文字母、!、/ 者，如 <<, < 鈕, < 100 等) 轉義
+    html_text = re.sub(r"<(?![a-zA-Z/!])", "&lt;", html_text)
+
+    # 2. 匹配合法的標籤結構
+    tag_pattern = re.compile(r"<(?:!--[\s\S]*?--|!DOCTYPE[^>]*|/?[a-zA-Z][a-zA-Z0-9_-]*(?:\s+[^<>]*)?)>", re.IGNORECASE)
 
     def replace_tag(match):
         tag_str = match.group(0)
@@ -103,7 +110,7 @@ def sanitize_html_tags(html_text: str) -> str:
         # 不在允許清單內的標籤，將角括號轉義為 HTML 實體
         return tag_str.replace("<", "&lt;").replace(">", "&gt;")
 
-    return re.sub(r"<[^>]*>", replace_tag, html_text)
+    return tag_pattern.sub(replace_tag, html_text)
 
 
 def to_circled_char(key: str) -> str:
@@ -305,7 +312,7 @@ def parse_page_spec(page_raw: Any) -> Dict[str, Any]:
     p_str = p_str.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
     p_str = re.sub(r"[–—―─~～]", "-", p_str)
 
-    m_compound = re.match(r"^([A-Za-z0-9]+)\s*[-_·．.]\s*(\d+)$", p_str)
+    m_compound = re.match(r"^([A-Za-z0-9]+)\s*[-_·．.・‧•]\s*(\d+)$", p_str)
     if m_compound:
         c_part = m_compound.group(1)
         p_part = int(m_compound.group(2))
@@ -511,7 +518,23 @@ def render_html(
     # 2. 建立章節對應至起始頁面的映射 (EPUB outline 核心)
     def is_toc_meta_title(t_str: str) -> bool:
         clean_t = re.sub(r"[\s\-_·.．…・|—―─~～‧•\d]+", "", str(t_str or "")).lower()
-        return clean_t in ("目錄", "目次", "contents", "tableofcontents", "目錄頁")
+        if clean_t in ("目錄", "目次", "contents", "tableofcontents", "目錄頁"):
+            return True
+        if re.search(r"(?:大眾\s*MIDI\s*系列|精通\s*Cakewalk)", str(t_str or ""), re.I):
+            return True
+        return False
+
+    def get_heading_level(title_str: str) -> int:
+        clean_s = str(title_str or "").strip()
+        if re.match(r"^(?:第\s*[\d一二三四五六七八九十百千]+\s*[章回卷部篇]|Chapter\s*\d+|Part\s*\d+|[前序引導附結尾跋][言導讀錄尾聲記]|自序|推薦序)", clean_s, re.I):
+            return 1
+        if re.match(r"^\d{1,3}\s+[\u4e00-\u9fa5A-Za-z]", clean_s):
+            return 1
+        if re.search(r"\d+[-_·.．]\d+[-_·.．]\d+", clean_s):
+            return 3
+        if re.search(r"\d+[-_·.．]\d+", clean_s):
+            return 2
+        return 2
 
     page_chapter_map: Dict[str, List[Dict[str, Any]]] = {}
     if toc_data and "toc" in toc_data and toc_data["toc"]:
@@ -542,9 +565,9 @@ def render_html(
                 pg_num = entry.get("page_num") if entry.get("page_num") is not None else spec.get("page_num")
 
                 if c_num is None:
-                    # 嘗試從 chapter 或 title 或 full_title 開頭解析章節編號 (如 "12-1 ...", "第12章 ...")
+                    # 嘗試從 chapter 或 title 或 full_title 開頭解析章節編號 (如 "12-1 ...", "12·1 ...", "第12章 ...", "12 增進...")
                     full_str = f"{entry.get('chapter', '')} {raw_t} {full_t}"
-                    m_ch = re.search(r"(?:第\s*(\d+)\s*[章節回卷部篇]|^\s*(\d{1,3})[-_.])", full_str)
+                    m_ch = re.search(r"(?:第\s*(\d+)\s*[章節回卷部篇]|^\s*(\d{1,3})[-_·.．\s])", full_str)
                     if m_ch:
                         c_num_str = m_ch.group(1) or m_ch.group(2)
                         try:
@@ -568,7 +591,7 @@ def render_html(
                         if not target_file:
                             target_file = candidates[0][1]
 
-                if not target_file:
+                if not target_file and c_num is None:
                     target_file = resolve_page_filename(entry.get("start_page_str") or entry.get("start_page") or c_idx, available_page_files)
 
                 entry_info = dict(entry)
@@ -692,9 +715,10 @@ def render_html(
             continue
         page_stem = p_res.get("page_stem", Path(page_id).stem)
 
-        # 若此頁為章節起始頁，先插入 <h1> 章節標題 (Pandoc EPUB Outline 自動識別)
+        # 若此頁為章節起始頁，插入章節/小節標題 (Pandoc EPUB Outline 自動識別)
         if page_id in page_chapter_map:
             inserted_titles = set()
+            has_h1 = False
             for chap in page_chapter_map[page_id]:
                 chap_idx = chap.get("_chapter_index", 1)
                 full_t = chap.get("full_title", chap.get("title", f"第 {chap_idx} 章"))
@@ -703,7 +727,22 @@ def render_html(
                 if is_toc_meta_title(full_t) or full_t in inserted_titles:
                     continue
                 inserted_titles.add(full_t)
-                body_content.append(f'<h1 id="chapter-{chap_idx}" class="chapter-heading">{full_t}</h1>\n')
+
+                lvl = get_heading_level(full_t)
+                # 為防止同一頁面出現多個 <h1> 導致 Pandoc 將前面標題切分為空白缺頁：
+                # 只有第一個滿足 lvl == 1 的大章可以使用 <h1>，同頁後續章節降為 <h2>/<h3>
+                if lvl == 1 and not has_h1:
+                    tag = "h1"
+                    css_cls = "chapter-heading"
+                    has_h1 = True
+                elif lvl <= 2:
+                    tag = "h2"
+                    css_cls = "section-heading"
+                else:
+                    tag = "h3"
+                    css_cls = "subsection-heading"
+
+                body_content.append(f'<{tag} id="chapter-{chap_idx}" class="{css_cls}">{full_t}</{tag}>\n')
 
         body_content.append(f'<section class="book-page" id="{page_id}">')
         body_content.append(f'  <a id="{page_stem}" class="page-anchor-target"></a>')
@@ -868,6 +907,20 @@ def render_html(
       border-bottom: 2px solid var(--accent-color, #3498db);
       page-break-before: always;
       break-before: page;
+    }}
+    h2.section-heading {{
+      font-size: 1.45rem;
+      font-weight: 700;
+      color: var(--primary-color);
+      margin: 36px 0 16px 0;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border-color);
+    }}
+    h3.subsection-heading {{
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: var(--primary-color);
+      margin: 26px 0 12px 0;
     }}
     p {{
       margin: 0.9em 0;
@@ -1184,6 +1237,20 @@ h1.chapter-heading {
   border-bottom: 2px solid #3498db;
   page-break-before: always;
   break-before: page;
+}
+h2.section-heading {
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: #1a202c;
+  margin: 36px 0 16px 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e2e8f0;
+}
+h3.subsection-heading {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: #1a202c;
+  margin: 26px 0 12px 0;
 }
 .book-page, .book-figure, .book-cover-page, .book-toc {
   writing-mode: horizontal-tb !important;

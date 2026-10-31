@@ -137,7 +137,7 @@ def parse_page_spec(page_raw: Any) -> Dict[str, Any]:
     p_str = re.sub(r"[–—―─~～]", "-", p_str)
 
     # 匹配複合頁碼 (如 1-1, 02-15, A-3 等)
-    m_compound = re.match(r"^([A-Za-z0-9]+)\s*[-_·．.]\s*(\d+)$", p_str)
+    m_compound = re.match(r"^([A-Za-z0-9]+)\s*[-_·．.・‧•]\s*(\d+)$", p_str)
     if m_compound:
         c_part = m_compound.group(1)
         p_part = int(m_compound.group(2))
@@ -319,15 +319,15 @@ def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[st
         r")\s*(?P<remainder>.*)$",
         re.IGNORECASE
     )
-    # 匹配行尾數字作為頁碼：支援單一頁碼 (如 105) 或複合章節頁碼 (如 1-1, 2-15, 附錄A-3)
+    # 匹配行尾數字作為頁碼：支援單一頁碼 (如 105) 或複合章節頁碼 (如 1-1, 2-15, 12·3, 附錄A-3)
     line_pattern = re.compile(
         r"^(?P<raw_title>.+?)"
         r"(?:\s*[·.．…・|—―─~～‧•]{1,}\s*|\s{2,}|\s+)"
-        r"(?P<page>(?:(?:\d{1,3}|[A-Za-z]+)\s*[-–—―]\s*)?\d{1,4})\s*$"
+        r"(?P<page>(?:(?:\d{1,3}|[A-Za-z]+)\s*[-–—―_·・‧•.．]\s*)?\d{1,4})\s*$"
     )
-    # 匹配獨立純頁碼行 (例如 '123' 或 '1-1' 或 'P123')
+    # 匹配獨立純頁碼行 (例如 '123' 或 '1-1' 或 '12·3' 或 'P123')
     pure_page_pat = re.compile(
-        r"^[\(\[\{Pｐ頁]?\s*((?:(?:\d{1,3}|[A-Za-z]+)\s*[-–—―]\s*)?\d{1,4})\s*[\)\]\}頁]?$"
+        r"^[\(\[\{Pｐ頁]?\s*((?:(?:\d{1,3}|[A-Za-z]+)\s*[-–—―_·・‧•.．]\s*)?\d{1,4})\s*[\)\]\}頁]?$"
     )
 
     entries = []
@@ -358,6 +358,11 @@ def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[st
         # 若標題為目錄頁頁首「目錄/目次/Contents」，直接忽略，避免將目錄頁自身當成章節條目
         clean_raw_check = re.sub(r"[\s\-_·.．…・|—―─~～‧•\d]+", "", raw_ch_title).lower()
         if clean_raw_check in ("目錄", "目次", "contents", "tableofcontents"):
+            pending = None
+            return
+
+        # 若標題為目錄頁頁首書名/系列名 (例如 "大眾 MIDI 系列一精通 Cakewalk Pro Audio")，直接忽略
+        if re.search(r"(?:大眾\s*MIDI\s*系列|精通\s*Cakewalk)", raw_ch_title, re.I):
             pending = None
             return
 
