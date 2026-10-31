@@ -29,20 +29,50 @@ try:
 except ImportError:
     CIRCLED_CHARS_RE = r"[\u2460-\u2473\u24ea\u3251-\u325f\u32b1-\u32bf\u24d0-\u24e9\u24b6-\u24cf]"
 
+    ALLOWED_HTML_TAGS = {
+        "html", "head", "body", "meta", "title", "style", "link",
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "p", "div", "span", "section", "hr", "br",
+        "a", "img", "figure", "figcaption",
+        "table", "thead", "tbody", "tr", "th", "td",
+        "ul", "ol", "li",
+        "b", "i", "em", "strong", "sup", "sub", "code", "pre", "small", "mark", "del", "ins", "blockquote"
+    }
+
+    def sanitize_html_tags(html_text: str) -> str:
+        if not html_text:
+            return ""
+        def replace_tag(match):
+            tag_str = match.group(0)
+            if tag_str.startswith("<!--") and tag_str.endswith("-->"):
+                return tag_str
+            m_tag = re.match(r"^</?([a-zA-Z0-9_-]+)", tag_str)
+            if m_tag:
+                tag_name = m_tag.group(1).lower()
+                if tag_name in ALLOWED_HTML_TAGS:
+                    return tag_str
+            return tag_str.replace("<", "&lt;").replace(">", "&gt;")
+        return re.sub(r"<[^>]*>", replace_tag, html_text)
+
     def to_circled_char(key: str) -> str:
         key = str(key).strip()
-        if key.isdigit():
-            n = int(key)
-            if n == 0:
-                return "⓪"
-            elif 1 <= n <= 20:
-                return chr(0x2460 + n - 1)
-            elif 21 <= n <= 35:
-                return chr(0x3251 + n - 21)
-            elif 36 <= n <= 50:
-                return chr(0x32B1 + n - 36)
-            else:
-                return f"({n})"
+        if re.match(r"^" + CIRCLED_CHARS_RE + r"$", key):
+            return key
+        if key.isdecimal():
+            try:
+                n = int(key)
+                if n == 0:
+                    return "⓪"
+                elif 1 <= n <= 20:
+                    return chr(0x2460 + n - 1)
+                elif 21 <= n <= 35:
+                    return chr(0x3251 + n - 21)
+                elif 36 <= n <= 50:
+                    return chr(0x32B1 + n - 36)
+                else:
+                    return f"({n})"
+            except (ValueError, TypeError):
+                return f"({key})"
         elif len(key) == 1:
             if "a" <= key <= "z":
                 return chr(0x24D0 + ord(key) - ord("a"))
@@ -58,7 +88,7 @@ except ImportError:
     def clean_math_syntax(text: str) -> str:
         if not text:
             return ""
-        text = re.sub(r"\\textcircled\{([^{}]+)\}", lambda m: to_circled_char(m.group(1)), text)
+        text = re.sub(r"\\text[cC]irc(?:le|re)?d\s*\{([^{}]+)\}", lambda m: to_circled_char(m.group(1)), text)
         text = P_CIRCLED_UNWRAP.sub(r"\1", text)
         text = P_CIRCLED_SUP1.sub(r"<sup>\1</sup>", text)
         text = P_CIRCLED_SUP2.sub(r"<sup>\1</sup>", text)
@@ -574,6 +604,14 @@ def convert_html_to_epub(
         injected = True
         if verbose:
             print("[*] 已自動清理並標準化 HTML 中的 LaTeX 數學語法與帶圈註腳符號")
+
+    # 清洗非合法 HTML 標籤之角括號 (防止 C++ 模板語法 <Q> 等被 Pandoc 誤判導致 TagClose 錯誤)
+    tags_sanitized_html = sanitize_html_tags(updated_html)
+    if tags_sanitized_html != updated_html:
+        updated_html = tags_sanitized_html
+        injected = True
+        if verbose:
+            print("[*] 已自動轉義 HTML 中非標準標籤之角括號 (保護 C++ 泛型模板與程式碼)")
 
     compile_target_name = html_name
     temp_html_path = None

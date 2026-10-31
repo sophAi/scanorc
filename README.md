@@ -34,7 +34,7 @@
    - **單圖獨立安全推論模式 (Single-crop Forward Pass)**：徹底消除多圖 Batch Padding 造成的跨區塊注意力 mask 污染、`\x00` 空字符死循環與記憶體碎片，隨解碼結束立即釋放顯存，推論速度更穩定。
    - **極端長寬比緩衝補白 (Aspect Ratio Cushion)**：針對長寬比超過 1:4 的直排狹長文字條，自動於水平兩側補白至安全比例，杜絕 CogViT 視覺編碼器因水平 Patch 數過少引起的注意力坍塌。
    - **空 Markdown 程式碼區塊標記徹底過濾**：自動識別並清除 GLM-OCR 在面對純裝飾或無文字裁切圖時產生的空 Markdown 代碼塊（```` ```markdown\n\n``` ````），杜絕無效程式碼標記殘留污染電子書標題或內文。
-   - **LaTeX 語法與帶圈註腳符號標準化**：將 `\textcircled{n}`、`$①$`、上標註腳等符號自動正規化為標準 Unicode 帶圈字元（①、②...）或 HTML 上標，去除行內公式頭尾多餘空白，確保 Pandoc MathML 與 KaTeX 解析 100% 正確無殘留原始碼。
+   - **LaTeX 語法與帶圈註腳符號標準化**：將 `\textcircled{n}`、`$①$`、上標註腳等符號自動正規化為標準 Unicode 帶圈字元（①、②...）或 HTML 上標，去除行內公式頭尾多餘空白，確保 Pandoc MathML 與 KaTeX 解析 100% 正確無殘留原始碼；全面支援已是 Unicode 帶圈字元（如 `\textcircled{③}`）與阿拉伯數字的安全容錯解析，杜絕 Python `isdigit()` 對 Unicode 數字判定導致 `int()` 拋出 `ValueError` 的崩潰問題。
    - **保底整頁 OCR 機制 (Full-page Fallback OCR)**：若版面分析未能切割出有效區塊，只要檢測頁面具備實質文字筆畫特徵，自動啟動 GLM-OCR 整頁端到端全幅面辨識，徹底避免文字頁誤退化為插圖。
    - **控制字符與空白區塊嚴格過濾**：自動清除 `\x00` 及非打印控制字符，杜絕空白行與無效標籤殘留。
    - 自動識別繁體中文、複雜排版表格並還原為標準 Markdown Table。
@@ -42,6 +42,7 @@
 
 4. **標準 MathML EPUB 產出 (`Pandoc`)**：
    - 一鍵打包標準 EPUB3 電子書與獨立響應式 HTML5。
+   - **HTML 程式碼與 C++ 泛型角括號自動逸出保護**：內建非標準 HTML 標籤白名單過濾清洗機制，自動將技術與程式書籍正文中的 C++ 泛型模板（如 `<Q>`、`<T>`、`<vector>` 等）及角括號轉譯為 HTML 實體（`&lt;...&gt;`），徹底杜絕 Pandoc HTML 解析器因標籤誤判引發之 `TagClose "p"` (status 64) 編譯中斷。
    - **現代橫排 LTR 閱讀器標準化**：為徹底避免各家電子書閱讀器（如 Apple Books、Kobo、Kindle、Calibre）在渲染直排（`vertical-rl`）與 RTL 翻頁時發生的 CSS 重疊崩潰與翻頁反向缺陷，EPUB 產出統一為現代標準橫排（LTR）；而網頁版 HTML5 則繼續完整支援直排/橫排自由切換。
    - 透過 Pandoc 數學引擎（`-f html+tex_math_dollars --mathml`），將 LaTeX 公式直接轉譯為現代電子書閱讀器原生支援的 **MathML 向量數學公式**，支援任意縮放不失真。
 

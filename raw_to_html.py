@@ -67,22 +67,66 @@ def book_page_sort_key(p: Union[str, Path], cover_first: bool = True) -> Tuple[i
 
 CIRCLED_CHARS_RE = r"[\u2460-\u2473\u24ea\u3251-\u325f\u32b1-\u32bf\u24d0-\u24e9\u24b6-\u24cf]"
 
+# 允許合法保留的 HTML 標籤白名單 (不分大小寫)
+ALLOWED_HTML_TAGS = {
+    "html", "head", "body", "meta", "title", "style", "link",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "p", "div", "span", "section", "hr", "br",
+    "a", "img", "figure", "figcaption",
+    "table", "thead", "tbody", "tr", "th", "td",
+    "ul", "ol", "li",
+    "b", "i", "em", "strong", "sup", "sub", "code", "pre", "small", "mark", "del", "ins", "blockquote"
+}
+
+
+def sanitize_html_tags(html_text: str) -> str:
+    """
+    清洗 HTML 字串，防止非 HTML 標籤之角括號 (如 C++ 模板 <Q>, <T>, <vector>, 或 <iostream> 等)
+    被 Pandoc 或 HTML 解析器誤判為 HTML 標籤 (如 <Q> 被誤認為 <q> 引號標籤) 導致 TagClose 錯誤。
+    """
+    if not html_text:
+        return ""
+
+    def replace_tag(match):
+        tag_str = match.group(0)
+        # 註解保留
+        if tag_str.startswith("<!--") and tag_str.endswith("-->"):
+            return tag_str
+        # 擷取標籤名稱 (包含開頭可選的 /)
+        m_tag = re.match(r"^</?([a-zA-Z0-9_-]+)", tag_str)
+        if m_tag:
+            tag_name = m_tag.group(1).lower()
+            if tag_name in ALLOWED_HTML_TAGS:
+                return tag_str
+        # 不在允許清單內的標籤，將角括號轉義為 HTML 實體
+        return tag_str.replace("<", "&lt;").replace(">", "&gt;")
+
+    return re.sub(r"<[^>]*>", replace_tag, html_text)
+
 
 def to_circled_char(key: str) -> str:
     """將數字 (0~50) 或字母 (a~z, A~Z) 轉換為標準 Unicode 帶圈字元 (①, ②, ㉑, ㊱, ⓐ, Ⓐ 等)"""
     key = str(key).strip()
-    if key.isdigit():
-        n = int(key)
-        if n == 0:
-            return "⓪"
-        elif 1 <= n <= 20:
-            return chr(0x2460 + n - 1)
-        elif 21 <= n <= 35:
-            return chr(0x3251 + n - 21)
-        elif 36 <= n <= 50:
-            return chr(0x32B1 + n - 36)
-        else:
-            return f"({n})"
+    # 若本身已是 Unicode 帶圈字符，直接原樣保留
+    if re.match(r"^" + CIRCLED_CHARS_RE + r"$", key):
+        return key
+
+    # 僅純阿拉伯數字才嘗試轉換 (排除 Unicode 數字如 '③' 在 isdigit() 為 True 但 int() 報錯的情況)
+    if key.isdecimal():
+        try:
+            n = int(key)
+            if n == 0:
+                return "⓪"
+            elif 1 <= n <= 20:
+                return chr(0x2460 + n - 1)
+            elif 21 <= n <= 35:
+                return chr(0x3251 + n - 21)
+            elif 36 <= n <= 50:
+                return chr(0x32B1 + n - 36)
+            else:
+                return f"({n})"
+        except (ValueError, TypeError):
+            return f"({key})"
     elif len(key) == 1:
         if "a" <= key <= "z":
             return chr(0x24D0 + ord(key) - ord("a"))
@@ -111,8 +155,8 @@ def clean_math_syntax(text: str) -> str:
     if not text:
         return ""
 
-    # 1. 將所有 \textcircled{...} 轉換為 Unicode 帶圈字元 (①, ② ...)
-    text = re.sub(r"\\textcircled\{([^{}]+)\}", lambda m: to_circled_char(m.group(1)), text)
+    # 1. 將所有 \textcircled{...} 轉換為 Unicode 帶圈字元 (①, ② ...) (支援大小寫與空格容錯)
+    text = re.sub(r"\\text[cC]irc(?:le|re)?d\s*\{([^{}]+)\}", lambda m: to_circled_char(m.group(1)), text)
 
     # 2. 處理以 $ 包裹的單一帶圈數字，直接解包為純字元: $①$ -> ①
     text = P_CIRCLED_UNWRAP.sub(r"\1", text)
@@ -762,7 +806,7 @@ def render_html(
 </body>
 </html>
 """
-    return full_html
+    return sanitize_html_tags(full_html)
 
 
 def sanitize_epub_math(epub_path: Union[str, Path]) -> int:
@@ -862,7 +906,7 @@ def build_epub_with_pandoc(
     try:
         with open(html_path, "r", encoding="utf-8", errors="replace") as f_chk:
             raw_html_text = f_chk.read()
-        sanitized_html = clean_math_syntax(raw_html_text)
+        sanitized_html = sanitize_html_tags(clean_math_syntax(raw_html_text))
         cleaned_html, file_prefix_cleaned = re.subn(
             r'(<div\s+class=["\']page-anchor["\'][^>]*>\s*(?:<small>)?)\s*File:\s*',
             r'\1',
