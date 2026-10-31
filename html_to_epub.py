@@ -30,13 +30,15 @@ except ImportError:
     CIRCLED_CHARS_RE = r"[\u2460-\u2473\u24ea\u3251-\u325f\u32b1-\u32bf\u24d0-\u24e9\u24b6-\u24cf]"
 
     ALLOWED_HTML_TAGS = {
-        "html", "head", "body", "meta", "title", "style", "link",
+        "html", "head", "body", "meta", "title", "style", "link", "script",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "p", "div", "span", "section", "hr", "br",
         "a", "img", "figure", "figcaption",
         "table", "thead", "tbody", "tr", "th", "td",
         "ul", "ol", "li",
-        "b", "i", "em", "strong", "sup", "sub", "code", "pre", "small", "mark", "del", "ins", "blockquote"
+        "b", "i", "em", "strong", "sup", "sub", "code", "pre", "small", "mark", "del", "ins", "blockquote",
+        # MathML tags
+        "math", "mrow", "mi", "mn", "mo", "msup", "msub", "msubsup", "mfrac", "msqrt", "mroot", "mtext", "mspace", "mtable", "mtr", "mtd"
     }
 
     def sanitize_html_tags(html_text: str) -> str:
@@ -44,7 +46,7 @@ except ImportError:
             return ""
         def replace_tag(match):
             tag_str = match.group(0)
-            if tag_str.startswith("<!--") and tag_str.endswith("-->"):
+            if tag_str.startswith("<!") and tag_str.endswith(">"):
                 return tag_str
             m_tag = re.match(r"^</?([a-zA-Z0-9_-]+)", tag_str)
             if m_tag:

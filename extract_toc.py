@@ -355,6 +355,12 @@ def parse_toc_text_raw(raw_text: str, source_filename: str = "") -> List[Dict[st
         raw_ch_title = re.sub(r"^[\s·.．…・\-_|—―─~～‧•]+", "", raw_ch_title).strip()
         raw_ch_title = re.sub(r"[\s·.．…・\-_|—―─~～‧•]+$", "", raw_ch_title).strip()
 
+        # 若標題為目錄頁頁首「目錄/目次/Contents」，直接忽略，避免將目錄頁自身當成章節條目
+        clean_raw_check = re.sub(r"[\s\-_·.．…・|—―─~～‧•\d]+", "", raw_ch_title).lower()
+        if clean_raw_check in ("目錄", "目次", "contents", "tableofcontents"):
+            pending = None
+            return
+
         # 解析頁碼規格 (支援複合頁碼)
         page_dict = parse_page_spec(pending["page"])
 
@@ -480,6 +486,9 @@ def extract_guess_toc(
             if line.startswith("--- File:"):
                 continue
             if line in ("目錄", "Contents", "目 錄", "CONTENTS", "目　錄"):
+                continue
+            clean_guess_check = re.sub(r"[\s\-_·.．…・|—―─~～‧•\d]+", "", line).lower()
+            if clean_guess_check in ("目錄", "目次", "contents", "tableofcontents"):
                 continue
 
             # 辨識章節前綴 (例如 '第一章', '第1章', 'Chapter 1' 等)

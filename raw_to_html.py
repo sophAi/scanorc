@@ -69,13 +69,15 @@ CIRCLED_CHARS_RE = r"[\u2460-\u2473\u24ea\u3251-\u325f\u32b1-\u32bf\u24d0-\u24e9
 
 # 允許合法保留的 HTML 標籤白名單 (不分大小寫)
 ALLOWED_HTML_TAGS = {
-    "html", "head", "body", "meta", "title", "style", "link",
+    "html", "head", "body", "meta", "title", "style", "link", "script",
     "h1", "h2", "h3", "h4", "h5", "h6",
     "p", "div", "span", "section", "hr", "br",
     "a", "img", "figure", "figcaption",
     "table", "thead", "tbody", "tr", "th", "td",
     "ul", "ol", "li",
-    "b", "i", "em", "strong", "sup", "sub", "code", "pre", "small", "mark", "del", "ins", "blockquote"
+    "b", "i", "em", "strong", "sup", "sub", "code", "pre", "small", "mark", "del", "ins", "blockquote",
+    # MathML tags
+    "math", "mrow", "mi", "mn", "mo", "msup", "msub", "msubsup", "mfrac", "msqrt", "mroot", "mtext", "mspace", "mtable", "mtr", "mtd"
 }
 
 
@@ -89,8 +91,8 @@ def sanitize_html_tags(html_text: str) -> str:
 
     def replace_tag(match):
         tag_str = match.group(0)
-        # 註解保留
-        if tag_str.startswith("<!--") and tag_str.endswith("-->"):
+        # DOCTYPE 與 註解保留
+        if tag_str.startswith("<!") and tag_str.endswith(">"):
             return tag_str
         # 擷取標籤名稱 (包含開頭可選的 /)
         m_tag = re.match(r"^</?([a-zA-Z0-9_-]+)", tag_str)
@@ -151,9 +153,17 @@ def clean_math_syntax(text: str) -> str:
     5. 將公式末尾包含的句點或逗號移至公式外，例如 `$x.$` -> `$x$.`
     6. 保留非公式的貨幣金額（如 $100 到 $200），避免誤將貨幣符號當作公式處理。
     7. 標準化 \\( ... \\) 行內公式為 $ ... $。
+    8. 將常見的操作流程箭頭 ($\\rightarrow$, \\to 等) 轉為原生 Unicode 字符 (→, ← 等)。
     """
     if not text:
         return ""
+
+    # 0. 將常見流程箭頭符號直接轉為原生 Unicode 字符 (支援 $\rightarrow$, \rightarrow, $\to$, $\right->$, \right-> 等，防止 HTML/EPUB 渲染缺失)
+    text = re.sub(r"[ \t]*(?:(?<!\$)\$(?!\$)\s*)?\\(?:right\s*->|(?:rightarrow|to)(?![a-zA-Z]))(?:\s*(?<!\$)\$(?!\$))?[ \t]*", " → ", text)
+    text = re.sub(r"[ \t]*(?:(?<!\$)\$(?!\$)\s*)?\\(?:left\s*<-|(?:leftarrow)(?![a-zA-Z]))(?:\s*(?<!\$)\$(?!\$))?[ \t]*", " ← ", text)
+    text = re.sub(r"[ \t]*(?:(?<!\$)\$(?!\$)\s*)?\\leftrightarrow(?![a-zA-Z])(?:\s*(?<!\$)\$(?!\$))?[ \t]*", " ↔ ", text)
+    text = re.sub(r"[ \t]*(?:(?<!\$)\$(?!\$)\s*)?\\Rightarrow(?![a-zA-Z])(?:\s*(?<!\$)\$(?!\$))?[ \t]*", " ⇒ ", text)
+    text = re.sub(r"[ \t]*(?:(?<!\$)\$(?!\$)\s*)?\\Leftrightarrow(?![a-zA-Z])(?:\s*(?<!\$)\$(?!\$))?[ \t]*", " ⇔ ", text)
 
     # 1. 將所有 \textcircled{...} 轉換為 Unicode 帶圈字元 (①, ② ...) (支援大小寫與空格容錯)
     text = re.sub(r"\\text[cC]irc(?:le|re)?d\s*\{([^{}]+)\}", lambda m: to_circled_char(m.group(1)), text)
@@ -338,9 +348,15 @@ def resolve_page_filename(
         c_num = spec.get("chapter_num")
         p_num = spec.get("page_num")
 
+        # 排除非正文檔案 (封面、封底、目錄頁) 作為一般正文頁碼的候選目標
+        content_filter = re.compile(r"^(?:cover|content|front[-_]?cover|back[-_]?cover|封面|封底|目錄)", re.I)
+        body_filenames = [fn for fn in existing_filenames if not content_filter.match(Path(fn).stem)]
+        # 若過濾後無任何正文圖檔，才退回全部圖檔
+        candidate_filenames = body_filenames if body_filenames else existing_filenames
+
         # 若包含章節與頁碼
         if c_num is not None and isinstance(c_num, int) and p_num is not None:
-            for fn in existing_filenames:
+            for fn in candidate_filenames:
                 cp = extract_chapter_page_from_stem(fn)
                 if cp and cp == (c_num, p_num):
                     return Path(fn).name
@@ -349,11 +365,11 @@ def resolve_page_filename(
         if isinstance(page_spec, int) or (isinstance(page_spec, str) and page_spec.isdigit()):
             target_int = int(page_spec)
             target_name_3d = f"Page-{target_int:03d}.jpg".lower()
-            for fn in existing_filenames:
+            for fn in candidate_filenames:
                 if Path(fn).name.lower() == target_name_3d:
                     return Path(fn).name
 
-            for fn in existing_filenames:
+            for fn in candidate_filenames:
                 name = Path(fn).name
                 nums = re.findall(r"\d+", name)
                 if nums and int(nums[-1]) == target_int:
@@ -493,6 +509,10 @@ def render_html(
         body_content.append('</section>\n<hr class="page-divider">\n')
 
     # 2. 建立章節對應至起始頁面的映射 (EPUB outline 核心)
+    def is_toc_meta_title(t_str: str) -> bool:
+        clean_t = re.sub(r"[\s\-_·.．…・|—―─~～‧•\d]+", "", str(t_str or "")).lower()
+        return clean_t in ("目錄", "目次", "contents", "tableofcontents", "目錄頁")
+
     page_chapter_map: Dict[str, List[Dict[str, Any]]] = {}
     if toc_data and "toc" in toc_data and toc_data["toc"]:
         toc_entries = toc_data["toc"]
@@ -512,15 +532,23 @@ def render_html(
                 ch_file_list[ch].sort(key=lambda x: x[0])
 
             for c_idx, entry in enumerate(toc_entries, start=1):
+                raw_t = entry.get("title", "")
+                full_t = entry.get("full_title", "")
+                if is_toc_meta_title(raw_t) or is_toc_meta_title(full_t):
+                    continue
+
                 spec = parse_page_spec(entry.get("start_page"))
                 c_num = entry.get("chapter_num") if entry.get("chapter_num") is not None else spec.get("chapter_num")
                 pg_num = entry.get("page_num") if entry.get("page_num") is not None else spec.get("page_num")
 
                 if c_num is None:
-                    m = re.search(r"\d+", str(entry.get("chapter", "")))
-                    if m:
+                    # 嘗試從 chapter 或 title 或 full_title 開頭解析章節編號 (如 "12-1 ...", "第12章 ...")
+                    full_str = f"{entry.get('chapter', '')} {raw_t} {full_t}"
+                    m_ch = re.search(r"(?:第\s*(\d+)\s*[章節回卷部篇]|^\s*(\d{1,3})[-_.])", full_str)
+                    if m_ch:
+                        c_num_str = m_ch.group(1) or m_ch.group(2)
                         try:
-                            c_num = int(m.group())
+                            c_num = int(c_num_str)
                         except (ValueError, TypeError):
                             pass
 
@@ -550,13 +578,22 @@ def render_html(
                         page_chapter_map[target_file] = []
                     page_chapter_map[target_file].append(entry_info)
         else:
+            content_filter = re.compile(r"^(?:cover|content|front[-_]?cover|back[-_]?cover|封面|封底|目錄)", re.I)
+            body_page_files = [p for p in available_page_files if not content_filter.match(Path(p).stem)]
+            candidate_files = body_page_files if body_page_files else available_page_files
+
             page_numbers: List[Tuple[Optional[int], str]] = []
-            for p_file in available_page_files:
+            for p_file in candidate_files:
                 nums = re.findall(r"\d+", p_file)
                 p_num = int(nums[-1]) if nums else None
                 page_numbers.append((p_num, p_file))
 
             for c_idx, entry in enumerate(toc_entries, start=1):
+                raw_t = entry.get("title", "")
+                full_t = entry.get("full_title", "")
+                if is_toc_meta_title(raw_t) or is_toc_meta_title(full_t):
+                    continue
+
                 start_p_val = entry.get("start_page")
                 try:
                     start_p = int(start_p_val) if start_p_val is not None and str(start_p_val).strip().lower() != "none" else None
@@ -605,6 +642,9 @@ def render_html(
 
         for c_idx, entry in enumerate(toc_entries, start=1):
             full_t = entry.get("full_title", entry.get("title", ""))
+            if is_toc_meta_title(full_t):
+                continue
+            full_t = clean_math_syntax(full_t)
             start_p_disp = entry.get("start_page_str")
             if not start_p_disp and entry.get("start_page") is not None:
                 start_p_disp = str(entry.get("start_page"))
@@ -654,9 +694,15 @@ def render_html(
 
         # 若此頁為章節起始頁，先插入 <h1> 章節標題 (Pandoc EPUB Outline 自動識別)
         if page_id in page_chapter_map:
+            inserted_titles = set()
             for chap in page_chapter_map[page_id]:
                 chap_idx = chap.get("_chapter_index", 1)
                 full_t = chap.get("full_title", chap.get("title", f"第 {chap_idx} 章"))
+                # 清洗標題內的數學與箭頭語法 (如包含 $\rightarrow$ 轉為 →)
+                full_t = clean_math_syntax(full_t)
+                if is_toc_meta_title(full_t) or full_t in inserted_titles:
+                    continue
+                inserted_titles.add(full_t)
                 body_content.append(f'<h1 id="chapter-{chap_idx}" class="chapter-heading">{full_t}</h1>\n')
 
         body_content.append(f'<section class="book-page" id="{page_id}">')
@@ -1018,6 +1064,9 @@ def sanitize_epub_math(epub_path: Union[str, Path]) -> int:
                             inner = inner[2:-2].strip()
 
                         inner = re.sub(r"\\textcircled\{([^{}]+)\}", lambda m: to_circled_char(m.group(1)), inner)
+                        inner = re.sub(r"\\(?:right\s*->|rightarrow|to)(?![a-zA-Z])", " → ", inner)
+                        inner = re.sub(r"\\(?:left\s*<-|leftarrow)(?![a-zA-Z])", " ← ", inner)
+                        inner = re.sub(r"\\leftrightarrow(?![a-zA-Z])", " ↔ ", inner)
                         if re.match(r"^" + CIRCLED_CHARS_RE + r"$", inner):
                             return inner
                         m_sup = re.match(r"^\^\{\s*(" + CIRCLED_CHARS_RE + r"|[0-9,，\s\-]+)\s*\}$", inner)
