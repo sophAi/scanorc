@@ -372,15 +372,25 @@ def ensure_epub_outline(
         if "target_id" in chap and chap["target_id"] in page_map:
             target_sec_id = chap["target_id"]
         if not target_sec_id:
-            for s_id, (p_num, _) in page_map.items():
-                if p_num is not None and p_num == chap["start_page"]:
-                    target_sec_id = s_id
-                    break
-        if not target_sec_id:
-            for s_id, (p_num, _) in page_map.items():
-                if p_num is not None and chap["start_page"] <= p_num <= chap["end_page"]:
-                    target_sec_id = s_id
-                    break
+            try:
+                s_p = int(chap["start_page"])
+                for s_id, (p_num, _) in page_map.items():
+                    if p_num is not None and p_num == s_p:
+                        target_sec_id = s_id
+                        break
+                if not target_sec_id:
+                    e_p = int(chap.get("end_page", s_p))
+                    for s_id, (p_num, _) in page_map.items():
+                        if p_num is not None and s_p <= p_num <= e_p:
+                            target_sec_id = s_id
+                            break
+            except (ValueError, TypeError):
+                sp_str = str(chap.get("start_page", ""))
+                if sp_str:
+                    for s_id in page_map:
+                        if sp_str in s_id or s_id in sp_str:
+                            target_sec_id = s_id
+                            break
 
         if target_sec_id and target_sec_id not in assigned_targets:
             assigned_targets.add(target_sec_id)

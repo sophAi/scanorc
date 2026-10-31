@@ -234,24 +234,134 @@ def normalize_formula_content(content: str) -> str:
     return f"$$\n{c}\n$$"
 
 
-def resolve_page_filename(page_num: int, existing_filenames: Optional[List[str]] = None) -> str:
+def extract_chapter_page_from_stem(stem: Union[str, Path]) -> Optional[Tuple[int, int]]:
     """
-    根據頁碼推算目標圖檔檔名 (例如 50 -> Page-050.jpg)
-    若提供既有圖檔清單，則優先比對現有檔案
+    嘗試從圖檔檔名 (stem) 解析章節號與章內頁碼。
+    支援:
+      P01-001, P1-1, p02-015 -> (1, 1), (1, 1), (2, 15)
+      01-001, 1-1, 1-05     -> (1, 1), (1, 1), (1, 5)
+    排除:
+      Cover-01, Content-01, Page-001 等單一連續頁碼或非章節型
+    """
+    stem_clean = Path(stem).stem.strip()
+    if re.search(r"^(cover|content|front[-_]?cover|back[-_]?cover|封面|封底|目錄)", stem_clean, re.I):
+        return None
+
+    m = re.match(r"^(?:[pP]|[cC]h)?(\d{1,3})[-_](\d{1,4})$", stem_clean)
+    if m:
+        try:
+            return (int(m.group(1)), int(m.group(2)))
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def detect_image_naming_pattern(image_paths: List[Union[str, Path]]) -> str:
+    """
+    分析圖檔清單，自動判定命名模式：
+    - "chapter_page": 具備明顯的章節-頁碼複合命名 (如 P01-001.jpg, 02-015.jpg)
+    - "sequential":   全書單一連續通頁 (如 Page-001.jpg, 005.jpg)
+    """
+    valid_stems = []
+    for p in image_paths:
+        stem = Path(p).stem
+        if re.search(r"^(cover|content|front[-_]?cover|back[-_]?cover|封面|封底|目錄)", stem, re.I):
+            continue
+        valid_stems.append(stem)
+
+    if not valid_stems:
+        return "sequential"
+
+    cp_count = sum(1 for stem in valid_stems if extract_chapter_page_from_stem(stem) is not None)
+    ratio = cp_count / len(valid_stems)
+    if ratio >= 0.4:
+        return "chapter_page"
+    return "sequential"
+
+
+def parse_page_spec(page_raw: Any) -> Dict[str, Any]:
+    """
+    解析頁碼規格，全面支援單一整數頁碼與章節複合頁碼。
+    例如:
+      105       -> {'start_page': 105, 'start_page_str': '105', 'chapter_num': None, 'page_num': 105}
+      "1-15"    -> {'start_page': '1-15', 'start_page_str': '1-15', 'chapter_num': 1, 'page_num': 15}
+      "2-1"     -> {'start_page': '2-1', 'start_page_str': '2-1', 'chapter_num': 2, 'page_num': 1}
+      "A-3"     -> {'start_page': 'A-3', 'start_page_str': 'A-3', 'chapter_num': 'A', 'page_num': 3}
+    """
+    if page_raw is None or str(page_raw).strip().lower() in ("", "none", "null"):
+        return {"start_page": None, "start_page_str": "", "chapter_num": None, "page_num": None}
+
+    p_str = str(page_raw).strip()
+    p_str = p_str.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    p_str = re.sub(r"[–—―─~～]", "-", p_str)
+
+    m_compound = re.match(r"^([A-Za-z0-9]+)\s*[-_·．.]\s*(\d+)$", p_str)
+    if m_compound:
+        c_part = m_compound.group(1)
+        p_part = int(m_compound.group(2))
+        c_num = int(c_part) if c_part.isdigit() else c_part
+        norm_str = f"{c_part}-{p_part}"
+        return {
+            "start_page": norm_str,
+            "start_page_str": norm_str,
+            "chapter_num": c_num,
+            "page_num": p_part,
+        }
+
+    if p_str.isdigit():
+        n = int(p_str)
+        return {
+            "start_page": n,
+            "start_page_str": str(n),
+            "chapter_num": None,
+            "page_num": n,
+        }
+
+    return {
+        "start_page": p_str,
+        "start_page_str": p_str,
+        "chapter_num": None,
+        "page_num": None,
+    }
+
+
+def resolve_page_filename(
+    page_spec: Union[int, str, Tuple[int, int]],
+    existing_filenames: Optional[List[str]] = None
+) -> str:
+    """
+    根據頁碼推算目標圖檔檔名 (例如 50 -> Page-050.jpg, '1-1' -> P01-001.jpg)。
+    若提供既有圖檔清單，則優先比對現有檔案。
     """
     if existing_filenames:
-        target_name_3d = f"Page-{page_num:03d}.jpg".lower()
-        for fn in existing_filenames:
-            if Path(fn).name.lower() == target_name_3d:
-                return Path(fn).name
+        spec = parse_page_spec(page_spec)
+        c_num = spec.get("chapter_num")
+        p_num = spec.get("page_num")
 
-        for fn in existing_filenames:
-            name = Path(fn).name
-            nums = re.findall(r"\d+", name)
-            if nums and int(nums[-1]) == page_num:
-                return name
+        # 若包含章節與頁碼
+        if c_num is not None and isinstance(c_num, int) and p_num is not None:
+            for fn in existing_filenames:
+                cp = extract_chapter_page_from_stem(fn)
+                if cp and cp == (c_num, p_num):
+                    return Path(fn).name
 
-    return f"Page-{page_num:03d}.jpg"
+        # 單一整數頁碼比對
+        if isinstance(page_spec, int) or (isinstance(page_spec, str) and page_spec.isdigit()):
+            target_int = int(page_spec)
+            target_name_3d = f"Page-{target_int:03d}.jpg".lower()
+            for fn in existing_filenames:
+                if Path(fn).name.lower() == target_name_3d:
+                    return Path(fn).name
+
+            for fn in existing_filenames:
+                name = Path(fn).name
+                nums = re.findall(r"\d+", name)
+                if nums and int(nums[-1]) == target_int:
+                    return name
+
+    if isinstance(page_spec, int):
+        return f"Page-{page_spec:03d}.jpg"
+    return str(page_spec)
 
 
 def find_default_cover_image(search_dirs: List[Path]) -> Optional[Path]:
@@ -386,48 +496,102 @@ def render_html(
     page_chapter_map: Dict[str, List[Dict[str, Any]]] = {}
     if toc_data and "toc" in toc_data and toc_data["toc"]:
         toc_entries = toc_data["toc"]
-        page_numbers: List[Tuple[Optional[int], str]] = []
-        for p_file in available_page_files:
-            nums = re.findall(r"\d+", p_file)
-            p_num = int(nums[-1]) if nums else None
-            page_numbers.append((p_num, p_file))
+        pattern = detect_image_naming_pattern(available_page_files)
 
-        for c_idx, entry in enumerate(toc_entries, start=1):
-            start_p_val = entry.get("start_page")
-            try:
-                start_p = int(start_p_val) if start_p_val is not None and str(start_p_val).strip().lower() != "none" else None
-            except (ValueError, TypeError):
-                start_p = None
+        if pattern == "chapter_page":
+            # 建立 (chapter_num, page_num) -> page_file 映射
+            cp_file_map: Dict[Tuple[int, int], str] = {}
+            ch_file_list: Dict[int, List[Tuple[int, str]]] = {}
+            for p_file in available_page_files:
+                cp = extract_chapter_page_from_stem(p_file)
+                if cp:
+                    cp_file_map[cp] = p_file
+                    ch_file_list.setdefault(cp[0], []).append((cp[1], p_file))
 
-            end_p_val = entry.get("end_page")
-            try:
-                end_p = int(end_p_val) if end_p_val is not None and str(end_p_val).strip().lower() != "none" else start_p
-            except (ValueError, TypeError):
-                end_p = start_p
+            for ch in ch_file_list:
+                ch_file_list[ch].sort(key=lambda x: x[0])
 
-            target_file = None
-            if start_p is not None:
-                # 優先 1: 精確比對頁碼
-                for p_num, p_file in page_numbers:
-                    if p_num is not None and p_num == start_p:
-                        target_file = p_file
-                        break
-                # 優先 2: 落在章節頁碼範圍內的第一個頁面
-                if not target_file and end_p is not None:
+            for c_idx, entry in enumerate(toc_entries, start=1):
+                spec = parse_page_spec(entry.get("start_page"))
+                c_num = entry.get("chapter_num") if entry.get("chapter_num") is not None else spec.get("chapter_num")
+                pg_num = entry.get("page_num") if entry.get("page_num") is not None else spec.get("page_num")
+
+                if c_num is None:
+                    m = re.search(r"\d+", str(entry.get("chapter", "")))
+                    if m:
+                        try:
+                            c_num = int(m.group())
+                        except (ValueError, TypeError):
+                            pass
+
+                target_file = None
+                if c_num is not None and isinstance(c_num, int):
+                    # 優先 1: 精確匹配 (c_num, pg_num)
+                    if pg_num is not None and (c_num, pg_num) in cp_file_map:
+                        target_file = cp_file_map[(c_num, pg_num)]
+                    elif c_num in ch_file_list and ch_file_list[c_num]:
+                        # 優先 2: 該章內大於等於 pg_num 的第一個頁面
+                        candidates = ch_file_list[c_num]
+                        if pg_num is not None:
+                            for p_n, p_f in candidates:
+                                if p_n >= pg_num:
+                                    target_file = p_f
+                                    break
+                        if not target_file:
+                            target_file = candidates[0][1]
+
+                if not target_file:
+                    target_file = resolve_page_filename(entry.get("start_page_str") or entry.get("start_page") or c_idx, available_page_files)
+
+                entry_info = dict(entry)
+                entry_info["_chapter_index"] = c_idx
+                if target_file:
+                    if target_file not in page_chapter_map:
+                        page_chapter_map[target_file] = []
+                    page_chapter_map[target_file].append(entry_info)
+        else:
+            page_numbers: List[Tuple[Optional[int], str]] = []
+            for p_file in available_page_files:
+                nums = re.findall(r"\d+", p_file)
+                p_num = int(nums[-1]) if nums else None
+                page_numbers.append((p_num, p_file))
+
+            for c_idx, entry in enumerate(toc_entries, start=1):
+                start_p_val = entry.get("start_page")
+                try:
+                    start_p = int(start_p_val) if start_p_val is not None and str(start_p_val).strip().lower() != "none" else None
+                except (ValueError, TypeError):
+                    start_p = None
+
+                end_p_val = entry.get("end_page")
+                try:
+                    end_p = int(end_p_val) if end_p_val is not None and str(end_p_val).strip().lower() != "none" else start_p
+                except (ValueError, TypeError):
+                    end_p = start_p
+
+                target_file = None
+                if start_p is not None:
+                    # 優先 1: 精確比對頁碼
                     for p_num, p_file in page_numbers:
-                        if p_num is not None and start_p <= p_num <= end_p:
+                        if p_num is not None and p_num == start_p:
                             target_file = p_file
                             break
-                # 優先 3: 依檔名規則推算 fallback
-                if not target_file:
-                    target_file = resolve_page_filename(start_p, available_page_files)
+                    # 優先 2: 落在章節頁碼範圍內的第一個頁面
+                    if not target_file and end_p is not None:
+                        for p_num, p_file in page_numbers:
+                            if p_num is not None and start_p <= p_num <= end_p:
+                                target_file = p_file
+                                break
+                    # 優先 3: 依檔名規則推算 fallback
+                    if not target_file:
+                        target_file = resolve_page_filename(start_p, available_page_files)
 
-            entry_info = dict(entry)
-            entry_info["_chapter_index"] = c_idx
-            if target_file:
-                if target_file not in page_chapter_map:
-                    page_chapter_map[target_file] = []
-                page_chapter_map[target_file].append(entry_info)
+                entry_info = dict(entry)
+                entry_info["_chapter_index"] = c_idx
+                if target_file:
+                    if target_file not in page_chapter_map:
+                        page_chapter_map[target_file] = []
+                    page_chapter_map[target_file].append(entry_info)
 
     # 3. 插入目錄索引導覽區塊 (TOC)
     if toc_data and "toc" in toc_data and toc_data["toc"]:
@@ -440,21 +604,36 @@ def render_html(
         body_content.append('  <ul class="toc-list">')
 
         for c_idx, entry in enumerate(toc_entries, start=1):
-            start_p_val = entry.get("start_page")
-            try:
-                start_p = int(start_p_val) if start_p_val is not None and str(start_p_val).strip().lower() != "none" else None
-            except (ValueError, TypeError):
-                start_p = None
-
             full_t = entry.get("full_title", entry.get("title", ""))
-            target_file = resolve_page_filename(start_p, available_page_files) if start_p is not None else ""
+            start_p_disp = entry.get("start_page_str")
+            if not start_p_disp and entry.get("start_page") is not None:
+                start_p_disp = str(entry.get("start_page"))
+
+            # 從 page_chapter_map 反查 target_file
+            target_file = ""
+            for p_f, mapped_entries in page_chapter_map.items():
+                if any(me.get("_chapter_index") == c_idx for me in mapped_entries):
+                    target_file = p_f
+                    break
+
+            if not target_file and entry.get("start_page") is not None:
+                target_file = resolve_page_filename(entry.get("start_page"), available_page_files)
 
             body_content.append('    <li class="toc-item">')
-            if start_p is not None and target_file:
+            if target_file:
+                page_label = f" ({target_file})"
+                if start_p_disp and str(start_p_disp).lower() not in ("none", "null"):
+                    p_prefix = "第 " if str(start_p_disp).isdigit() else ""
+                    p_suffix = " 頁" if str(start_p_disp).isdigit() else ""
+                    page_desc = f"{p_prefix}{start_p_disp}{p_suffix}"
+                else:
+                    page_desc = ""
+                disp_text = f"{page_desc}{page_label}".strip()
+
                 body_content.append(f'      <a href="#chapter-{c_idx}" class="toc-link">')
                 body_content.append(f'        <span class="toc-chapter">{full_t}</span>')
                 body_content.append('        <span class="toc-dots"></span>')
-                body_content.append(f'        <span class="toc-page">第 {start_p} 頁 ({target_file})</span>')
+                body_content.append(f'        <span class="toc-page">{disp_text}</span>')
                 body_content.append('      </a>')
             else:
                 body_content.append('      <span class="toc-link noclick">')
